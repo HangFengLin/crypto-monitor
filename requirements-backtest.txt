@@ -1,0 +1,10 @@
+aiohttp
+fastapi
+pandas
+plotly
+uvicorn[standard]
+yfinance
+
+# Optional on Python versions with a compatible wheel. indicators.py falls back
+# to pandas vectorized formulas when this package is unavailable.
+# pandas-ta

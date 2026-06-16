@@ -1,0 +1,36 @@
+services:
+  crypto-project:
+    build: .
+    container_name: crypto-project
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:8080"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      MARKET_DATA_SOURCE: gate
+      REPORTS_DIR: /app/reports
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./watchlist.json:/app/watchlist.json
+      - ./signal_events.jsonl:/app/signal_events.jsonl
+      - ./strategy_trades.json:/app/strategy_trades.json
+      - ./reports:/app/reports
+
+  okx-strategy-bot:
+    build: .
+    container_name: okx-strategy-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["python", "okx_market_cap_bot.py", "--place-order"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./okx_market_cap_bot_state.json:/app/okx_market_cap_bot_state.json
+      - ./okx_market_cap_bot_events.jsonl:/app/okx_market_cap_bot_events.jsonl
+    depends_on:
+      - crypto-project

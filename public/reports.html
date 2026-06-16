@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>回测报告</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Chanlun Crypto Monitor</p>
+          <h1>回测报告</h1>
+        </div>
+        <div class="status">
+          <a class="textLink" href="/">实时监控</a>
+          <span id="reportCount">检测中</span>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="panelHead">
+          <div>
+            <h2>报告列表</h2>
+            <p id="reportStatus"></p>
+          </div>
+          <button id="refreshReports" type="button">刷新</button>
+        </div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>文件</th>
+                <th>大小</th>
+                <th>更新时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="reportRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const rows = document.querySelector("#reportRows");
+      const statusText = document.querySelector("#reportStatus");
+      const countText = document.querySelector("#reportCount");
+      const refreshButton = document.querySelector("#refreshReports");
+
+      function formatBytes(bytes) {
+        if (!Number.isFinite(bytes)) return "--";
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+      }
+
+      function formatTime(seconds) {
+        if (!Number.isFinite(seconds)) return "--";
+        return new Date(seconds * 1000).toLocaleString("zh-CN", { hour12: false });
+      }
+
+      function renderReports(reports) {
+        rows.innerHTML = "";
+        if (!reports.length) {
+          rows.innerHTML = '<tr><td colspan="4" class="emptyCell">暂无报告</td></tr>';
+          return;
+        }
+        const fragment = document.createDocumentFragment();
+        reports.forEach((report) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td class="reportName">${report.path}</td>
+            <td>${formatBytes(report.size_bytes)}</td>
+            <td>${formatTime(report.updated_at)}</td>
+            <td><a class="textLink" href="${report.url}" target="_blank" rel="noreferrer">打开</a></td>
+          `;
+          fragment.appendChild(row);
+        });
+        rows.appendChild(fragment);
+      }
+
+      async function loadReports() {
+        statusText.textContent = "加载中";
+        countText.textContent = "检测中";
+        try {
+          const response = await fetch("/api/reports", { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          renderReports(payload.reports || []);
+          countText.textContent = `${payload.count || 0} 个报告`;
+          statusText.textContent = payload.count ? "按更新时间倒序排列" : "reports 目录为空";
+        } catch (error) {
+          rows.innerHTML = '<tr><td colspan="4" class="emptyCell">读取失败</td></tr>';
+          countText.textContent = "读取失败";
+          statusText.textContent = error.message || "无法读取报告列表";
+        }
+      }
+
+      refreshButton.addEventListener("click", loadReports);
+      loadReports();
+    </script>
+  </body>
+</html>

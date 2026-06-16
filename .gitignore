@@ -1,0 +1,41 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Python runtime/cache files
+__pycache__/
+.pycache/
+.pycache-check/
+*.py[cod]
+*.pyo
+
+# Virtual environments and local tooling
+venv/
+.venv/
+node_modules/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Runtime state and event logs
+watchlist.json
+signal_events.jsonl
+strategy_trades.json
+binance_strategy_bot_state.json
+binance_strategy_bot_events.jsonl
+okx_demo_bot_state.json
+okx_market_cap_bot_state.json
+okx_market_cap_bot_events.jsonl
+
+# Generated reports
+reports/*
+!reports/.gitkeep
+*_report.html
+project_signal_report_*.html
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp

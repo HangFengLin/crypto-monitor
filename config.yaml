@@ -1,0 +1,65 @@
+app:
+  default_signal_interval: 15m
+  kline_limit: 1000
+  max_workers: 12
+  hourly_summary_interval_seconds: 3600
+  sell_trend_breaker_interval: 4h
+  sell_trend_breaker_limit: 60
+  strategy_reward_risk: 2.0
+  strategy_fee_rate: 0.001
+  strategy_history_limit: 200
+  record_strategy_trades: false
+
+bot:
+  universe_top_n: 100
+  universe_quote_asset: USDT
+  interval: 15m
+  kline_limit: 1000
+  poll_seconds: 60
+  min_quote_volume: 10000000
+  max_open_positions: 5
+  position_size: 1
+  min_signal_score: 0
+  min_structure_score: 0
+
+strategy:
+  ma_fast_period: 5
+  ma_slow_period: 10
+  min_divergence_strength: 0.25
+  buy_rsi_threshold: 40
+  buy_volume_ratio: 0.8
+  sell_rsi_threshold: 60
+  sell_volume_ratio: 0.8
+  confirm_max_bars: 12
+  confirmation_mode: either
+  extreme_window: 3
+  max_extreme_lag_bars: 3
+  higher_trend_interval: 4h
+  require_higher_trend_alignment: true
+  volume_confirmation_enabled: true
+  volume_contraction_ratio: 0.75
+  volume_breakout_ratio: 1.5
+  obv_confirmation_enabled: true
+  atr_stop_multiplier: 1.5
+  chop_filter_enabled: true
+  max_chop: 61.8
+  min_bb_width: 0.012
+  microstructure_enabled: true
+  require_microstructure: false
+  long_funding_rate_max: -0.0001
+  short_funding_rate_min: 0.0001
+  open_interest_surge_ratio: 1.1
+  mfi_long_max: 35
+  mfi_short_min: 65
+  adx_long_max: 28
+  adx_short_max: 32
+  bb_long_max: 0.35
+  bb_short_min: 0.65
+  bb_width_score_min: 0.012
+  bb_width_score_max: 0.12
+  atr_ratio_min: 0.7
+  atr_ratio_max: 1.8
+  atr_pct_max: 0.035
+  ema200_distance_max: 0.08
+  strong_score: 10
+  normal_score: 7

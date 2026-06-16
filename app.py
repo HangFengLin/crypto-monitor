@@ -1,0 +1,2278 @@
+import asyncio
+import hashlib
+import json
+import http.client
+import os
+import smtplib
+import socket
+import ssl
+import threading
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from email.message import EmailMessage
+from pathlib import Path
+from typing import Any, Optional
+
+from config import ENV_FILE, config_value, load_config, load_env_file
+from data_client import (
+    async_fetch_funding_rate,
+    async_fetch_open_interest_ratio,
+    async_fetch_klines,
+    async_fetch_tickers,
+    fetch_funding_rate,
+    fetch_klines,
+    fetch_open_interest_ratio,
+    fetch_tickers,
+    market_data_source,
+    test_market_api,
+)
+from indicators import calculate_indicators, macd, rolling_average
+from strategy import (
+    build_chan_structure_context,
+    check_buy_filter,
+    check_sell_filter,
+    confirmation_passed,
+    confirmation_wait_text,
+    cross_direction,
+    detect_bearish_divergence,
+    detect_bullish_divergence,
+    find_local_extremes,
+    grade_signal,
+    latest_ma_direction,
+    latest_macd_direction,
+    HIGHER_TREND_INTERVAL,
+    ProjectSignalEngine,
+    score_signal,
+    DEFAULT_CONFIG,
+)
+
+try:
+    import uvicorn
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import StreamingResponse
+    from fastapi.staticfiles import StaticFiles
+except ModuleNotFoundError:
+    uvicorn = None
+    FastAPI = None
+    HTTPException = None
+    Request = None
+    CORSMiddleware = None
+    StreamingResponse = None
+    StaticFiles = None
+
+
+ROOT = Path(__file__).resolve().parent
+CONFIG = load_config()
+PUBLIC_DIR = ROOT / "public"
+REPORTS_DIR = Path(os.getenv("REPORTS_DIR", str(ROOT / "reports"))).expanduser()
+STATE_FILE = ROOT / "watchlist.json"
+EVENT_LOG_FILE = ROOT / "signal_events.jsonl"
+STRATEGY_TRADES_FILE = ROOT / "strategy_trades.json"
+OKX_BOT_STATE_FILE = ROOT / "okx_market_cap_bot_state.json"
+OKX_BOT_EVENT_LOG_FILE = ROOT / "okx_market_cap_bot_events.jsonl"
+STARTED_AT = time.time()
+EVENT_HISTORY_LIMIT = 500
+DEFAULT_SIGNAL_INTERVAL = str(config_value(CONFIG, "app", "default_signal_interval", "15m"))
+HOURLY_SUMMARY_SYMBOLS = ("BTCUSDT", "ETHUSDT")
+HOURLY_SUMMARY_INTERVAL_SECONDS = int(config_value(CONFIG, "app", "hourly_summary_interval_seconds", 3600))
+INDICATOR_INTERVALS = ("15m", "1h", "4h", "1d")
+SUPPORT_INTERVALS = ("15m", "1h", "4h", "1d")
+SUPPORT_TOUCH_TOLERANCE = {
+    "15m": 0.003,
+    "1h": 0.004,
+    "4h": 0.006,
+    "1d": 0.008,
+}
+MA_FAST_PERIOD = int(config_value(CONFIG, "strategy", "ma_fast_period", 5))
+MA_SLOW_PERIOD = int(config_value(CONFIG, "strategy", "ma_slow_period", 10))
+KLINE_LIMIT = int(config_value(CONFIG, "app", "kline_limit", 1000))
+MIN_DIVERGENCE_STRENGTH = float(config_value(CONFIG, "strategy", "min_divergence_strength", 0.25))
+BUY_RSI_THRESHOLD = float(config_value(CONFIG, "strategy", "buy_rsi_threshold", 40))
+BUY_VOLUME_RATIO = float(config_value(CONFIG, "strategy", "buy_volume_ratio", 0.8))
+SELL_RSI_THRESHOLD = float(config_value(CONFIG, "strategy", "sell_rsi_threshold", 60))
+SELL_VOLUME_RATIO = float(config_value(CONFIG, "strategy", "sell_volume_ratio", 0.8))
+CONFIRM_MAX_BARS = int(config_value(CONFIG, "strategy", "confirm_max_bars", 12))
+ATR_STOP_MULTIPLIER = float(config_value(CONFIG, "strategy", "atr_stop_multiplier", 1.5))
+SELL_TREND_BREAKER_INTERVAL = str(config_value(CONFIG, "app", "sell_trend_breaker_interval", "4h"))
+SELL_TREND_BREAKER_LIMIT = int(config_value(CONFIG, "app", "sell_trend_breaker_limit", 60))
+MAX_WORKERS = int(config_value(CONFIG, "app", "max_workers", 12))
+STRATEGY_REWARD_RISK = float(config_value(CONFIG, "app", "strategy_reward_risk", 2.0))
+STRATEGY_FEE_RATE = float(config_value(CONFIG, "app", "strategy_fee_rate", 0.001))
+STRATEGY_HISTORY_LIMIT = int(config_value(CONFIG, "app", "strategy_history_limit", 200))
+RECORD_STRATEGY_TRADES = bool(config_value(CONFIG, "app", "record_strategy_trades", False))
+REPORT_FILE_SUFFIXES = {".html", ".htm"}
+
+
+DEFAULT_WATCHLIST = [
+    {"symbol": "BTCUSDT", "email": "", "signal": True, "indicator_alert": True, "support_alert": True, "interval": "15m"},
+    {"symbol": "ETHUSDT", "email": "", "signal": True, "indicator_alert": True, "support_alert": True, "interval": "15m"},
+]
+
+
+@dataclass
+class MonitorState:
+    watchlist: list[dict[str, Any]] = field(default_factory=list)
+    prices: dict[str, dict[str, Any]] = field(default_factory=dict)
+    signals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    indicator_signals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    support_levels: dict[str, dict[str, Any]] = field(default_factory=dict)
+    events: list[dict[str, Any]] = field(default_factory=list)
+    strategy_trades: list[dict[str, Any]] = field(default_factory=list)
+    strategy_stats: dict[str, Any] = field(default_factory=dict)
+    pending_buy_divergences: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pending_sell_divergences: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_error: Optional[str] = None
+    signal_error: Optional[str] = None
+    summary_error: Optional[str] = None
+    discord_last_ok_at: Optional[float] = None
+    discord_last_error: Optional[str] = None
+    updated_at: Optional[float] = None
+    last_summary_at: Optional[float] = None
+    sent_alerts: set[str] = field(default_factory=set)
+
+
+state = MonitorState()
+state_lock = threading.Lock()
+SIGNAL_ENGINES: dict[tuple[str, str], ProjectSignalEngine] = {}
+
+
+def discord_webhook_url() -> str:
+    load_env_file()
+    return os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+
+
+def env_file_has_key(key: str) -> bool:
+    if not ENV_FILE.exists():
+        return False
+    try:
+        for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            env_key = line.split("=", 1)[0].strip()
+            if env_key.startswith("export "):
+                env_key = env_key.removeprefix("export ").strip()
+            if env_key == key:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def code_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for relative_path in (
+        "app.py",
+        "config.py",
+        "docker-compose.yml",
+        "okx_market_cap_bot.py",
+        "binance_strategy_bot.py",
+    ):
+        path = ROOT / relative_path
+        if not path.exists():
+            digest.update(f"{relative_path}:missing\n".encode("utf-8"))
+            continue
+        digest.update(f"{relative_path}:".encode("utf-8"))
+        digest.update(path.read_bytes())
+        digest.update(b"\n")
+    return digest.hexdigest()[:16]
+
+
+def list_report_files() -> list[dict[str, Any]]:
+    """Return report files served from REPORTS_DIR, newest first."""
+    if not REPORTS_DIR.exists():
+        return []
+
+    reports = []
+    for path in REPORTS_DIR.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in REPORT_FILE_SUFFIXES:
+            continue
+        try:
+            stat = path.stat()
+            relative_path = path.relative_to(REPORTS_DIR).as_posix()
+        except (OSError, ValueError):
+            continue
+        reports.append(
+            {
+                "name": path.name,
+                "path": relative_path,
+                "url": f"/reports/{relative_path}",
+                "size_bytes": stat.st_size,
+                "updated_at": stat.st_mtime,
+            }
+        )
+    return sorted(reports, key=lambda item: item["updated_at"], reverse=True)
+
+
+def pending_signal_key(symbol: str, interval: str) -> str:
+    return f"{symbol}:{interval}"
+
+
+def set_pending_buy_divergence(symbol: str, interval: str, candidate: dict[str, Any]) -> None:
+    with state_lock:
+        state.pending_buy_divergences[pending_signal_key(symbol, interval)] = candidate
+
+
+def get_pending_buy_divergence(symbol: str, interval: str) -> Optional[dict[str, Any]]:
+    with state_lock:
+        candidate = state.pending_buy_divergences.get(pending_signal_key(symbol, interval))
+        return dict(candidate) if candidate else None
+
+
+def clear_pending_buy_divergence(symbol: str, interval: str) -> None:
+    with state_lock:
+        state.pending_buy_divergences.pop(pending_signal_key(symbol, interval), None)
+
+
+def set_pending_sell_divergence(symbol: str, interval: str, candidate: dict[str, Any]) -> None:
+    with state_lock:
+        state.pending_sell_divergences[pending_signal_key(symbol, interval)] = candidate
+
+
+def get_pending_sell_divergence(symbol: str, interval: str) -> Optional[dict[str, Any]]:
+    with state_lock:
+        candidate = state.pending_sell_divergences.get(pending_signal_key(symbol, interval))
+        return dict(candidate) if candidate else None
+
+
+def clear_pending_sell_divergence(symbol: str, interval: str) -> None:
+    with state_lock:
+        state.pending_sell_divergences.pop(pending_signal_key(symbol, interval), None)
+
+
+def load_watchlist() -> list[dict[str, Any]]:
+    if not STATE_FILE.exists():
+        save_watchlist(DEFAULT_WATCHLIST)
+        return DEFAULT_WATCHLIST
+
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return normalize_watchlist(data)
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_WATCHLIST
+
+
+def save_watchlist(watchlist: list[dict[str, Any]]) -> None:
+    STATE_FILE.write_text(
+        json.dumps(normalize_watchlist(watchlist), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_event_history(limit: int = 50) -> list[dict[str, Any]]:
+    if not EVENT_LOG_FILE.exists():
+        return []
+
+    events: list[dict[str, Any]] = []
+    try:
+        for line in EVENT_LOG_FILE.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if isinstance(event, dict):
+                events.append(event)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return list(reversed(events[-limit:]))
+
+
+def load_all_event_history() -> list[dict[str, Any]]:
+    if not EVENT_LOG_FILE.exists():
+        return []
+
+    events: list[dict[str, Any]] = []
+    try:
+        for line in EVENT_LOG_FILE.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if isinstance(event, dict):
+                events.append(event)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return events
+
+
+def load_strategy_trades() -> list[dict[str, Any]]:
+    if not STRATEGY_TRADES_FILE.exists():
+        return []
+
+    try:
+        data = json.loads(STRATEGY_TRADES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict):
+        trades = data.get("trades", [])
+    else:
+        trades = data
+    return [trade for trade in trades if isinstance(trade, dict)]
+
+
+def save_strategy_trades(trades: list[dict[str, Any]]) -> None:
+    payload = {
+        "updated_at": time.time(),
+        "trades": trades[-STRATEGY_HISTORY_LIMIT:],
+    }
+    try:
+        STRATEGY_TRADES_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        with state_lock:
+            state.signal_error = "策略交易账本写入失败"
+
+
+def append_event_to_disk(event: dict[str, Any]) -> None:
+    try:
+        with EVENT_LOG_FILE.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        with state_lock:
+            state.signal_error = "事件日志写入失败"
+
+
+def record_event(event: dict[str, Any], event_key: Optional[str] = None) -> None:
+    stored_event = dict(event)
+    stored_event.setdefault("created_at", time.time())
+    if event_key:
+        stored_event["event_key"] = event_key
+
+    with state_lock:
+        if event_key:
+            state.sent_alerts.add(event_key)
+        state.events.insert(0, stored_event)
+        state.events = state.events[:50]
+
+    append_event_to_disk(stored_event)
+
+
+def normalize_watchlist(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).upper().strip()
+        if not symbol:
+            continue
+        normalized.append(
+            {
+                "symbol": symbol,
+                "email": str(item.get("email", "")).strip(),
+                "signal": item.get("signal", True) is not False,
+                "indicator_alert": item.get("indicator_alert", True) is not False,
+                "support_alert": item.get("support_alert", True) is not False,
+                "interval": normalize_interval(item.get("interval")),
+            }
+        )
+    return normalized
+
+
+def normalize_interval(value: Any) -> str:
+    interval = str(value or DEFAULT_SIGNAL_INTERVAL).strip()
+    return interval if interval in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"} else DEFAULT_SIGNAL_INTERVAL
+
+
+def parse_float(value: Any) -> Optional[float]:
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def strategy_trade_id(signal: dict[str, Any]) -> str:
+    divergence_time = signal.get("divergence_time") or signal.get("kline_close_time") or signal.get("created_at")
+    return f"{signal.get('symbol')}:{signal.get('interval', DEFAULT_SIGNAL_INTERVAL)}:{signal.get('signal')}:{divergence_time}"
+
+
+def calculate_strategy_levels(direction: str, entry_price: float, stop_loss: float) -> Optional[dict[str, float]]:
+    if direction == "long":
+        risk = entry_price - stop_loss
+        if risk <= 0:
+            return None
+        return {
+            "risk": risk,
+            "target_price": entry_price + risk * STRATEGY_REWARD_RISK,
+            "protection_price": entry_price + risk,
+        }
+
+    if direction == "short":
+        risk = stop_loss - entry_price
+        if risk <= 0:
+            return None
+        return {
+            "risk": risk,
+            "target_price": entry_price - risk * STRATEGY_REWARD_RISK,
+            "protection_price": entry_price - risk,
+        }
+    return None
+
+
+def build_strategy_trade_from_signal(signal: dict[str, Any]) -> Optional[dict[str, Any]]:
+    direction = str(signal.get("signal", ""))
+    if direction not in {"long", "short"}:
+        return None
+
+    entry_price = parse_float(signal.get("price"))
+    stop_loss = parse_float(signal.get("stop_loss"))
+    if entry_price is None or stop_loss is None:
+        return None
+
+    levels = calculate_strategy_levels(direction, entry_price, stop_loss)
+    if not levels:
+        return None
+
+    opened_at = parse_float(signal.get("created_at")) or time.time()
+    return {
+        "id": strategy_trade_id(signal),
+        "status": "open",
+        "outcome": "open",
+        "exit_reason": "open",
+        "symbol": str(signal.get("symbol", "")).upper(),
+        "interval": normalize_interval(signal.get("interval", DEFAULT_SIGNAL_INTERVAL)),
+        "direction": direction,
+        "signal_name": signal.get("signal_name", ""),
+        "entry_price": entry_price,
+        "stop_loss": stop_loss,
+        "initial_stop_loss": stop_loss,
+        "risk": levels["risk"],
+        "target_price": levels["target_price"],
+        "protection_price": levels["protection_price"],
+        "opened_at": opened_at,
+        "opened_kline_close_time": signal.get("kline_close_time"),
+        "divergence_time": signal.get("divergence_time"),
+        "event_key": signal.get("event_key"),
+        "strength": signal.get("strength"),
+        "signal_grade": signal.get("signal_grade"),
+        "signal_score": signal.get("signal_score"),
+        "divergence_type": signal.get("divergence_type"),
+        "highest_price": entry_price,
+        "lowest_price": entry_price,
+        "current_price": entry_price,
+        "unrealized_pct": 0.0,
+        "return_pct": None,
+        "exit_price": None,
+        "closed_at": None,
+    }
+
+
+def strategy_return_pct(direction: str, entry_price: float, exit_price: float) -> float:
+    gross_return = exit_price / entry_price - 1 if direction == "long" else entry_price / exit_price - 1
+    return gross_return - STRATEGY_FEE_RATE * 2
+
+
+def refresh_strategy_trade_mark(trade: dict[str, Any], current_price: float) -> None:
+    entry_price = parse_float(trade.get("entry_price"))
+    if entry_price is None or entry_price <= 0:
+        return
+    direction = str(trade.get("direction"))
+    trade["current_price"] = current_price
+    trade["highest_price"] = max(parse_float(trade.get("highest_price")) or entry_price, current_price)
+    trade["lowest_price"] = min(parse_float(trade.get("lowest_price")) or entry_price, current_price)
+    trade["unrealized_pct"] = strategy_return_pct(direction, entry_price, current_price)
+
+
+def close_strategy_trade(trade: dict[str, Any], exit_price: float, reason: str, outcome: str) -> None:
+    entry_price = parse_float(trade.get("entry_price"))
+    if entry_price is None:
+        return
+    trade["status"] = "closed"
+    trade["exit_reason"] = reason
+    trade["outcome"] = outcome
+    trade["exit_price"] = exit_price
+    trade["closed_at"] = time.time()
+    trade["return_pct"] = strategy_return_pct(str(trade.get("direction")), entry_price, exit_price)
+
+
+def evaluate_open_strategy_trade(trade: dict[str, Any], current_price: float) -> bool:
+    if trade.get("status") != "open":
+        return False
+
+    refresh_strategy_trade_mark(trade, current_price)
+    direction = str(trade.get("direction"))
+    stop_loss = parse_float(trade.get("stop_loss"))
+    target_price = parse_float(trade.get("target_price"))
+    protection_price = parse_float(trade.get("protection_price"))
+    if stop_loss is None or target_price is None or protection_price is None:
+        return False
+
+    if direction == "long":
+        if current_price <= stop_loss:
+            close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
+            return True
+        if current_price >= target_price:
+            close_strategy_trade(trade, target_price, "take_profit", "win")
+            return True
+        if current_price >= protection_price:
+            close_strategy_trade(trade, protection_price, "protection_reached", "win")
+            return True
+    elif direction == "short":
+        if current_price >= stop_loss:
+            close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
+            return True
+        if current_price <= target_price:
+            close_strategy_trade(trade, target_price, "take_profit", "win")
+            return True
+        if current_price <= protection_price:
+            close_strategy_trade(trade, protection_price, "protection_reached", "win")
+            return True
+    return False
+
+
+def evaluate_open_strategy_trade_with_bars(trade: dict[str, Any], bars: list[dict[str, Any]], current_price: Optional[float]) -> bool:
+    if trade.get("status") != "open":
+        return False
+
+    if current_price is not None:
+        refresh_strategy_trade_mark(trade, current_price)
+
+    direction = str(trade.get("direction"))
+    stop_loss = parse_float(trade.get("stop_loss"))
+    target_price = parse_float(trade.get("target_price"))
+    protection_price = parse_float(trade.get("protection_price"))
+    opened_close_time = parse_int(trade.get("opened_kline_close_time"), 0)
+    if stop_loss is None or target_price is None or protection_price is None:
+        return False
+
+    future_bars = [
+        bar
+        for bar in bars
+        if opened_close_time > 0 and parse_int(bar.get("close_time"), 0) > opened_close_time
+    ]
+    for bar in future_bars:
+        high = parse_float(bar.get("high"))
+        low = parse_float(bar.get("low"))
+        close = parse_float(bar.get("close"))
+        if high is None or low is None:
+            continue
+        if close is not None:
+            refresh_strategy_trade_mark(trade, close)
+
+        if direction == "long":
+            if low <= stop_loss:
+                close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
+                return True
+            if high >= target_price:
+                close_strategy_trade(trade, target_price, "take_profit", "win")
+                return True
+            if high >= protection_price:
+                close_strategy_trade(trade, protection_price, "protection_reached", "win")
+                return True
+        elif direction == "short":
+            if high >= stop_loss:
+                close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
+                return True
+            if low <= target_price:
+                close_strategy_trade(trade, target_price, "take_profit", "win")
+                return True
+            if low <= protection_price:
+                close_strategy_trade(trade, protection_price, "protection_reached", "win")
+                return True
+
+    if current_price is None:
+        return False
+    return evaluate_open_strategy_trade(trade, current_price)
+
+
+def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    closed = [trade for trade in trades if trade.get("status") == "closed"]
+    open_trades = [trade for trade in trades if trade.get("status") == "open"]
+    wins = [trade for trade in closed if trade.get("outcome") == "win"]
+    losses = [trade for trade in closed if trade.get("outcome") == "loss"]
+    returns = [parse_float(trade.get("return_pct")) or 0.0 for trade in closed]
+    protection_wins = [trade for trade in closed if trade.get("exit_reason") == "protection_reached"]
+    stop_losses = [trade for trade in closed if trade.get("exit_reason") == "stop_loss"]
+    return {
+        "total_trades": len(trades),
+        "open_trades": len(open_trades),
+        "closed_trades": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": len(wins) / len(closed) if closed else 0.0,
+        "expectancy": sum(returns) / len(returns) if returns else 0.0,
+        "total_return": sum(returns),
+        "stop_loss_rate": len(stop_losses) / len(closed) if closed else 0.0,
+        "protection_rate": len(protection_wins) / len(closed) if closed else 0.0,
+    }
+
+
+def register_strategy_signal(signal: dict[str, Any]) -> None:
+    trade = build_strategy_trade_from_signal(signal)
+    if not trade:
+        return
+
+    changed = False
+    with state_lock:
+        existing_ids = {str(item.get("id")) for item in state.strategy_trades}
+        if trade["id"] not in existing_ids:
+            state.strategy_trades.append(trade)
+            state.strategy_trades = state.strategy_trades[-STRATEGY_HISTORY_LIMIT:]
+            state.strategy_stats = calculate_strategy_stats(state.strategy_trades)
+            changed = True
+        trades_snapshot = [dict(item) for item in state.strategy_trades]
+
+    if changed:
+        save_strategy_trades(trades_snapshot)
+
+
+def update_strategy_trades_with_prices(prices: dict[str, dict[str, Any]]) -> None:
+    changed = False
+    with state_lock:
+        open_keys = sorted(
+            {
+                (str(trade.get("symbol", "")).upper(), normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL)))
+                for trade in state.strategy_trades
+                if trade.get("status") == "open"
+            }
+        )
+
+    bars_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for symbol, interval in open_keys:
+        try:
+            bars_by_key[(symbol, interval)] = fetch_klines(symbol, interval, KLINE_LIMIT)
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError):
+            bars_by_key[(symbol, interval)] = []
+
+    with state_lock:
+        for trade in state.strategy_trades:
+            if trade.get("status") != "open":
+                continue
+            symbol = str(trade.get("symbol", "")).upper()
+            interval = normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL))
+            ticker = prices.get(symbol)
+            current_price = parse_float((ticker or {}).get("lastPrice"))
+            bars = bars_by_key.get((symbol, interval), [])
+            if bars and evaluate_open_strategy_trade_with_bars(trade, bars, current_price):
+                changed = True
+            elif not bars and current_price is not None and evaluate_open_strategy_trade(trade, current_price):
+                changed = True
+        state.strategy_stats = calculate_strategy_stats(state.strategy_trades)
+        trades_snapshot = [dict(item) for item in state.strategy_trades]
+
+    if changed:
+        save_strategy_trades(trades_snapshot)
+
+
+async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, Any]]) -> None:
+    changed = False
+    with state_lock:
+        open_keys = sorted(
+            {
+                (str(trade.get("symbol", "")).upper(), normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL)))
+                for trade in state.strategy_trades
+                if trade.get("status") == "open"
+            }
+        )
+
+    async def load_bars(symbol: str, interval: str) -> tuple[tuple[str, str], list[dict[str, Any]]]:
+        try:
+            return (symbol, interval), await async_fetch_klines(symbol, interval, KLINE_LIMIT)
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError):
+            return (symbol, interval), []
+
+    bars_by_key = dict(await asyncio.gather(*(load_bars(symbol, interval) for symbol, interval in open_keys))) if open_keys else {}
+
+    with state_lock:
+        for trade in state.strategy_trades:
+            if trade.get("status") != "open":
+                continue
+            symbol = str(trade.get("symbol", "")).upper()
+            interval = normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL))
+            ticker = prices.get(symbol)
+            current_price = parse_float((ticker or {}).get("lastPrice"))
+            bars = bars_by_key.get((symbol, interval), [])
+            if bars and evaluate_open_strategy_trade_with_bars(trade, bars, current_price):
+                changed = True
+            elif not bars and current_price is not None and evaluate_open_strategy_trade(trade, current_price):
+                changed = True
+        state.strategy_stats = calculate_strategy_stats(state.strategy_trades)
+        trades_snapshot = [dict(item) for item in state.strategy_trades]
+
+    if changed:
+        save_strategy_trades(trades_snapshot)
+
+
+def seed_strategy_trades_from_events(events: list[dict[str, Any]], existing_trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    existing_ids = {str(trade.get("id")) for trade in existing_trades}
+    trades = list(existing_trades)
+    for event in events:
+        if event.get("type") != "chanlun" or event.get("signal") not in {"long", "short"}:
+            continue
+        trade = build_strategy_trade_from_signal(event)
+        if not trade or trade["id"] in existing_ids:
+            continue
+        trades.append(trade)
+        existing_ids.add(trade["id"])
+    return trades[-STRATEGY_HISTORY_LIMIT:]
+
+
+def fetch_higher_trend_state(symbol: str) -> dict[str, Any]:
+    bars = calculate_indicators(fetch_klines(symbol, SELL_TREND_BREAKER_INTERVAL, SELL_TREND_BREAKER_LIMIT))
+    ready_bars = [
+        bar
+        for bar in bars
+        if bar.get("close") is not None and bar.get("ema60") is not None and bar.get("macd") is not None
+    ]
+    if not ready_bars:
+        return {"trend": "unknown"}
+    latest = ready_bars[-1]
+    return {
+        "trend": latest.get("trend", "unknown"),
+        "close": latest.get("close"),
+        "ema20": latest.get("ema20"),
+        "ema60": latest.get("ema60"),
+        "ema200": latest.get("ema200"),
+        "macd": latest.get("macd"),
+    }
+
+
+def fetch_microstructure_state(symbol: str, interval: str) -> dict[str, Any]:
+    if interval not in {"15m", "30m", "1h", "4h"}:
+        return {}
+    state_data: dict[str, Any] = {}
+    try:
+        funding = fetch_funding_rate(symbol)
+        state_data["funding_rate"] = funding.get("lastFundingRate")
+    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+        pass
+    try:
+        oi = fetch_open_interest_ratio(symbol, interval)
+        state_data["open_interest"] = oi.get("openInterest")
+        state_data["open_interest_ratio"] = oi.get("openInterestRatio")
+    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+        pass
+    return state_data
+
+
+def check_buy_trend_breaker(symbol: str, interval: str) -> tuple[bool, str, dict[str, Any]]:
+    if interval != DEFAULT_SIGNAL_INTERVAL:
+        return False, "", {"trend": "unknown"}
+
+    higher = fetch_higher_trend_state(symbol)
+    close = higher.get("close")
+    ema60 = higher.get("ema60")
+    macd_value = higher.get("macd")
+    if close is not None and ema60 is not None and macd_value is not None and close < ema60 and macd_value < 0:
+        return True, f"✗ {SELL_TREND_BREAKER_INTERVAL}空头趋势熔断：价格={close:.2f}<EMA60={ema60:.2f}, MACD={macd_value:.4f}<0", higher
+    return False, "", higher
+
+
+def check_sell_trend_breaker(symbol: str, interval: str) -> tuple[bool, str]:
+    if interval != DEFAULT_SIGNAL_INTERVAL:
+        return False, ""
+
+    higher = fetch_higher_trend_state(symbol)
+    close = higher.get("close")
+    ema60 = higher.get("ema60")
+    macd_value = higher.get("macd")
+    if close is None or ema60 is None or macd_value is None:
+        return False, ""
+
+    if close > ema60 and macd_value > 0:
+        return True, f"✗ {SELL_TREND_BREAKER_INTERVAL}多头趋势熔断：价格={close:.2f}>EMA60={ema60:.2f}, MACD={macd_value:.4f}>0"
+    return False, ""
+
+
+def td_setup(bars: list[dict[str, Any]], period: int = 9) -> int:
+    closes = [bar.get("close") for bar in bars]
+    if len(closes) < period + 4:
+        return 0
+    if any(closes[-index] is None or closes[-index - 4] is None for index in range(1, period + 1)):
+        return 0
+
+    buy = all(closes[-index] <= closes[-index - 4] for index in range(1, period + 1))
+    sell = all(closes[-index] >= closes[-index - 4] for index in range(1, period + 1))
+    if buy:
+        return 1
+    if sell:
+        return -1
+    return 0
+
+
+def direction_label(direction: str) -> str:
+    if direction == "up":
+        return "上穿"
+    if direction == "down":
+        return "下穿"
+    return "未触发"
+
+
+def detect_indicator_signal(symbol: str, interval: str) -> dict[str, Any]:
+    bars = fetch_klines(symbol, interval, KLINE_LIMIT)
+    return build_indicator_signal_from_bars(symbol, interval, bars)
+
+
+async def detect_indicator_signal_async(symbol: str, interval: str) -> dict[str, Any]:
+    bars = await async_fetch_klines(symbol, interval, KLINE_LIMIT)
+    return build_indicator_signal_from_bars(symbol, interval, bars)
+
+
+def build_indicator_signal_from_bars(symbol: str, interval: str, bars: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(bars) < 60:
+        return build_indicator_wait_signal(symbol, interval, "K线不足")
+
+    closes = [bar.get("close") for bar in bars]
+    ma_fast = rolling_average(closes, MA_FAST_PERIOD)
+    ma_slow = rolling_average(closes, MA_SLOW_PERIOD)
+    macd_line, macd_signal, _hist = macd(closes, 12, 26, 9)
+    latest = bars[-1]
+    previous_index = len(bars) - 2
+    current_index = len(bars) - 1
+
+    ma_direction = cross_direction(
+        ma_fast[previous_index],
+        ma_fast[current_index],
+        ma_slow[previous_index],
+        ma_slow[current_index],
+    )
+    macd_direction = cross_direction(
+        macd_line[previous_index],
+        macd_line[current_index],
+        macd_signal[previous_index],
+        macd_signal[current_index],
+    )
+
+    return {
+        "type": "indicator",
+        "symbol": symbol,
+        "interval": interval,
+        "price": latest.get("close"),
+        "kline_close_time": latest.get("close_time"),
+        "created_at": time.time(),
+        "ma": {
+            "fast_period": MA_FAST_PERIOD,
+            "slow_period": MA_SLOW_PERIOD,
+            "fast": ma_fast[current_index],
+            "slow": ma_slow[current_index],
+            "direction": ma_direction,
+            "label": f"MA{MA_FAST_PERIOD}/{MA_SLOW_PERIOD}{direction_label(ma_direction)}",
+        },
+        "macd": {
+            "dif": macd_line[current_index],
+            "dea": macd_signal[current_index],
+            "direction": macd_direction,
+            "label": f"MACD DIF/DEA{direction_label(macd_direction)}",
+        },
+    }
+
+
+def build_indicator_wait_signal(symbol: str, interval: str, reason: str) -> dict[str, Any]:
+    return {
+        "type": "indicator",
+        "symbol": symbol,
+        "interval": interval,
+        "price": None,
+        "kline_close_time": None,
+        "created_at": time.time(),
+        "ma": {"direction": "none", "label": reason},
+        "macd": {"direction": "none", "label": reason},
+    }
+
+
+def detect_support_level(symbol: str, interval: str, current_price: Optional[float]) -> dict[str, Any]:
+    bars = fetch_klines(symbol, interval, KLINE_LIMIT)
+    return build_support_level_from_bars(symbol, interval, current_price, bars)
+
+
+async def detect_support_level_async(symbol: str, interval: str, current_price: Optional[float]) -> dict[str, Any]:
+    bars = await async_fetch_klines(symbol, interval, KLINE_LIMIT)
+    return build_support_level_from_bars(symbol, interval, current_price, bars)
+
+
+def build_support_level_from_bars(symbol: str, interval: str, current_price: Optional[float], bars: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(bars) < 30 or current_price is None:
+        return build_support_wait_level(symbol, interval, "K线不足")
+
+    lows = [bar.get("low") for bar in bars]
+    valid_lows = [value for value in lows if value is not None]
+    if len(valid_lows) < 30:
+        return build_support_wait_level(symbol, interval, "低点不足")
+
+    _peaks, troughs = find_local_extremes(valid_lows, 3)
+    recent_troughs = troughs[-12:]
+    candidate_lows = [low for _index, low in recent_troughs if low <= current_price]
+    if not candidate_lows:
+        candidate_lows = [low for low in valid_lows[-40:] if low <= current_price]
+    support = max(candidate_lows) if candidate_lows else min(valid_lows[-40:])
+    tolerance = SUPPORT_TOUCH_TOLERANCE.get(interval, 0.004)
+    distance_pct = ((current_price - support) / support * 100) if support else None
+    touched = support is not None and current_price <= support * (1 + tolerance)
+    touch_price = support * (1 + tolerance) if support is not None else None
+    near_touches = count_support_touches(valid_lows[-120:], support, max(support * tolerance, support * 0.001))
+
+    return {
+        "type": "support",
+        "symbol": symbol,
+        "interval": interval,
+        "price": current_price,
+        "support": support,
+        "touch_price": touch_price,
+        "distance_pct": distance_pct,
+        "tolerance_pct": tolerance * 100,
+        "touches": near_touches,
+        "touched": touched,
+        "kline_close_time": bars[-1].get("close_time"),
+        "created_at": time.time(),
+    }
+
+
+def build_support_wait_level(symbol: str, interval: str, reason: str) -> dict[str, Any]:
+    return {
+        "type": "support",
+        "symbol": symbol,
+        "interval": interval,
+        "price": None,
+        "support": None,
+        "touch_price": None,
+        "distance_pct": None,
+        "tolerance_pct": SUPPORT_TOUCH_TOLERANCE.get(interval, 0.004) * 100,
+        "touches": 0,
+        "touched": False,
+        "reason": reason,
+        "kline_close_time": None,
+        "created_at": time.time(),
+    }
+
+
+def count_support_touches(lows: list[float], support: float, band: float) -> int:
+    return sum(1 for low in lows if abs(low - support) <= band)
+
+
+def nearest_index_by_close_time(bars: list[dict[str, Any]], close_time: int) -> int:
+    return min(range(len(bars)), key=lambda index: abs(int(bars[index]["close_time"]) - close_time))
+
+
+def td_signal_label(value: int) -> str:
+    if value == 1:
+        return "买"
+    if value == -1:
+        return "卖"
+    return "-"
+
+
+def get_td_signals(symbol: str, timestamp_ms: int) -> dict[str, int]:
+    signals = {}
+    for interval in ("1m", "3m", "5m", "15m", "30m"):
+        bars = fetch_klines(symbol, interval, KLINE_LIMIT)
+        index = nearest_index_by_close_time(bars, timestamp_ms)
+        window = bars[max(0, index - 50) : index + 1]
+        signals[interval] = td_setup(window, 9) if len(window) >= 50 else 0
+    return signals
+
+
+def signal_engine(symbol: str, interval: str) -> ProjectSignalEngine:
+    key = (symbol.upper(), normalize_interval(interval))
+    engine = SIGNAL_ENGINES.get(key)
+    if engine is None:
+        engine = ProjectSignalEngine()
+        SIGNAL_ENGINES[key] = engine
+    return engine
+
+
+def add_higher_timeframe_context(bars: list[dict[str, Any]], higher_bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not bars or not higher_bars:
+        return bars
+
+    higher_index = 0
+    enriched = []
+    for bar in bars:
+        bar_close_time = int(bar.get("close_time") or bar.get("open_time") or 0)
+        while (
+            higher_index + 1 < len(higher_bars)
+            and int(higher_bars[higher_index + 1].get("close_time") or higher_bars[higher_index + 1].get("open_time") or 0) <= bar_close_time
+        ):
+            higher_index += 1
+
+        higher_close_time = int(higher_bars[higher_index].get("close_time") or higher_bars[higher_index].get("open_time") or 0)
+        higher = higher_bars[higher_index] if higher_close_time <= bar_close_time else {}
+        enriched.append(
+            {
+                **bar,
+                "higher_close": higher.get("close"),
+                "higher_ema20": higher.get("ema20"),
+                "higher_ema60": higher.get("ema60"),
+                "higher_ema200": higher.get("ema200"),
+                "higher_macd": higher.get("macd"),
+                "higher_trend": higher.get("trend", "unknown"),
+            }
+        )
+    return enriched
+
+
+def build_project_signal_bars(symbol: str, interval: str) -> list[dict[str, Any]]:
+    bars = calculate_indicators(fetch_klines(symbol, interval, KLINE_LIMIT))
+    if not bars:
+        return []
+    if interval in {HIGHER_TREND_INTERVAL, "1d"}:
+        enriched_bars = add_higher_timeframe_context(bars, bars)
+    else:
+        higher_limit = max(120, min(1000, len(bars) // 8 + 120))
+        higher_bars = calculate_indicators(fetch_klines(symbol, HIGHER_TREND_INTERVAL, higher_limit))
+        enriched_bars = add_higher_timeframe_context(bars, higher_bars)
+
+    ready_bars = [bar for bar in enriched_bars if bar.get("close") is not None and bar.get("macd") is not None]
+    if ready_bars:
+        ready_bars[-1].update(fetch_microstructure_state(symbol, interval))
+    return ready_bars
+
+
+def detect_project_signal(symbol: str, interval: str) -> dict[str, Any]:
+    normalized_interval = normalize_interval(interval)
+    ready_bars = build_project_signal_bars(symbol, normalized_interval)
+    signal = signal_engine(symbol, normalized_interval).detect(ready_bars)
+    latest = ready_bars[-1] if ready_bars else {}
+    close_time = latest.get("close_time") or latest.get("open_time")
+    td_signals: dict[str, int] = {}
+    if close_time is not None:
+        try:
+            td_signals = get_td_signals(symbol, int(close_time))
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError, ValueError):
+            td_signals = {}
+
+    signal.setdefault("signal", "wait")
+    signal.setdefault("signal_name", "K线不足" if len(ready_bars) < 100 else "等待MACD背驰")
+    signal.setdefault("price", latest.get("close"))
+    signal.setdefault("kline_close_time", close_time)
+    signal.setdefault("created_at", time.time())
+    signal["type"] = "chanlun"
+    signal["symbol"] = symbol
+    signal["interval"] = normalized_interval
+    signal["td_signals"] = td_signals
+    signal["td_summary"] = " ".join(f"{key}:{td_signal_label(value)}" for key, value in td_signals.items())
+    return signal
+
+
+def detect_chanlun_signal(symbol: str, interval: str) -> dict[str, Any]:
+    bars = calculate_indicators(fetch_klines(symbol, interval, KLINE_LIMIT))
+    ready_bars = [
+        bar
+        for bar in bars
+        if bar.get("close") is not None and bar.get("macd") is not None
+    ]
+    if len(ready_bars) < 100:
+        return build_wait_signal(symbol, interval, "K线不足")
+
+    current_bar = ready_bars[-1]
+    current_bar.update(fetch_microstructure_state(symbol, interval))
+    window = ready_bars[-200:]
+    closes = [bar["close"] for bar in window]
+    macd_values = [bar["macd"] for bar in window]
+    macd_fast_values = [bar.get("macd_fast") for bar in window]
+
+    price_peaks, price_troughs = find_local_extremes(closes)
+    macd_peaks, macd_troughs = find_local_extremes(macd_values)
+    macd_fast_peaks, macd_fast_troughs = find_local_extremes(macd_fast_values)
+
+    bullish_div, bullish_strength, bullish_info = detect_bullish_divergence(price_troughs, macd_troughs, macd_fast_troughs)
+    bearish_div, bearish_strength, bearish_info = detect_bearish_divergence(price_peaks, macd_peaks, macd_fast_peaks)
+    td_signals = get_td_signals(symbol, int(current_bar["close_time"]))
+    td_summary = " ".join(f"{key}:{td_signal_label(value)}" for key, value in td_signals.items())
+    ma_direction = latest_ma_direction(ready_bars)
+    macd_direction = latest_macd_direction(ready_bars)
+
+    base_signal = {
+        "type": "chanlun",
+        "symbol": symbol,
+        "interval": interval,
+        "price": current_bar["close"],
+        "kline_close_time": current_bar["close_time"],
+        "td_signals": td_signals,
+        "td_summary": td_summary,
+        "created_at": time.time(),
+    }
+
+    def bars_waited_since(close_time: Any) -> int:
+        try:
+            created_close_time = int(close_time)
+        except (TypeError, ValueError):
+            return 0
+        return sum(1 for bar in ready_bars if int(bar.get("close_time", 0)) > created_close_time)
+
+    def build_buy_response(candidate: dict[str, Any], signal: str, signal_name: str, filter_message: str, confirm_bars: int, higher: Optional[dict[str, Any]] = None, signal_grade: str = "weak") -> dict[str, Any]:
+        higher_state = higher or {}
+        structure = candidate.get("structure")
+        score_info = score_signal("long", candidate["strength"], signal == "long", current_bar, higher_state, "熔断" in signal_name, structure)
+        stop_anchor = float(structure.get("stop_anchor", candidate["price_low"]) if structure else candidate["price_low"])
+        combined_filter = f"{filter_message}；结构：{structure['text']}" if structure else filter_message
+        return {
+            **base_signal,
+            "signal": signal,
+            "signal_name": signal_name,
+            "strength": candidate["strength"],
+            "filter": combined_filter,
+            "stop_loss": stop_anchor - (current_bar.get("atr") or 0) * ATR_STOP_MULTIPLIER,
+            "divergence_time": candidate["divergence_time"],
+            "signal_ready_time": candidate.get("signal_ready_time", candidate["divergence_time"]),
+            "divergence_type": candidate["divergence_type"],
+            "structure_factors": structure.get("factors", []) if structure else [],
+            "structure_score": int(structure.get("score", 0) if structure else 0),
+            "structure_text": structure.get("text", "结构因子不足") if structure else "结构因子不足",
+            "confirm_bars": confirm_bars,
+            "higher_trend": higher_state.get("trend", "unknown"),
+            "signal_grade": score_info["grade"],
+            "signal_score": score_info["score"],
+            "signal_score_max": score_info["max_score"],
+            "score_text": score_info["text"],
+        }
+
+    def build_sell_response(candidate: dict[str, Any], signal: str, signal_name: str, filter_message: str, confirm_bars: int = 0) -> dict[str, Any]:
+        higher = fetch_higher_trend_state(symbol) if interval == DEFAULT_SIGNAL_INTERVAL else {"trend": "unknown"}
+        structure = candidate.get("structure")
+        score_info = score_signal("short", candidate["strength"], signal == "short", current_bar, higher, "熔断" in signal_name, structure)
+        stop_anchor = float(structure.get("stop_anchor", candidate["price_high"]) if structure else candidate["price_high"])
+        combined_filter = f"{filter_message}；结构：{structure['text']}" if structure else filter_message
+        return {
+            **base_signal,
+            "signal": signal,
+            "signal_name": signal_name,
+            "strength": candidate["strength"],
+            "filter": combined_filter,
+            "stop_loss": stop_anchor + (current_bar.get("atr") or 0) * ATR_STOP_MULTIPLIER,
+            "divergence_time": candidate["divergence_time"],
+            "signal_ready_time": candidate.get("signal_ready_time", candidate["divergence_time"]),
+            "divergence_type": candidate["divergence_type"],
+            "structure_factors": structure.get("factors", []) if structure else [],
+            "structure_score": int(structure.get("score", 0) if structure else 0),
+            "structure_text": structure.get("text", "结构因子不足") if structure else "结构因子不足",
+            "confirm_bars": confirm_bars,
+            "higher_trend": higher.get("trend", "unknown"),
+            "signal_grade": score_info["grade"],
+            "signal_score": score_info["score"],
+            "signal_score_max": score_info["max_score"],
+            "score_text": score_info["text"],
+        }
+
+    pending_buy = get_pending_buy_divergence(symbol, interval)
+    if pending_buy:
+        confirm_bars = bars_waited_since(pending_buy.get("created_close_time"))
+        if confirm_bars > CONFIRM_MAX_BARS:
+            clear_pending_buy_divergence(symbol, interval)
+            return build_buy_response(pending_buy, "filtered_buy", "底背驰确认超时", f"超过 {CONFIRM_MAX_BARS} 根K线未确认", confirm_bars)
+        confirmed, _confirmation_flags = confirmation_passed("long", ma_direction, macd_direction, DEFAULT_CONFIG.confirmation_mode)
+        if confirmed:
+            clear_pending_buy_divergence(symbol, interval)
+            trend_blocked, trend_message, higher = check_buy_trend_breaker(symbol, interval)
+            if trend_blocked:
+                return build_buy_response(pending_buy, "filtered_buy", "底背驰被高周期趋势熔断", trend_message, confirm_bars, higher)
+            filter_passed, filter_message = check_buy_filter(ready_bars)
+            signal_grade = grade_signal("long", pending_buy["strength"], filter_passed, current_bar, higher, trend_blocked)
+            signal_name = "MACD底背驰确认开多" if filter_passed else "底背驰被买入过滤"
+            return build_buy_response(pending_buy, "long" if filter_passed else "filtered_buy", signal_name, filter_message, confirm_bars, higher, signal_grade)
+        return build_buy_response(pending_buy, "filtered_buy", "底背驰等待确认", confirmation_wait_text("long", DEFAULT_CONFIG), confirm_bars)
+
+    if bullish_div and bullish_strength >= MIN_DIVERGENCE_STRENGTH and bullish_info:
+        divergence_bar = window[bullish_info["index"]]
+        ready_index = min(int(bullish_info.get("confirm_index", bullish_info["index"]) or bullish_info["index"]), len(window) - 1)
+        ready_bar = window[ready_index]
+        buy_candidate = {
+            "strength": bullish_strength,
+            "price_low": bullish_info["price_low"],
+            "divergence_time": divergence_bar["close_time"],
+            "signal_ready_time": ready_bar.get("close_time", ready_bar.get("open_time")),
+            "divergence_type": bullish_info.get("type", "macd"),
+            "created_close_time": current_bar["close_time"],
+        }
+        buy_candidate["structure"] = build_chan_structure_context("long", window, price_peaks, price_troughs, macd_values, bullish_info)
+        confirmed, _confirmation_flags = confirmation_passed("long", ma_direction, macd_direction, DEFAULT_CONFIG.confirmation_mode)
+        if not confirmed:
+            set_pending_buy_divergence(symbol, interval, buy_candidate)
+            return build_buy_response(buy_candidate, "filtered_buy", "底背驰等待确认", confirmation_wait_text("long", DEFAULT_CONFIG), 0)
+        trend_blocked, trend_message, higher = check_buy_trend_breaker(symbol, interval)
+        if trend_blocked:
+            return build_buy_response(buy_candidate, "filtered_buy", "底背驰被高周期趋势熔断", trend_message, 0, higher)
+        filter_passed, filter_message = check_buy_filter(ready_bars)
+        signal_grade = grade_signal("long", bullish_strength, filter_passed, current_bar, higher, trend_blocked)
+        signal_name = "MACD底背驰确认开多" if filter_passed else "底背驰被买入过滤"
+        return build_buy_response(buy_candidate, "long" if filter_passed else "filtered_buy", signal_name, filter_message, 0, higher, signal_grade)
+
+    if bearish_div and bearish_strength >= MIN_DIVERGENCE_STRENGTH and bearish_info:
+        divergence_bar = window[bearish_info["index"]]
+        ready_index = min(int(bearish_info.get("confirm_index", bearish_info["index"]) or bearish_info["index"]), len(window) - 1)
+        ready_bar = window[ready_index]
+        sell_candidate = {
+            "strength": bearish_strength,
+            "price_high": bearish_info["price_high"],
+            "divergence_time": divergence_bar["close_time"],
+            "signal_ready_time": ready_bar.get("close_time", ready_bar.get("open_time")),
+            "divergence_type": bearish_info.get("type", "macd"),
+            "created_close_time": current_bar["close_time"],
+        }
+        sell_candidate["structure"] = build_chan_structure_context("short", window, price_peaks, price_troughs, macd_values, bearish_info)
+        confirmed, _confirmation_flags = confirmation_passed("short", ma_direction, macd_direction, DEFAULT_CONFIG.confirmation_mode)
+        if not confirmed:
+            set_pending_sell_divergence(symbol, interval, sell_candidate)
+            return build_sell_response(sell_candidate, "filtered_sell", "顶背驰等待确认", confirmation_wait_text("short", DEFAULT_CONFIG))
+
+        clear_pending_sell_divergence(symbol, interval)
+        trend_blocked, trend_message = check_sell_trend_breaker(symbol, interval)
+        if trend_blocked:
+            return build_sell_response(sell_candidate, "filtered_sell", "顶背驰被高周期趋势熔断", trend_message)
+
+        filter_passed, filter_message = check_sell_filter(ready_bars)
+        signal_name = "MACD顶背驰开空观察" if filter_passed else "顶背驰被卖出过滤"
+        return build_sell_response(sell_candidate, "short" if filter_passed else "filtered_sell", signal_name, filter_message)
+
+    pending_sell = get_pending_sell_divergence(symbol, interval)
+    if pending_sell:
+        confirm_bars = bars_waited_since(pending_sell.get("created_close_time"))
+        if confirm_bars > CONFIRM_MAX_BARS:
+            clear_pending_sell_divergence(symbol, interval)
+            return build_sell_response(pending_sell, "filtered_sell", "顶背驰确认超时", f"超过 {CONFIRM_MAX_BARS} 根K线未确认", confirm_bars)
+        confirmed, _confirmation_flags = confirmation_passed("short", ma_direction, macd_direction, DEFAULT_CONFIG.confirmation_mode)
+        if not confirmed:
+            return build_sell_response(pending_sell, "filtered_sell", "顶背驰等待确认", confirmation_wait_text("short", DEFAULT_CONFIG), confirm_bars)
+
+        clear_pending_sell_divergence(symbol, interval)
+        trend_blocked, trend_message = check_sell_trend_breaker(symbol, interval)
+        if trend_blocked:
+            return build_sell_response(pending_sell, "filtered_sell", "顶背驰被高周期趋势熔断", trend_message, confirm_bars)
+
+        filter_passed, filter_message = check_sell_filter(ready_bars)
+        signal_name = "MACD顶背驰开空观察" if filter_passed else "顶背驰被卖出过滤"
+        return build_sell_response(pending_sell, "short" if filter_passed else "filtered_sell", signal_name, filter_message, confirm_bars)
+
+    return {
+        **base_signal,
+        "signal": "wait",
+        "signal_name": "等待MACD背驰",
+        "strength": max(bullish_strength, bearish_strength),
+    }
+
+
+def build_wait_signal(symbol: str, interval: str, reason: str) -> dict[str, Any]:
+    return {
+        "type": "chanlun",
+        "symbol": symbol,
+        "interval": interval,
+        "signal": "wait",
+        "signal_name": reason,
+        "price": None,
+        "td_signals": {},
+        "td_summary": "",
+        "created_at": time.time(),
+    }
+
+
+def run_signal_backtest_summary(
+    symbol: str,
+    interval: str,
+    limit: int,
+    reward_risk: float,
+    max_hold_bars: int,
+    fee_rate: float,
+    stop_mode: str,
+) -> dict[str, Any]:
+    try:
+        import project_signal_backtest
+    except ModuleNotFoundError as exc:
+        missing = exc.name or "回测依赖"
+        return {
+            "ok": False,
+            "error": f"缺少依赖包 {missing}，请先运行 python3 -m pip install -r requirements-backtest.txt",
+        }
+
+    bars = project_signal_backtest.fetch_binance_klines(symbol, interval, limit)
+    enriched_bars = project_signal_backtest.fetch_higher_timeframe_context(
+        symbol,
+        project_signal_backtest.calculate_indicators(bars),
+        interval,
+    )
+    stop_modes = ["structure_atr", "atr_trailing_after_1r"] if stop_mode == "all" else [stop_mode]
+    mode_results = [
+        project_signal_backtest.build_stop_mode_result(
+            enriched_bars,
+            reward_risk,
+            max_hold_bars,
+            fee_rate,
+            mode,
+        )
+        for mode in stop_modes
+    ]
+    primary = mode_results[0]
+    trades = primary["trades"]
+    metrics = primary["metrics"]
+    group_stats = primary["group_stats"]
+    started_at = enriched_bars[0]["time"].isoformat() if enriched_bars else None
+    ended_at = enriched_bars[-1]["time"].isoformat() if enriched_bars else None
+
+    groups = []
+    if not group_stats.empty:
+        groups = [
+            {
+                "signal": str(row["signal"]),
+                "trend": str(row["trend"]),
+                "higher_trend": str(row.get("higher_trend", "unknown")),
+                "signal_grade": str(row.get("signal_grade", "weak")),
+                "score_bucket": str(row.get("score_bucket", "unknown")),
+                "divergence_type": str(row["divergence_type"]),
+                "strength_bucket": str(row["strength_bucket"]),
+                "trades": int(row["trades"]),
+                "avg_score": float(row.get("avg_score", 0)),
+                "win_rate": float(row["win_rate"]),
+                "avg_return": float(row["avg_return"]),
+                "avg_confirm_bars": float(row.get("avg_confirm_bars", 0)),
+            }
+            for row in group_stats.head(12).to_dict("records")
+        ]
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "interval": interval,
+        "limit": len(enriched_bars),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "params": {
+            "reward_risk": reward_risk,
+            "max_hold_bars": max_hold_bars,
+            "fee_rate": fee_rate,
+            "stop_mode": stop_mode,
+        },
+        "metrics": metrics,
+        "stop_mode_results": [
+            {
+                "stop_mode": result["stop_mode"],
+                "metrics": result["metrics"],
+            }
+            for result in mode_results
+        ],
+        "groups": groups,
+        "sample_trades": [
+            {
+                "signal": trade.signal,
+                "stop_mode": trade.stop_mode,
+                "entry_time": trade.entry_time.isoformat(),
+                "entry_price": trade.entry_price,
+                "exit_reason": trade.exit_reason,
+                "outcome": trade.outcome,
+                "return_pct": trade.return_pct,
+                "bars_held": trade.bars_held,
+                "confirm_bars": trade.confirm_bars,
+                "strength": trade.strength,
+                "trend": trade.trend,
+                "higher_trend": trade.higher_trend,
+                "signal_grade": trade.signal_grade,
+                "divergence_type": trade.divergence_type,
+            }
+            for trade in trades[-10:]
+        ],
+    }
+
+
+def monitor_loop() -> None:
+    asyncio.run(monitor_loop_async())
+
+
+async def monitor_loop_async() -> None:
+    while True:
+        with state_lock:
+            watchlist = list(state.watchlist)
+        symbols = sorted({item["symbol"] for item in watchlist} | set(HOURLY_SUMMARY_SYMBOLS))
+
+        try:
+            prices = await async_fetch_tickers(symbols)
+            with state_lock:
+                state.prices = prices
+                state.updated_at = time.time()
+                state.last_error = None
+            await update_strategy_trades_with_prices_async(prices)
+            await evaluate_support_alerts_async(watchlist, prices)
+            await asyncio.to_thread(evaluate_chanlun_signals, watchlist)
+            await evaluate_indicator_signals_async(watchlist)
+            await send_hourly_market_summary_async(prices)
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError, RuntimeError) as exc:
+            with state_lock:
+                state.last_error = str(exc)
+        await asyncio.sleep(10)
+
+
+def evaluate_chanlun_signals(watchlist: list[dict[str, Any]]) -> None:
+    next_signals = {}
+    signal_error = None
+    signal_items = [item for item in watchlist if item.get("signal", True)]
+    results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    for item in signal_items:
+        try:
+            results.append((item, detect_project_signal(item["symbol"], item.get("interval", DEFAULT_SIGNAL_INTERVAL))))
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError, RuntimeError) as exc:
+            signal_error = str(exc)
+
+    for item, signal in results:
+        symbol = item["symbol"]
+        interval = item.get("interval", DEFAULT_SIGNAL_INTERVAL)
+
+        state_key = f"{symbol}:{interval}"
+        next_signals[state_key] = signal
+        if signal.get("signal") not in {"long", "short"}:
+            continue
+        if os.getenv("SIGNAL_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}:
+            print(f"2. 主程序已捕获信号: {signal}", flush=True)
+
+        alert_key = f"macd_td:{symbol}:{interval}:{signal['signal']}:{signal.get('divergence_time')}"
+        if alert_key in state.sent_alerts:
+            continue
+
+        message = {**signal, "email": item.get("email", "")}
+        record_event(message, alert_key)
+        if RECORD_STRATEGY_TRADES:
+            register_strategy_signal({**message, "event_key": alert_key})
+        with state_lock:
+            state.signal_error = None
+        send_alert_notifications(message)
+
+    with state_lock:
+        state.signals = next_signals
+        state.signal_error = signal_error
+
+
+def evaluate_indicator_signals(watchlist: list[dict[str, Any]]) -> None:
+    next_indicator_signals: dict[str, dict[str, Any]] = {}
+    indicator_error = None
+    symbols = sorted(
+        {
+            item["symbol"]
+            for item in watchlist
+            if item.get("signal", True) or item.get("indicator_alert", True)
+        }
+    )
+    email_by_symbol = {
+        item["symbol"]: item.get("email", "")
+        for item in watchlist
+        if item.get("signal", True) or item.get("indicator_alert", True)
+    }
+    ma_alert_symbols = {
+        item["symbol"]
+        for item in watchlist
+        if item.get("signal", True)
+    }
+    macd_alert_symbols = {
+        item["symbol"]
+        for item in watchlist
+        if item.get("indicator_alert", True)
+    }
+
+    results: dict[tuple[str, str], dict[str, Any]] = {}
+    tasks = [(symbol, interval) for symbol in symbols for interval in INDICATOR_INTERVALS]
+
+    for symbol, interval in tasks:
+        try:
+            results[(symbol, interval)] = detect_indicator_signal(symbol, interval)
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
+            indicator_error = str(exc)
+
+    for symbol in symbols:
+        symbol_signals = {}
+        for interval in INDICATOR_INTERVALS:
+            signal = results.get((symbol, interval))
+            if signal is None:
+                continue
+
+            symbol_signals[interval] = signal
+            for indicator_name in ("ma", "macd"):
+                if indicator_name == "ma" and symbol not in ma_alert_symbols:
+                    continue
+                if indicator_name == "macd" and (symbol not in macd_alert_symbols or interval != "4h"):
+                    continue
+                indicator = signal.get(indicator_name, {})
+                direction = indicator.get("direction")
+                if direction not in {"up", "down"}:
+                    continue
+
+                alert_key = f"indicator:{symbol}:{interval}:{indicator_name}:{direction}:{signal.get('kline_close_time')}"
+                with state_lock:
+                    already_sent = alert_key in state.sent_alerts
+                if already_sent:
+                    continue
+
+                message = {
+                    **signal,
+                    "indicator": indicator_name,
+                    "indicator_name": "均线" if indicator_name == "ma" else "MACD",
+                    "indicator_label": indicator.get("label", ""),
+                    "direction": direction,
+                    "email": email_by_symbol.get(symbol, ""),
+                }
+                record_event(message, alert_key)
+                send_alert_notifications(message)
+
+        next_indicator_signals[symbol] = symbol_signals
+
+    with state_lock:
+        state.indicator_signals = next_indicator_signals
+        if indicator_error:
+            state.signal_error = indicator_error
+
+
+async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> None:
+    next_indicator_signals: dict[str, dict[str, Any]] = {}
+    indicator_error = None
+    symbols = sorted(
+        {
+            item["symbol"]
+            for item in watchlist
+            if item.get("signal", True) or item.get("indicator_alert", True)
+        }
+    )
+    email_by_symbol = {
+        item["symbol"]: item.get("email", "")
+        for item in watchlist
+        if item.get("signal", True) or item.get("indicator_alert", True)
+    }
+    ma_alert_symbols = {
+        item["symbol"]
+        for item in watchlist
+        if item.get("signal", True)
+    }
+    macd_alert_symbols = {
+        item["symbol"]
+        for item in watchlist
+        if item.get("indicator_alert", True)
+    }
+
+    tasks = [(symbol, interval) for symbol in symbols for interval in INDICATOR_INTERVALS]
+
+    async def load_signal(symbol: str, interval: str) -> tuple[tuple[str, str], Optional[dict[str, Any]], Optional[str]]:
+        try:
+            return (symbol, interval), await detect_indicator_signal_async(symbol, interval), None
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError) as exc:
+            return (symbol, interval), None, str(exc)
+
+    loaded = await asyncio.gather(*(load_signal(symbol, interval) for symbol, interval in tasks)) if tasks else []
+    results: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, signal, error in loaded:
+        if error:
+            indicator_error = error
+            continue
+        if signal is not None:
+            results[key] = signal
+
+    for symbol in symbols:
+        symbol_signals = {}
+        for interval in INDICATOR_INTERVALS:
+            signal = results.get((symbol, interval))
+            if signal is None:
+                continue
+
+            symbol_signals[interval] = signal
+            for indicator_name in ("ma", "macd"):
+                if indicator_name == "ma" and symbol not in ma_alert_symbols:
+                    continue
+                if indicator_name == "macd" and (symbol not in macd_alert_symbols or interval != "4h"):
+                    continue
+                indicator = signal.get(indicator_name, {})
+                direction = indicator.get("direction")
+                if direction not in {"up", "down"}:
+                    continue
+
+                alert_key = f"indicator:{symbol}:{interval}:{indicator_name}:{direction}:{signal.get('kline_close_time')}"
+                with state_lock:
+                    already_sent = alert_key in state.sent_alerts
+                if already_sent:
+                    continue
+
+                message = {
+                    **signal,
+                    "indicator": indicator_name,
+                    "indicator_name": "均线" if indicator_name == "ma" else "MACD",
+                    "indicator_label": indicator.get("label", ""),
+                    "direction": direction,
+                    "email": email_by_symbol.get(symbol, ""),
+                }
+                record_event(message, alert_key)
+                await send_alert_notifications_async(message)
+
+        next_indicator_signals[symbol] = symbol_signals
+
+    with state_lock:
+        state.indicator_signals = next_indicator_signals
+        if indicator_error:
+            state.signal_error = indicator_error
+
+
+def evaluate_support_alerts(watchlist: list[dict[str, Any]], prices: dict[str, dict[str, Any]]) -> None:
+    next_support_levels: dict[str, dict[str, Any]] = {}
+    support_error = None
+    tasks = [
+        (item, interval, prices.get(item["symbol"], {}).get("lastPrice"))
+        for item in watchlist
+        for interval in SUPPORT_INTERVALS
+    ]
+    results: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for item, interval, price in tasks:
+        try:
+            results[(item["symbol"], interval)] = detect_support_level(item["symbol"], interval, price)
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
+            support_error = str(exc)
+
+    for item in watchlist:
+        symbol = item["symbol"]
+        symbol_levels = {}
+        for interval in SUPPORT_INTERVALS:
+            level = results.get((symbol, interval))
+            if level is None:
+                continue
+            symbol_levels[interval] = level
+            support = level.get("support")
+            alert_key = f"support:{symbol}:{interval}:touch:{level.get('kline_close_time')}"
+            reset_key = f"support:{symbol}:{interval}:active"
+            reset_distance = level.get("tolerance_pct", 0.4) * 2
+            distance_pct = level.get("distance_pct")
+
+            if distance_pct is not None and distance_pct > reset_distance:
+                with state_lock:
+                    state.sent_alerts.discard(reset_key)
+                continue
+            if not item.get("support_alert", True) or not level.get("touched") or support is None:
+                continue
+            with state_lock:
+                already_sent = reset_key in state.sent_alerts or alert_key in state.sent_alerts
+            if already_sent:
+                continue
+
+            message = {
+                **level,
+                "email": item.get("email", ""),
+            }
+            with state_lock:
+                state.sent_alerts.add(reset_key)
+            record_event(message, alert_key)
+            send_alert_notifications(message)
+
+        next_support_levels[symbol] = symbol_levels
+
+    with state_lock:
+        state.support_levels = next_support_levels
+        if support_error:
+            state.signal_error = support_error
+
+
+async def evaluate_support_alerts_async(watchlist: list[dict[str, Any]], prices: dict[str, dict[str, Any]]) -> None:
+    next_support_levels: dict[str, dict[str, Any]] = {}
+    support_error = None
+    tasks = [
+        (item, interval, prices.get(item["symbol"], {}).get("lastPrice"))
+        for item in watchlist
+        for interval in SUPPORT_INTERVALS
+    ]
+
+    async def load_level(item: dict[str, Any], interval: str, price: Optional[float]) -> tuple[tuple[str, str], Optional[dict[str, Any]], Optional[str]]:
+        try:
+            return (item["symbol"], interval), await detect_support_level_async(item["symbol"], interval, price), None
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError) as exc:
+            return (item["symbol"], interval), None, str(exc)
+
+    loaded = await asyncio.gather(*(load_level(item, interval, price) for item, interval, price in tasks)) if tasks else []
+    results: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, level, error in loaded:
+        if error:
+            support_error = error
+            continue
+        if level is not None:
+            results[key] = level
+
+    for item in watchlist:
+        symbol = item["symbol"]
+        symbol_levels = {}
+        for interval in SUPPORT_INTERVALS:
+            level = results.get((symbol, interval))
+            if level is None:
+                continue
+            symbol_levels[interval] = level
+            support = level.get("support")
+            alert_key = f"support:{symbol}:{interval}:touch:{level.get('kline_close_time')}"
+            reset_key = f"support:{symbol}:{interval}:active"
+            reset_distance = level.get("tolerance_pct", 0.4) * 2
+            distance_pct = level.get("distance_pct")
+
+            if distance_pct is not None and distance_pct > reset_distance:
+                with state_lock:
+                    state.sent_alerts.discard(reset_key)
+                continue
+            if not item.get("support_alert", True) or not level.get("touched") or support is None:
+                continue
+            with state_lock:
+                already_sent = reset_key in state.sent_alerts or alert_key in state.sent_alerts
+            if already_sent:
+                continue
+
+            message = {
+                **level,
+                "email": item.get("email", ""),
+            }
+            with state_lock:
+                state.sent_alerts.add(reset_key)
+            record_event(message, alert_key)
+            await send_alert_notifications_async(message)
+
+        next_support_levels[symbol] = symbol_levels
+
+    with state_lock:
+        state.support_levels = next_support_levels
+        if support_error:
+            state.signal_error = support_error
+
+
+def send_hourly_market_summary(prices: dict[str, dict[str, Any]]) -> None:
+    if not discord_webhook_url():
+        return
+
+    now = time.time()
+    with state_lock:
+        last_summary_at = state.last_summary_at
+        if last_summary_at and now - last_summary_at < HOURLY_SUMMARY_INTERVAL_SECONDS:
+            return
+        state.last_summary_at = now
+
+    try:
+        lines = ["**Binance 每小时行情简报**"]
+        for symbol in HOURLY_SUMMARY_SYMBOLS:
+            ticker = prices.get(symbol) or fetch_tickers([symbol]).get(symbol, {})
+            funding = fetch_funding_rate(symbol)
+            lines.append(format_market_summary_line(symbol, ticker, funding))
+
+        send_discord_message("\n".join(lines))
+        with state_lock:
+            state.summary_error = None
+    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+        with state_lock:
+            state.summary_error = str(exc)
+            state.last_summary_at = None
+
+
+async def send_hourly_market_summary_async(prices: dict[str, dict[str, Any]]) -> None:
+    if not discord_webhook_url():
+        return
+
+    now = time.time()
+    with state_lock:
+        last_summary_at = state.last_summary_at
+        if last_summary_at and now - last_summary_at < HOURLY_SUMMARY_INTERVAL_SECONDS:
+            return
+        state.last_summary_at = now
+
+    try:
+        lines = ["**Binance 每小时行情简报**"]
+        missing_symbols = [symbol for symbol in HOURLY_SUMMARY_SYMBOLS if symbol not in prices]
+        fallback_prices = await async_fetch_tickers(missing_symbols) if missing_symbols else {}
+        funding_by_symbol = dict(
+            await asyncio.gather(
+                *(
+                    _load_funding_summary(symbol)
+                    for symbol in HOURLY_SUMMARY_SYMBOLS
+                )
+            )
+        )
+        for symbol in HOURLY_SUMMARY_SYMBOLS:
+            ticker = prices.get(symbol) or fallback_prices.get(symbol, {})
+            funding = funding_by_symbol.get(symbol, {})
+            lines.append(format_market_summary_line(symbol, ticker, funding))
+
+        await asyncio.to_thread(send_discord_message, "\n".join(lines))
+        with state_lock:
+            state.summary_error = None
+    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, RuntimeError) as exc:
+        with state_lock:
+            state.summary_error = str(exc)
+            state.last_summary_at = None
+
+
+async def _load_funding_summary(symbol: str) -> tuple[str, dict[str, Any]]:
+    return symbol, await async_fetch_funding_rate(symbol)
+
+
+def format_market_summary_line(symbol: str, ticker: dict[str, Any], funding: dict[str, Any]) -> str:
+    price = ticker.get("lastPrice")
+    price_change = ticker.get("priceChange")
+    price_change_percent = ticker.get("priceChangePercent")
+    funding_rate = funding.get("lastFundingRate")
+    next_funding_time = funding.get("nextFundingTime")
+
+    price_text = format_decimal(price)
+    change_text = format_signed_decimal(price_change)
+    percent_text = format_signed_percent(price_change_percent)
+    funding_text = format_percent(funding_rate)
+    next_funding_text = format_epoch_ms(next_funding_time)
+
+    return (
+        f"- {symbol}: 最新价 {price_text}，24h {change_text} ({percent_text})，"
+        f"资金费率 {funding_text}，下次资金费 {next_funding_text}"
+    )
+
+
+def format_decimal(value: Any, digits: int = 8) -> str:
+    number = parse_float(value)
+    if number is None:
+        return "--"
+    return f"{number:,.{digits}f}".rstrip("0").rstrip(".")
+
+
+def format_signed_decimal(value: Any, digits: int = 8) -> str:
+    number = parse_float(value)
+    if number is None:
+        return "--"
+    sign = "+" if number > 0 else ""
+    return f"{sign}{format_decimal(number, digits)}"
+
+
+def format_percent(value: Any, digits: int = 4) -> str:
+    number = parse_float(value)
+    if number is None:
+        return "--"
+    return f"{number * 100:.{digits}f}%"
+
+
+def format_signed_percent(value: Any, digits: int = 2) -> str:
+    number = parse_float(value)
+    if number is None:
+        return "--"
+    sign = "+" if number > 0 else ""
+    return f"{sign}{number:.{digits}f}%"
+
+
+def format_epoch_ms(value: Any) -> str:
+    try:
+        timestamp = int(value) / 1000
+    except (TypeError, ValueError):
+        return "--"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+
+
+def send_alert_notifications(alert: dict[str, Any]) -> None:
+    send_discord_alert(alert)
+
+
+async def send_alert_notifications_async(alert: dict[str, Any]) -> None:
+    await asyncio.to_thread(send_alert_notifications, alert)
+
+
+def format_alert_text(alert: dict[str, Any]) -> tuple[str, str]:
+    if alert.get("type") == "support":
+        title = f"{alert['symbol']} {alert.get('interval', '')} 支撑提醒"
+        body = (
+            f"{alert['symbol']} {alert.get('interval', '')} 触及支撑点位 {format_decimal(alert.get('support'))}，"
+            f"当前价 {format_decimal(alert.get('price'))}，"
+            f"距离 {format_signed_percent(alert.get('distance_pct'))}，"
+            f"容差 {format_decimal(alert.get('tolerance_pct'), 2)}%。\n\n"
+            "该提醒来自本地币种监控面板。"
+        )
+        return title, body
+
+    if alert.get("type") == "indicator":
+        title = f"{alert['symbol']} {alert.get('interval', '')} 指标提醒"
+        body = (
+            f"{alert['symbol']} {alert.get('interval', '')} 触发{alert.get('indicator_label', alert.get('indicator_name', '指标'))}，"
+            f"参考价 {alert['price']:.8g}。\n\n"
+            "该提醒来自本地币种监控面板。"
+        )
+        return title, body
+
+    is_chanlun = alert.get("type") == "chanlun"
+    title = f"{alert['symbol']} 缠论信号提醒" if is_chanlun else f"{alert['symbol']} 价格提醒"
+
+    if is_chanlun:
+        strength = alert.get("strength")
+        strength_text = f"，强度 {strength:.2f}" if isinstance(strength, (int, float)) else ""
+        stop_loss = alert.get("stop_loss")
+        stop_text = f"，参考止损 {stop_loss:.8g}" if isinstance(stop_loss, (int, float)) else ""
+        filter_text = f"\n过滤条件：{alert['filter']}" if alert.get("filter") else ""
+        td_text = f"\nTD9：{alert['td_summary']}" if alert.get("td_summary") else ""
+        body = (
+            f"{alert['symbol']} {alert.get('interval', DEFAULT_SIGNAL_INTERVAL)} 出现{alert['signal_name']}，"
+            f"参考价 {alert['price']:.8g}{strength_text}{stop_text}。"
+            f"{filter_text}{td_text}\n\n"
+            "该提醒来自本地缠论币种监控面板。"
+        )
+        return title, body
+
+    direction_text = "高于" if alert.get("direction") == "above" else "低于"
+    body = (
+        f"{alert['symbol']} 当前价格 {alert['price']:.8g} 已{direction_text} "
+        f"阈值 {alert['threshold']:.8g}。\n\n"
+        "该提醒来自本地币种监控面板。"
+    )
+    return title, body
+
+
+def send_email_alert(alert: dict[str, Any]) -> None:
+    recipient = alert.get("email")
+    if not recipient:
+        return
+
+    host = os.getenv("SMTP_HOST")
+    username = os.getenv("SMTP_USER")
+    password = os.getenv("SMTP_PASSWORD")
+    sender = os.getenv("SMTP_FROM", username or "")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    use_ssl = os.getenv("SMTP_SSL", "false").lower() in {"1", "true", "yes"}
+    if not host or not username or not password or not sender:
+        record_email_error(alert, "SMTP is not configured")
+        return
+
+    title, body = format_alert_text(alert)
+    msg = EmailMessage()
+    msg["Subject"] = title
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.set_content(body)
+
+    try:
+        if use_ssl:
+            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=15) as smtp:
+                smtp.login(username, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                smtp.login(username, password)
+                smtp.send_message(msg)
+    except (OSError, smtplib.SMTPException) as exc:
+        record_email_error(alert, str(exc))
+
+
+def send_discord_message(content: str) -> None:
+    webhook_url = discord_webhook_url()
+    if not webhook_url:
+        return
+
+    payload = json.dumps({"content": content[:2000]}, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        webhook_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Chanlun-Crypto-Monitor/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if getattr(response, "status", 204) >= 400:
+                raise urllib.error.URLError(f"Discord returned HTTP {response.status}")
+            with state_lock:
+                state.discord_last_ok_at = time.time()
+                state.discord_last_error = None
+    except (OSError, urllib.error.URLError) as exc:
+        with state_lock:
+            state.discord_last_error = str(exc)
+        raise exc
+
+
+def send_discord_alert(alert: dict[str, Any]) -> None:
+    webhook_url = discord_webhook_url()
+    if not webhook_url:
+        return
+
+    title, body = format_alert_text(alert)
+    try:
+        send_discord_message(f"**{title}**\n{body}")
+    except (OSError, urllib.error.URLError) as exc:
+        record_discord_error(alert, str(exc))
+
+
+def record_email_error(alert: dict[str, Any], error: str) -> None:
+    record_event(
+        {
+            **alert,
+            "email_error": error,
+            "created_at": time.time(),
+        }
+    )
+
+
+def record_discord_error(alert: dict[str, Any], error: str) -> None:
+    record_event(
+        {
+            **alert,
+            "discord_error": error,
+            "created_at": time.time(),
+        }
+    )
+
+
+def load_okx_bot_status() -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "state_exists": OKX_BOT_STATE_FILE.exists(),
+        "event_log_exists": OKX_BOT_EVENT_LOG_FILE.exists(),
+        "open_positions": 0,
+        "position_count": 0,
+        "last_event_at": None,
+        "last_scan_at": None,
+        "last_error": None,
+    }
+
+    if OKX_BOT_STATE_FILE.exists():
+        try:
+            payload = json.loads(OKX_BOT_STATE_FILE.read_text(encoding="utf-8"))
+            positions = payload.get("positions", []) if isinstance(payload, dict) else []
+            if isinstance(positions, list):
+                status["position_count"] = len([item for item in positions if isinstance(item, dict)])
+                status["open_positions"] = len(
+                    [
+                        item
+                        for item in positions
+                        if isinstance(item, dict) and item.get("status") == "open"
+                    ]
+                )
+        except (OSError, json.JSONDecodeError) as exc:
+            status["last_error"] = f"bot state read failed: {exc}"
+
+    if OKX_BOT_EVENT_LOG_FILE.exists():
+        try:
+            events = []
+            for line in OKX_BOT_EVENT_LOG_FILE.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if isinstance(event, dict):
+                    events.append(event)
+            if events:
+                last_event = events[-1]
+                status["last_event_at"] = last_event.get("created_at")
+                last_scan = next((event for event in reversed(events) if event.get("type") == "scan"), None)
+                last_error = next((event for event in reversed(events) if event.get("type") in {"error", "startup_error"}), None)
+                status["last_scan_at"] = (last_scan or {}).get("created_at")
+                if last_error:
+                    status["last_error"] = last_error.get("error") or status.get("last_error")
+        except (OSError, json.JSONDecodeError) as exc:
+            status["last_error"] = f"bot event log read failed: {exc}"
+
+    return status
+
+
+def snapshot() -> dict[str, Any]:
+    discord_configured = bool(discord_webhook_url())
+    okx_bot_status = load_okx_bot_status()
+    with state_lock:
+        discord_running = discord_configured and state.discord_last_error is None
+        discord_status = {
+            "configured": discord_configured,
+            "running": discord_running,
+            "last_ok_at": state.discord_last_ok_at,
+            "last_error": state.discord_last_error,
+            "label": "运行中" if discord_running else "未配置" if not discord_configured else "异常",
+        }
+        return {
+            "watchlist": state.watchlist,
+            "prices": state.prices,
+            "signals": state.signals,
+            "indicator_signals": state.indicator_signals,
+            "support_levels": state.support_levels,
+            "events": state.events,
+            "strategy_stats": state.strategy_stats,
+            "strategy_trades": list(reversed(state.strategy_trades[-20:])),
+            "updated_at": state.updated_at,
+            "last_error": state.last_error or state.signal_error or state.summary_error,
+            "last_summary_at": state.last_summary_at,
+            "smtp_configured": False,
+            "discord_configured": discord_configured,
+            "discord_status": discord_status,
+            "notification_configured": discord_configured,
+            "market_data_source": market_data_source(),
+            "okx_bot_status": okx_bot_status,
+        }
+
+
+_monitor_started = False
+
+
+def initialize_state() -> None:
+    PUBLIC_DIR.mkdir(exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    all_events = load_all_event_history()
+    strategy_trades = seed_strategy_trades_from_events(all_events, load_strategy_trades())
+    with state_lock:
+        state.watchlist = load_watchlist()
+        state.events = list(reversed(all_events[-50:]))
+        state.sent_alerts = {
+            event["event_key"]
+            for event in state.events
+            if isinstance(event.get("event_key"), str)
+        }
+        state.strategy_trades = strategy_trades
+        state.strategy_stats = calculate_strategy_stats(strategy_trades)
+    save_strategy_trades(strategy_trades)
+
+
+def start_monitor_thread() -> None:
+    global _monitor_started
+    if _monitor_started:
+        return
+    threading.Thread(target=monitor_loop, daemon=True).start()
+    _monitor_started = True
+
+
+async def state_event_stream():
+    while True:
+        data = json.dumps(snapshot(), ensure_ascii=False)
+        yield f"data: {data}\n\n"
+        await asyncio.sleep(3)
+
+
+def create_app():
+    if FastAPI is None or StreamingResponse is None or StaticFiles is None or CORSMiddleware is None:
+        raise RuntimeError("FastAPI runtime is not installed; run python3 -m pip install -r requirements-backtest.txt")
+
+    app = FastAPI(title="Chanlun Crypto Monitor")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.on_event("startup")
+    async def _startup() -> None:
+        initialize_state()
+        start_monitor_thread()
+
+    @app.get("/api/state")
+    async def api_state() -> dict[str, Any]:
+        return snapshot()
+
+    @app.get("/api/health")
+    async def api_health() -> dict[str, Any]:
+        discord_url = discord_webhook_url()
+        okx_bot_status = load_okx_bot_status()
+        with state_lock:
+            discord_last_ok_at = state.discord_last_ok_at
+            discord_last_error = state.discord_last_error
+        return {
+            "ok": True,
+            "updated_at": time.time(),
+            "started_at": STARTED_AT,
+            "uptime_seconds": round(time.time() - STARTED_AT, 3),
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "code_fingerprint": code_fingerprint(),
+            "market_data_source": market_data_source(),
+            "discord_configured": bool(discord_url),
+            "discord_env_file_exists": ENV_FILE.exists(),
+            "discord_env_file_has_key": env_file_has_key("DISCORD_WEBHOOK_URL"),
+            "discord_value_length": len(discord_url),
+            "discord_last_ok_at": discord_last_ok_at,
+            "discord_last_error": discord_last_error,
+            "reports_dir_exists": REPORTS_DIR.exists(),
+            "report_count": len(list_report_files()),
+            "okx_bot_state_exists": okx_bot_status["state_exists"],
+            "okx_bot_event_log_exists": okx_bot_status["event_log_exists"],
+            "okx_bot_open_positions": okx_bot_status["open_positions"],
+            "okx_bot_position_count": okx_bot_status["position_count"],
+            "okx_bot_last_event_at": okx_bot_status["last_event_at"],
+            "okx_bot_last_scan_at": okx_bot_status["last_scan_at"],
+            "okx_bot_last_error": okx_bot_status["last_error"],
+        }
+
+    @app.get("/api/reports")
+    async def api_reports() -> dict[str, Any]:
+        reports = list_report_files()
+        return {
+            "count": len(reports),
+            "reports": reports,
+        }
+
+    @app.get("/api/network-test")
+    async def api_network_test(symbol: str = "BTCUSDT") -> dict[str, Any]:
+        normalized_symbol = symbol.upper().strip() or "BTCUSDT"
+        return await asyncio.to_thread(test_market_api, normalized_symbol)
+
+    @app.get("/api/backtest")
+    async def api_backtest(
+        symbol: str = "BTCUSDT",
+        interval: str = DEFAULT_SIGNAL_INTERVAL,
+        limit: int = 30000,
+        reward_risk: float = 2.0,
+        max_hold_bars: int = 96,
+        fee_rate: float = 0.001,
+        stop_mode: str = "structure_atr",
+    ) -> dict[str, Any]:
+        normalized_symbol = symbol.upper().strip() or "BTCUSDT"
+        normalized_interval = normalize_interval(interval)
+        normalized_limit = min(max(parse_int(limit, 30000), 300), 50000)
+        normalized_reward_risk = min(max(reward_risk or 2.0, 0.3), 5.0)
+        normalized_max_hold_bars = min(max(parse_int(max_hold_bars, 96), 1), 2000)
+        normalized_fee_rate = min(max(fee_rate or 0.001, 0.0), 0.02)
+        normalized_stop_mode = stop_mode if stop_mode in {"structure_atr", "atr_trailing_after_1r", "all"} else "structure_atr"
+        try:
+            return await asyncio.to_thread(
+                run_signal_backtest_summary,
+                normalized_symbol,
+                normalized_interval,
+                normalized_limit,
+                normalized_reward_risk,
+                normalized_max_hold_bars,
+                normalized_fee_rate,
+                normalized_stop_mode,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/events")
+    async def api_events():
+        return StreamingResponse(
+            state_event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/watchlist")
+    async def api_watchlist(request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+            watchlist = normalize_watchlist(payload.get("watchlist", []))
+            save_watchlist(watchlist)
+            with state_lock:
+                state.watchlist = watchlist
+                state.sent_alerts.clear()
+                state.pending_buy_divergences.clear()
+                state.pending_sell_divergences.clear()
+                SIGNAL_ENGINES.clear()
+            return {"ok": True, "watchlist": watchlist}
+        except (json.JSONDecodeError, OSError, AttributeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR), html=True), name="reports")
+    app.mount("/", StaticFiles(directory=str(PUBLIC_DIR), html=True), name="static")
+    return app
+
+
+def local_lan_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+
+
+def main() -> None:
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8080"))
+    display_host = local_lan_ip() if host in {"0.0.0.0", "::"} else host
+    print(f"Monitoring dashboard: http://{display_host}:{port}")
+    if host in {"0.0.0.0", "::"}:
+        print("Same Wi-Fi phone URL: use the address above in the phone browser.")
+    if uvicorn is None:
+        raise RuntimeError("uvicorn is not installed; run python3 -m pip install -r requirements-backtest.txt")
+    uvicorn.run(create_app(), host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

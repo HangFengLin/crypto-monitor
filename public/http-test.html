@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HTTP 行情测试</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">HTTP Market Test</p>
+          <h1>行情拉取测试</h1>
+        </div>
+        <a class="textLink" href="index.html">返回监控面板</a>
+      </header>
+
+      <section class="panel testPanel">
+        <div class="testControls">
+          <input id="symbolInput" value="BTCUSDT" aria-label="交易对" />
+          <button id="runTest" type="button">测试行情</button>
+        </div>
+        <div class="testGrid">
+          <div class="event">
+            <strong>后端 HTTP 服务拉取</strong>
+            <span id="serverResult">等待测试</span>
+          </div>
+          <div class="event">
+            <strong>浏览器直接拉取</strong>
+            <span id="browserResult">等待测试</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="http-test.js"></script>
+  </body>
+</html>
