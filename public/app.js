@@ -6,6 +6,9 @@ const marketDataSourceEl = document.querySelector("#marketDataSource");
 const discordDot = document.querySelector("#discordDot");
 const discordStateText = document.querySelector("#discordStateText");
 const discordDetail = document.querySelector("#discordDetail");
+const botDot = document.querySelector("#botDot");
+const botStateText = document.querySelector("#botStateText");
+const botDetail = document.querySelector("#botDetail");
 const errorTextEl = document.querySelector("#errorText");
 const saveMessageEl = document.querySelector("#saveMessage");
 const connectionDot = document.querySelector("#connectionDot");
@@ -32,6 +35,7 @@ const backtestGroupsEl = document.querySelector("#backtestGroups");
 const strategyStatusEl = document.querySelector("#strategyStatus");
 const strategySummaryEl = document.querySelector("#strategySummary");
 const strategyTradesEl = document.querySelector("#strategyTrades");
+const botPositionsEl = document.querySelector("#botPositions");
 const localPorts = [8085, 8084, 8083, 8082, 8081, 8080, 8000, 5000, 80];
 const fallbackWatchlist = [
   { symbol: "BTCUSDT", email: "", signal: true, indicator_alert: true, support_alert: true, interval: "15m" },
@@ -39,6 +43,7 @@ const fallbackWatchlist = [
 ];
 
 let latestState = null;
+let eventSource = null;
 
 function formatNumber(value, digits = 8) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
@@ -107,13 +112,20 @@ async function saveWatchlist() {
     return;
   }
   saveMessageEl.textContent = "保存中...";
-  const response = await fetch("/api/watchlist", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ watchlist: collectWatchlist() }),
-  });
-  const result = await response.json();
-  saveMessageEl.textContent = result.ok ? "已保存，正在刷新行情" : result.error || "保存失败";
+  try {
+    const response = await fetch("/api/watchlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watchlist: collectWatchlist() }),
+    });
+    if (!response.ok) {
+      throw new Error(`保存失败：HTTP ${response.status}`);
+    }
+    const result = await response.json();
+    saveMessageEl.textContent = result.ok ? "已保存，正在刷新行情" : result.error || "保存失败";
+  } catch (error) {
+    saveMessageEl.textContent = error?.message || "网络异常，保存失败";
+  }
   window.setTimeout(() => {
     saveMessageEl.textContent = "";
   }, 2200);
@@ -124,9 +136,11 @@ function renderState(state) {
   updatedAtEl.textContent = formatTime(state.updated_at);
   marketDataSourceEl.textContent = formatMarketDataSource(state.market_data_source);
   renderDiscordStatus(state);
+  renderBotStatus(state.okx_bot_status || {});
   errorTextEl.textContent = state.last_error ? `行情拉取失败：${state.last_error}` : "";
   updateOverview(state);
   renderBacktestSymbolOptions(state.watchlist || []);
+  renderBotPositions(state.okx_bot_status || {});
   renderStrategyStats(state.strategy_stats || {}, state.strategy_trades || []);
   renderPrices();
   renderEvents(state.events || []);
@@ -204,6 +218,45 @@ function renderStrategyStats(stats, trades) {
           </span>
           <em class="${statusClass}">${statusText}</em>
           <strong class="${Number(resultValue || 0) >= 0 ? "up" : "down"}">${formatPercent(resultValue)}</strong>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderBotStatus(status) {
+  const health = status.health || (status.ok ? "running" : "unknown");
+  const running = health === "running";
+  const warning = ["stale", "stalled", "error"].includes(health);
+  botDot.className = `dot ${running ? "online" : warning ? "" : "offline"}`;
+  botStateText.textContent = status.health_label || (running ? "运行中" : "未知");
+  const positionCount = Number(status.positions?.length || status.open_positions || 0);
+  const scanText = status.last_scan_at ? `最近扫描 ${formatTime(status.last_scan_at)}` : "暂无扫描记录";
+  botDetail.textContent = `${positionCount} 个真实持仓 · ${scanText}`;
+}
+
+function renderBotPositions(status) {
+  const positions = status.positions || [];
+  if (!botPositionsEl) return;
+  if (!positions.length) {
+    botPositionsEl.innerHTML = '<div class="tradeItem botPosition"><span>真实机器人暂无持仓</span><em>--</em><strong>--</strong></div>';
+    return;
+  }
+
+  botPositionsEl.innerHTML = positions
+    .slice(0, 8)
+    .map((position) => {
+      const direction = String(position.direction || "").toLowerCase();
+      const directionClass = direction === "long" ? "up" : direction === "short" ? "down" : "";
+      const bot = position.bot === "binance" ? "Binance" : "OKX";
+      return `
+        <div class="tradeItem botPosition">
+          <span>
+            <b class="${directionClass}">${escapeHtml(position.symbol || "--")} ${escapeHtml(direction || "--")}</b>
+            <small>${bot} · ${escapeHtml(position.interval || "15m")} · 入场 ${formatNumber(position.entry_price)} · 止损 ${formatNumber(position.stop_loss)} · 目标 ${formatNumber(position.target_price)}</small>
+          </span>
+          <em>${position.opened_at ? formatTime(position.opened_at) : "--"}</em>
+          <strong>${formatNumber(position.notional_usdt, 2)}</strong>
         </div>
       `;
     })
@@ -355,6 +408,7 @@ function renderPrices() {
       .join("；");
     signalEl.innerHTML = `
       <span class="chanlunLine">${escapeHtml(shortSignalText)}</span>
+      ${formatIndicatorLevels(multiSignals)}
     `;
     signalEl.title = `${shortSignalText}${tdText}${indicatorSummary ? `；${indicatorSummary}` : ""}`;
     signalEl.className = `signalText ${signal?.signal === "long" ? "up" : signal?.signal === "short" ? "down" : signal?.signal === "filtered_buy" || signal?.signal === "filtered_sell" ? "warn" : ""}`;
@@ -543,6 +597,7 @@ function renderFileModeNotice() {
     smtp_configured: false,
     discord_configured: false,
     discord_status: { configured: false, running: false, label: "需 HTTP 服务" },
+    okx_bot_status: { health: "unknown", health_label: "需 HTTP 服务", positions: [] },
     notification_configured: false,
     strategy_stats: {},
     strategy_trades: [],
@@ -551,6 +606,8 @@ function renderFileModeNotice() {
   fallbackWatchlist.forEach(addRow);
   updatedAtEl.textContent = "--";
   renderDiscordStatus(latestState);
+  renderBotStatus(latestState.okx_bot_status);
+  renderBotPositions(latestState.okx_bot_status);
   setConnection("offline", "文件模式");
   errorTextEl.innerHTML =
     '当前是 file:// 打开，无法连接实时行情接口。请运行 <code>python3 app.py</code> 后打开终端打印的 HTTP 地址，默认是 <a class="textLink" href="http://127.0.0.1:8080/">http://127.0.0.1:8080/</a>。';
@@ -586,10 +643,18 @@ async function init() {
   (state.watchlist || []).forEach(addRow);
   renderState(state);
 
-  const source = new EventSource("/api/events");
-  source.onopen = () => setConnection("online", "实时连接");
-  source.onerror = () => setConnection("offline", "连接重试中");
-  source.onmessage = (event) => renderState(JSON.parse(event.data));
+  eventSource?.close();
+  eventSource = new EventSource("/api/events");
+  eventSource.onopen = () => setConnection("online", "实时连接");
+  eventSource.onerror = () => setConnection("offline", "连接重试中");
+  eventSource.onmessage = (event) => {
+    try {
+      renderState(JSON.parse(event.data));
+    } catch (error) {
+      setConnection("offline", "数据异常");
+      errorTextEl.textContent = error?.message || "实时数据解析失败";
+    }
+  };
 }
 
 function setConnection(status, text) {
@@ -608,6 +673,9 @@ coinRows.addEventListener("input", () => {
 });
 marketSearchEl?.addEventListener("input", applyMarketFilters);
 marketFilterEl?.addEventListener("change", applyMarketFilters);
+window.addEventListener("beforeunload", () => {
+  eventSource?.close();
+});
 
 init().catch((error) => {
   setConnection("offline", "启动失败");

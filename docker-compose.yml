@@ -10,27 +10,34 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8080
-      MARKET_DATA_SOURCE: gate
+      MARKET_DATA_SOURCE: ${MARKET_DATA_SOURCE:-gate}
       REPORTS_DIR: /app/reports
+      WATCHLIST_FILE: /app/runtime/watchlist.json
+      EVENT_LOG_FILE: /app/runtime/signal_events.jsonl
+      STRATEGY_TRADES_FILE: /app/runtime/strategy_trades.json
+      OKX_BOT_STATE_FILE: /app/runtime/okx_market_cap_bot_state.json
+      OKX_BOT_EVENT_LOG_FILE: /app/runtime/okx_market_cap_bot_events.jsonl
     volumes:
       - ./.env:/app/.env:ro
-      - ./watchlist.json:/app/watchlist.json
-      - ./signal_events.jsonl:/app/signal_events.jsonl
-      - ./strategy_trades.json:/app/strategy_trades.json
+      - ./runtime:/app/runtime
       - ./reports:/app/reports
 
   okx-strategy-bot:
     build: .
     container_name: okx-strategy-bot
+    profiles:
+      - trading
     restart: unless-stopped
     env_file:
       - .env
     command: ["python", "okx_market_cap_bot.py", "--place-order"]
     environment:
       PYTHONUNBUFFERED: "1"
+      OKX_BOT_STATE_FILE: /app/runtime/okx_market_cap_bot_state.json
+      OKX_BOT_EVENT_LOG_FILE: /app/runtime/okx_market_cap_bot_events.jsonl
+      OKX_ORDER_SYMBOL_BLOCKLIST: TAO-USDT-SWAP
     volumes:
       - ./.env:/app/.env:ro
-      - ./okx_market_cap_bot_state.json:/app/okx_market_cap_bot_state.json
-      - ./okx_market_cap_bot_events.jsonl:/app/okx_market_cap_bot_events.jsonl
+      - ./runtime:/app/runtime
     depends_on:
       - crypto-project

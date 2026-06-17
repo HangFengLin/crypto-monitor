@@ -6,6 +6,7 @@ ENV HOST=0.0.0.0
 ENV PORT=8080
 
 WORKDIR /app
+RUN useradd -r -u 1000 appuser
 
 COPY requirements-backtest.txt .
 RUN pip install --no-cache-dir \
@@ -14,6 +15,8 @@ RUN pip install --no-cache-dir \
     -r requirements-backtest.txt
 
 COPY . .
+RUN chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8080
 

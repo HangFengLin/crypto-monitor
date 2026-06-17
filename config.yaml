@@ -16,11 +16,18 @@ bot:
   interval: 15m
   kline_limit: 1000
   poll_seconds: 60
+  scan_timeout_seconds: 300
   min_quote_volume: 10000000
   max_open_positions: 5
   position_size: 1
+  position_sizing: risk
+  risk_per_trade_pct: 0.005
+  max_position_notional_usdt: 50
+  sizing_equity_usdt: 0
   min_signal_score: 0
   min_structure_score: 0
+  okx_order_symbol_blocklist:
+    - TAO-USDT-SWAP
 
 strategy:
   ma_fast_period: 5

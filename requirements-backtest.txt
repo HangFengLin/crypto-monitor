@@ -1,9 +1,10 @@
-aiohttp
-fastapi
-pandas
-plotly
-uvicorn[standard]
-yfinance
+aiohttp==3.9.5
+fastapi==0.111.0
+pandas==2.2.2
+plotly==5.22.0
+PyYAML==6.0.2
+uvicorn[standard]==0.30.1
+yfinance==0.2.40
 
 # Optional on Python versions with a compatible wheel. indicators.py falls back
 # to pandas vectorized formulas when this package is unavailable.

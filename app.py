@@ -10,10 +10,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from config import ENV_FILE, config_value, load_config, load_env_file
 from data_client import (
@@ -21,11 +23,14 @@ from data_client import (
     async_fetch_open_interest_ratio,
     async_fetch_klines,
     async_fetch_tickers,
+    close_http_session,
+    fetch_binance_spot_symbols,
     fetch_funding_rate,
     fetch_klines,
     fetch_open_interest_ratio,
     fetch_tickers,
     market_data_source,
+    test_external_dependencies,
     test_market_api,
 )
 from indicators import calculate_indicators, macd, rolling_average
@@ -66,13 +71,37 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = load_config()
+
+
+def config_int(section: str, key: str, default: int, env_name: Optional[str] = None) -> int:
+    fallback: Any = os.getenv(env_name, default) if env_name else default
+    value = config_value(CONFIG, section, key, fallback)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 PUBLIC_DIR = ROOT / "public"
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", str(ROOT / "reports"))).expanduser()
-STATE_FILE = ROOT / "watchlist.json"
-EVENT_LOG_FILE = ROOT / "signal_events.jsonl"
-STRATEGY_TRADES_FILE = ROOT / "strategy_trades.json"
-OKX_BOT_STATE_FILE = ROOT / "okx_market_cap_bot_state.json"
-OKX_BOT_EVENT_LOG_FILE = ROOT / "okx_market_cap_bot_events.jsonl"
+STATE_FILE = Path(os.getenv("WATCHLIST_FILE", str(ROOT / "watchlist.json"))).expanduser()
+EVENT_LOG_FILE = Path(os.getenv("EVENT_LOG_FILE", str(ROOT / "signal_events.jsonl"))).expanduser()
+STRATEGY_TRADES_FILE = Path(os.getenv("STRATEGY_TRADES_FILE", str(ROOT / "strategy_trades.json"))).expanduser()
+OKX_BOT_STATE_FILE = Path(os.getenv("OKX_BOT_STATE_FILE", str(ROOT / "okx_market_cap_bot_state.json"))).expanduser()
+OKX_BOT_EVENT_LOG_FILE = Path(os.getenv("OKX_BOT_EVENT_LOG_FILE", str(ROOT / "okx_market_cap_bot_events.jsonl"))).expanduser()
+OKX_BOT_LEGACY_STATE_FILE = ROOT / "okx_market_cap_bot_state.json"
+OKX_BOT_LEGACY_EVENT_LOG_FILE = ROOT / "okx_market_cap_bot_events.jsonl"
+BINANCE_BOT_STATE_FILE = Path(os.getenv("BINANCE_BOT_STATE_FILE", str(ROOT / "binance_strategy_bot_state.json"))).expanduser()
+OKX_BOT_SCAN_TIMEOUT_SECONDS = config_int("bot", "scan_timeout_seconds", 300, "BOT_SCAN_TIMEOUT_SECONDS")
+OKX_BOT_ERROR_EVENT_TYPES = {"error", "startup_error", "order_error", "scan_error", "scan_timeout", "discord_error"}
+OKX_BOT_PRIMARY_ERROR_EVENT_TYPES = OKX_BOT_ERROR_EVENT_TYPES - {"discord_error"}
 STARTED_AT = time.time()
 EVENT_HISTORY_LIMIT = 500
 DEFAULT_SIGNAL_INTERVAL = str(config_value(CONFIG, "app", "default_signal_interval", "15m"))
@@ -89,6 +118,7 @@ SUPPORT_TOUCH_TOLERANCE = {
 MA_FAST_PERIOD = int(config_value(CONFIG, "strategy", "ma_fast_period", 5))
 MA_SLOW_PERIOD = int(config_value(CONFIG, "strategy", "ma_slow_period", 10))
 KLINE_LIMIT = int(config_value(CONFIG, "app", "kline_limit", 1000))
+TD_KLINE_LIMIT = int(config_value(CONFIG, "app", "td_kline_limit", 80))
 MIN_DIVERGENCE_STRENGTH = float(config_value(CONFIG, "strategy", "min_divergence_strength", 0.25))
 BUY_RSI_THRESHOLD = float(config_value(CONFIG, "strategy", "buy_rsi_threshold", 40))
 BUY_VOLUME_RATIO = float(config_value(CONFIG, "strategy", "buy_volume_ratio", 0.8))
@@ -104,6 +134,13 @@ STRATEGY_FEE_RATE = float(config_value(CONFIG, "app", "strategy_fee_rate", 0.001
 STRATEGY_HISTORY_LIMIT = int(config_value(CONFIG, "app", "strategy_history_limit", 200))
 RECORD_STRATEGY_TRADES = bool(config_value(CONFIG, "app", "record_strategy_trades", False))
 REPORT_FILE_SUFFIXES = {".html", ".htm"}
+SITE_MONITOR_DEFAULT_PORT = os.getenv("PORT", "8080").strip() or "8080"
+SITE_MONITOR_DEFAULT_TARGETS = (
+    f"health=http://127.0.0.1:{SITE_MONITOR_DEFAULT_PORT}/api/health,"
+    f"reports_api=http://127.0.0.1:{SITE_MONITOR_DEFAULT_PORT}/api/reports,"
+    f"reports_page=http://127.0.0.1:{SITE_MONITOR_DEFAULT_PORT}/reports.html"
+)
+SITE_MONITOR_LAST_RESULTS_LIMIT = 20
 
 
 DEFAULT_WATCHLIST = [
@@ -132,11 +169,20 @@ class MonitorState:
     updated_at: Optional[float] = None
     last_summary_at: Optional[float] = None
     sent_alerts: set[str] = field(default_factory=set)
+    site_monitor: dict[str, Any] = field(default_factory=dict)
 
 
 state = MonitorState()
 state_lock = threading.Lock()
+okx_bot_status_cache_lock = threading.Lock()
 SIGNAL_ENGINES: dict[tuple[str, str], ProjectSignalEngine] = {}
+_site_monitor_last_run_at: Optional[float] = None
+_site_monitor_alert_state: dict[str, dict[str, Any]] = {}
+_okx_bot_status_cache: dict[str, Any] = {
+    "expires_at": 0.0,
+    "signature": None,
+    "value": None,
+}
 
 
 def discord_webhook_url() -> str:
@@ -207,6 +253,281 @@ def list_report_files() -> list[dict[str, Any]]:
     return sorted(reports, key=lambda item: item["updated_at"], reverse=True)
 
 
+def site_monitor_enabled() -> bool:
+    return env_bool("SITE_MONITOR_ENABLED", True)
+
+
+def site_monitor_interval_seconds() -> int:
+    return max(10, parse_int(os.getenv("SITE_MONITOR_INTERVAL_SECONDS", "60"), 60))
+
+
+def site_monitor_failure_threshold() -> int:
+    return max(1, parse_int(os.getenv("SITE_MONITOR_FAILURE_THRESHOLD", "3"), 3))
+
+
+def site_monitor_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("SITE_MONITOR_TIMEOUT_SECONDS", "8")))
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def site_monitor_min_report_count() -> int:
+    return max(0, parse_int(os.getenv("SITE_MONITOR_MIN_REPORT_COUNT", "0"), 0))
+
+
+def site_monitor_report_max_age_seconds() -> int:
+    return max(0, parse_int(os.getenv("SITE_MONITOR_REPORT_MAX_AGE_SECONDS", "0"), 0))
+
+
+def parse_site_monitor_targets(raw_targets: Optional[str] = None) -> list[dict[str, str]]:
+    raw_targets = SITE_MONITOR_DEFAULT_TARGETS if raw_targets is None else raw_targets
+    targets = []
+    for index, raw_item in enumerate(raw_targets.replace("\n", ",").split(","), start=1):
+        item = raw_item.strip()
+        if not item:
+            continue
+        name = f"target_{index}"
+        url = item
+        if "=" in item and "://" not in item.split("=", 1)[0]:
+            raw_name, raw_url = item.split("=", 1)
+            name = raw_name.strip() or name
+            url = raw_url.strip()
+        if not urlparse(url).scheme:
+            continue
+        targets.append({"id": f"http:{name}", "name": name, "url": url})
+    return targets
+
+
+def configured_site_monitor_targets() -> list[dict[str, str]]:
+    return parse_site_monitor_targets(os.getenv("SITE_MONITOR_TARGETS", SITE_MONITOR_DEFAULT_TARGETS))
+
+
+def tls_days_remaining(url: str, timeout: float) -> Optional[float]:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    port = parsed.port or 443
+    context = ssl.create_default_context()
+    with socket.create_connection((parsed.hostname, port), timeout=timeout) as raw_socket:
+        with context.wrap_socket(raw_socket, server_hostname=parsed.hostname) as tls_socket:
+            cert = tls_socket.getpeercert()
+    not_after = cert.get("notAfter")
+    if not isinstance(not_after, str):
+        return None
+    return round((ssl.cert_time_to_seconds(not_after) - time.time()) / 86400, 2)
+
+
+def probe_site_monitor_target(target: dict[str, str], timeout: Optional[float] = None) -> dict[str, Any]:
+    started_at = time.time()
+    timeout = site_monitor_timeout_seconds() if timeout is None else timeout
+    request = urllib.request.Request(
+        target["url"],
+        headers={"User-Agent": "crypto-monitor-site-probe/1.0"},
+        method="GET",
+    )
+    result = {
+        "id": target["id"],
+        "name": target["name"],
+        "url": target["url"],
+        "type": "http",
+        "ok": False,
+        "checked_at": started_at,
+        "duration_ms": None,
+        "status_code": None,
+        "error": None,
+        "tls_days_remaining": None,
+    }
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(65536)
+            status_code = int(getattr(response, "status", response.getcode()))
+            result["status_code"] = status_code
+            result["duration_ms"] = round((time.time() - started_at) * 1000, 2)
+            try:
+                result["tls_days_remaining"] = tls_days_remaining(target["url"], timeout)
+            except (OSError, ssl.SSLError, ValueError):
+                result["tls_days_remaining"] = None
+            result["ok"] = 200 <= status_code < 400
+            content_type = response.headers.get("Content-Type", "")
+            if result["ok"] and ("application/json" in content_type or body.lstrip().startswith(b"{")):
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                    if isinstance(payload, dict):
+                        result["payload_ok"] = payload.get("ok")
+                        if payload.get("ok") is False:
+                            result["ok"] = False
+                            result["error"] = "json payload ok=false"
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+        result["duration_ms"] = round((time.time() - started_at) * 1000, 2)
+        result["error"] = str(exc)
+    return result
+
+
+def build_site_monitor_runtime_checks() -> list[dict[str, Any]]:
+    now = time.time()
+    checks: list[dict[str, Any]] = []
+    min_reports = site_monitor_min_report_count()
+    max_report_age = site_monitor_report_max_age_seconds()
+    require_okx_files = env_bool("SITE_MONITOR_REQUIRE_OKX_BOT_FILES", False)
+    require_okx_ok = env_bool("SITE_MONITOR_REQUIRE_OKX_BOT_OK", False)
+
+    if min_reports > 0 or max_report_age > 0:
+        reports = list_report_files()
+        latest_report = reports[0] if reports else None
+        latest_age = round(now - latest_report["updated_at"], 3) if latest_report else None
+        ok = len(reports) >= min_reports
+        error = None
+        if not ok:
+            error = f"report_count {len(reports)} < {min_reports}"
+        if ok and max_report_age > 0 and latest_age is not None and latest_age > max_report_age:
+            ok = False
+            error = f"latest report age {int(latest_age)}s > {max_report_age}s"
+        checks.append(
+            {
+                "id": "runtime:reports",
+                "name": "reports_runtime",
+                "type": "runtime",
+                "ok": ok,
+                "checked_at": now,
+                "report_count": len(reports),
+                "latest_report": latest_report,
+                "latest_report_age_seconds": latest_age,
+                "error": error,
+            }
+        )
+
+    if require_okx_files or require_okx_ok:
+        okx_status = load_okx_bot_status()
+        ok = True
+        error = None
+        if require_okx_files and not (okx_status.get("state_exists") and okx_status.get("event_log_exists")):
+            ok = False
+            error = "OKX bot state/event log is not visible to the web app"
+        if ok and require_okx_ok and (not okx_status.get("ok") or okx_status.get("scan_stale")):
+            ok = False
+            error = okx_status.get("last_error") or "OKX bot scan is unhealthy or stale"
+        checks.append(
+            {
+                "id": "runtime:okx_bot",
+                "name": "okx_bot_runtime",
+                "type": "runtime",
+                "ok": ok,
+                "checked_at": now,
+                "state_exists": okx_status.get("state_exists"),
+                "event_log_exists": okx_status.get("event_log_exists"),
+                "last_scan_at": okx_status.get("last_scan_at"),
+                "scan_stale": okx_status.get("scan_stale"),
+                "error": error,
+            }
+        )
+
+    return checks
+
+
+def apply_site_monitor_alert_state(results: list[dict[str, Any]], now: Optional[float] = None) -> list[dict[str, Any]]:
+    now = time.time() if now is None else now
+    threshold = site_monitor_failure_threshold()
+    notifications: list[dict[str, Any]] = []
+    current_ids = {str(result["id"]) for result in results}
+
+    for result in results:
+        check_id = str(result["id"])
+        check_state = _site_monitor_alert_state.setdefault(
+            check_id,
+            {"consecutive_failures": 0, "alert_active": False, "last_status_change_at": None},
+        )
+        if result.get("ok"):
+            was_active = bool(check_state.get("alert_active"))
+            previous_failures = int(check_state.get("consecutive_failures") or 0)
+            check_state["consecutive_failures"] = 0
+            if was_active:
+                check_state["alert_active"] = False
+                check_state["last_status_change_at"] = now
+                notifications.append({"status": "recovered", "result": result, "previous_failures": previous_failures})
+        else:
+            failures = int(check_state.get("consecutive_failures") or 0) + 1
+            check_state["consecutive_failures"] = failures
+            if failures >= threshold and not check_state.get("alert_active"):
+                check_state["alert_active"] = True
+                check_state["last_status_change_at"] = now
+                notifications.append({"status": "firing", "result": result, "previous_failures": failures})
+
+        result["consecutive_failures"] = int(check_state.get("consecutive_failures") or 0)
+        result["alert_active"] = bool(check_state.get("alert_active"))
+
+    for check_id in list(_site_monitor_alert_state):
+        if check_id not in current_ids:
+            _site_monitor_alert_state.pop(check_id, None)
+
+    return notifications
+
+
+def site_monitor_snapshot() -> dict[str, Any]:
+    with state_lock:
+        monitor = dict(state.site_monitor)
+    monitor.setdefault("enabled", site_monitor_enabled())
+    monitor.setdefault("ok", True)
+    monitor.setdefault("results", [])
+    monitor.setdefault("last_run_at", _site_monitor_last_run_at)
+    return monitor
+
+
+async def maybe_run_site_monitor_async() -> None:
+    global _site_monitor_last_run_at
+    now = time.time()
+    if not site_monitor_enabled():
+        with state_lock:
+            state.site_monitor = {
+                "enabled": False,
+                "ok": True,
+                "last_run_at": now,
+                "results": [],
+                "targets": [],
+                "failure_threshold": site_monitor_failure_threshold(),
+            }
+        return
+    if _site_monitor_last_run_at and now - _site_monitor_last_run_at < site_monitor_interval_seconds():
+        return
+
+    targets = configured_site_monitor_targets()
+    http_results = await asyncio.gather(
+        *(asyncio.to_thread(probe_site_monitor_target, target) for target in targets)
+    )
+    results = [*http_results, *build_site_monitor_runtime_checks()]
+    notifications = apply_site_monitor_alert_state(results, now)
+    ok = all(result.get("ok") for result in results)
+    _site_monitor_last_run_at = now
+    with state_lock:
+        state.site_monitor = {
+            "enabled": True,
+            "ok": ok,
+            "last_run_at": now,
+            "results": results[-SITE_MONITOR_LAST_RESULTS_LIMIT:],
+            "targets": targets,
+            "failure_threshold": site_monitor_failure_threshold(),
+            "interval_seconds": site_monitor_interval_seconds(),
+        }
+
+    for notification in notifications:
+        if notification["status"] == "recovered" and not env_bool("SITE_MONITOR_RECOVERY_NOTIFY", True):
+            continue
+        event = {
+            "type": "site_monitor",
+            "status": notification["status"],
+            "check": notification["result"].get("name"),
+            "url": notification["result"].get("url"),
+            "error": notification["result"].get("error"),
+            "status_code": notification["result"].get("status_code"),
+            "consecutive_failures": notification["result"].get("consecutive_failures"),
+            "created_at": now,
+        }
+        record_event(event, f"site_monitor:{notification['status']}:{notification['result'].get('id')}:{int(now)}")
+        await send_alert_notifications_async(event)
+
+
 def pending_signal_key(symbol: str, interval: str) -> str:
     return f"{symbol}:{interval}"
 
@@ -256,10 +577,25 @@ def load_watchlist() -> list[dict[str, Any]]:
 
 
 def save_watchlist(watchlist: list[dict[str, Any]]) -> None:
-    STATE_FILE.write_text(
-        json.dumps(normalize_watchlist(watchlist), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(STATE_FILE, json.dumps(normalize_watchlist(watchlist), ensure_ascii=False, indent=2))
+
+
+def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with tmp_path.open("w", encoding=encoding) as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def load_event_history(limit: int = 50) -> list[dict[str, Any]]:
@@ -317,7 +653,7 @@ def save_strategy_trades(trades: list[dict[str, Any]]) -> None:
         "trades": trades[-STRATEGY_HISTORY_LIMIT:],
     }
     try:
-        STRATEGY_TRADES_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(STRATEGY_TRADES_FILE, json.dumps(payload, ensure_ascii=False, indent=2))
     except OSError:
         with state_lock:
             state.signal_error = "策略交易账本写入失败"
@@ -325,6 +661,7 @@ def save_strategy_trades(trades: list[dict[str, Any]]) -> None:
 
 def append_event_to_disk(event: dict[str, Any]) -> None:
     try:
+        EVENT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with EVENT_LOG_FILE.open("a", encoding="utf-8") as file:
             file.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
     except OSError:
@@ -369,6 +706,19 @@ def normalize_watchlist(items: Any) -> list[dict[str, Any]]:
             }
         )
     return normalized
+
+
+def invalid_watchlist_symbols(watchlist: list[dict[str, Any]]) -> list[str]:
+    if not env_bool("WATCHLIST_VALIDATE_SYMBOLS", True):
+        return []
+    symbols = sorted({item["symbol"] for item in watchlist if str(item.get("symbol", "")).endswith("USDT")})
+    if not symbols:
+        return []
+    try:
+        available = fetch_binance_spot_symbols("USDT")
+    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, RuntimeError):
+        return []
+    return [symbol for symbol in symbols if symbol not in available]
 
 
 def normalize_interval(value: Any) -> str:
@@ -951,6 +1301,8 @@ def count_support_touches(lows: list[float], support: float, band: float) -> int
 
 
 def nearest_index_by_close_time(bars: list[dict[str, Any]], close_time: int) -> int:
+    if not bars:
+        raise ValueError("bars must not be empty")
     return min(range(len(bars)), key=lambda index: abs(int(bars[index]["close_time"]) - close_time))
 
 
@@ -965,7 +1317,14 @@ def td_signal_label(value: int) -> str:
 def get_td_signals(symbol: str, timestamp_ms: int) -> dict[str, int]:
     signals = {}
     for interval in ("1m", "3m", "5m", "15m", "30m"):
-        bars = fetch_klines(symbol, interval, KLINE_LIMIT)
+        try:
+            bars = fetch_klines(symbol, interval, TD_KLINE_LIMIT)
+        except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError):
+            signals[interval] = 0
+            continue
+        if not bars:
+            signals[interval] = 0
+            continue
         index = nearest_index_by_close_time(bars, timestamp_ms)
         window = bars[max(0, index - 50) : index + 1]
         signals[interval] = td_setup(window, 9) if len(window) >= 50 else 0
@@ -1389,12 +1748,24 @@ async def monitor_loop_async() -> None:
                 state.last_error = None
             await update_strategy_trades_with_prices_async(prices)
             await evaluate_support_alerts_async(watchlist, prices)
-            await asyncio.to_thread(evaluate_chanlun_signals, watchlist)
+            await evaluate_chanlun_signals_async(watchlist)
             await evaluate_indicator_signals_async(watchlist)
             await send_hourly_market_summary_async(prices)
         except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError, RuntimeError) as exc:
             with state_lock:
                 state.last_error = str(exc)
+        try:
+            await maybe_run_site_monitor_async()
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+            with state_lock:
+                previous = dict(state.site_monitor)
+                state.site_monitor = {
+                    **previous,
+                    "enabled": site_monitor_enabled(),
+                    "ok": False,
+                    "last_error": str(exc),
+                    "last_run_at": time.time(),
+                }
         await asyncio.sleep(10)
 
 
@@ -1432,6 +1803,55 @@ def evaluate_chanlun_signals(watchlist: list[dict[str, Any]]) -> None:
         with state_lock:
             state.signal_error = None
         send_alert_notifications(message)
+
+    with state_lock:
+        state.signals = next_signals
+        state.signal_error = signal_error
+
+
+async def evaluate_chanlun_signals_async(watchlist: list[dict[str, Any]]) -> None:
+    next_signals = {}
+    signal_error = None
+    signal_items = [item for item in watchlist if item.get("signal", True)]
+
+    async def load_signal(item: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]], Optional[str]]:
+        try:
+            signal = await asyncio.to_thread(detect_project_signal, item["symbol"], item.get("interval", DEFAULT_SIGNAL_INTERVAL))
+            return item, signal, None
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError, RuntimeError, ValueError) as exc:
+            return item, None, str(exc)
+
+    loaded = await asyncio.gather(*(load_signal(item) for item in signal_items)) if signal_items else []
+
+    for item, signal, error in loaded:
+        if error:
+            signal_error = error
+            continue
+        if signal is None:
+            continue
+
+        symbol = item["symbol"]
+        interval = item.get("interval", DEFAULT_SIGNAL_INTERVAL)
+        state_key = f"{symbol}:{interval}"
+        next_signals[state_key] = signal
+        if signal.get("signal") not in {"long", "short"}:
+            continue
+        if os.getenv("SIGNAL_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}:
+            print(f"2. 主程序已捕获信号: {signal}", flush=True)
+
+        alert_key = f"macd_td:{symbol}:{interval}:{signal['signal']}:{signal.get('divergence_time')}"
+        with state_lock:
+            already_sent = alert_key in state.sent_alerts
+        if already_sent:
+            continue
+
+        message = {**signal, "email": item.get("email", "")}
+        record_event(message, alert_key)
+        if RECORD_STRATEGY_TRADES:
+            register_strategy_signal({**message, "event_key": alert_key})
+        with state_lock:
+            state.signal_error = None
+        await send_alert_notifications_async(message)
 
     with state_lock:
         state.signals = next_signals
@@ -1860,6 +2280,27 @@ async def send_alert_notifications_async(alert: dict[str, Any]) -> None:
 
 
 def format_alert_text(alert: dict[str, Any]) -> tuple[str, str]:
+    if alert.get("type") == "site_monitor":
+        check = alert.get("check") or "site monitor"
+        status = alert.get("status")
+        if status == "recovered":
+            title = f"站点监控恢复：{check}"
+            body = f"{check} 已恢复正常。"
+            if alert.get("url"):
+                body += f"\n目标：{alert['url']}"
+            return title, body
+
+        title = f"站点监控告警：{check}"
+        body_lines = [f"{check} 连续失败 {alert.get('consecutive_failures', '--')} 次。"]
+        if alert.get("url"):
+            body_lines.append(f"目标：{alert['url']}")
+        if alert.get("status_code") is not None:
+            body_lines.append(f"HTTP 状态：{alert['status_code']}")
+        if alert.get("error"):
+            body_lines.append(f"错误：{alert['error']}")
+        body_lines.append("该提醒来自自用站点监控探针。")
+        return title, "\n".join(body_lines)
+
     if alert.get("type") == "support":
         title = f"{alert['symbol']} {alert.get('interval', '')} 支撑提醒"
         body = (
@@ -2003,7 +2444,246 @@ def record_discord_error(alert: dict[str, Any], error: str) -> None:
     )
 
 
-def load_okx_bot_status() -> dict[str, Any]:
+def read_recent_jsonl(path: Path, limit: int = 200) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        raw_lines = deque(path.read_text(encoding="utf-8").splitlines(), maxlen=max(1, limit * 3))
+    except OSError:
+        return []
+
+    events: list[dict[str, Any]] = []
+    for line in raw_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events[-limit:]
+
+
+def okx_bot_state_path() -> Path:
+    if OKX_BOT_STATE_FILE.exists() or OKX_BOT_STATE_FILE == OKX_BOT_LEGACY_STATE_FILE:
+        return OKX_BOT_STATE_FILE
+    if OKX_BOT_LEGACY_STATE_FILE.exists():
+        return OKX_BOT_LEGACY_STATE_FILE
+    return OKX_BOT_STATE_FILE
+
+
+def okx_bot_event_log_path() -> Path:
+    if OKX_BOT_EVENT_LOG_FILE.exists() or OKX_BOT_EVENT_LOG_FILE == OKX_BOT_LEGACY_EVENT_LOG_FILE:
+        return OKX_BOT_EVENT_LOG_FILE
+    if OKX_BOT_LEGACY_EVENT_LOG_FILE.exists():
+        return OKX_BOT_LEGACY_EVENT_LOG_FILE
+    return OKX_BOT_EVENT_LOG_FILE
+
+
+def path_signature(path: Path) -> tuple[str, Optional[float], Optional[int]]:
+    try:
+        stat = path.stat()
+        return str(path), stat.st_mtime, stat.st_size
+    except OSError:
+        return str(path), None, None
+
+
+def load_okx_bot_state_payload() -> tuple[dict[str, Any], Optional[str]]:
+    state_path = okx_bot_state_path()
+    if not state_path.exists():
+        return {}, None
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {}, f"bot state read failed: {exc}"
+    return payload if isinstance(payload, dict) else {}, None
+
+
+def normalize_bot_position(position: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": position.get("id"),
+        "symbol": position.get("symbol"),
+        "interval": position.get("interval"),
+        "direction": position.get("direction") or position.get("side"),
+        "status": position.get("status"),
+        "entry_price": position.get("entry_price"),
+        "stop_loss": position.get("stop_loss"),
+        "target_price": position.get("target_price") or position.get("take_profit"),
+        "protection_price": position.get("protection_price"),
+        "opened_at": position.get("opened_at"),
+        "size": position.get("size"),
+        "notional_usdt": position.get("notional_usdt"),
+        "order_symbol": position.get("order_symbol"),
+        "exit_price": position.get("exit_price"),
+        "exit_reason": position.get("exit_reason"),
+        "return_pct": position.get("return_pct"),
+    }
+
+
+def load_binance_bot_positions() -> list[dict[str, Any]]:
+    if not BINANCE_BOT_STATE_FILE.exists():
+        return []
+    try:
+        payload = json.loads(BINANCE_BOT_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    positions = payload.get("positions", []) if isinstance(payload, dict) else []
+    if not isinstance(positions, list):
+        return []
+    return [
+        {**normalize_bot_position(position), "bot": "binance"}
+        for position in positions
+        if isinstance(position, dict) and position.get("status") == "open"
+    ]
+
+
+def summarize_okx_bot_status(events: list[dict[str, Any]], state_payload: dict[str, Any], state_error: Optional[str] = None) -> dict[str, Any]:
+    now = time.time()
+    state_path = okx_bot_state_path()
+    event_log_path = okx_bot_event_log_path()
+    positions = state_payload.get("positions", []) if isinstance(state_payload, dict) else []
+    positions = positions if isinstance(positions, list) else []
+    open_positions = [item for item in positions if isinstance(item, dict) and item.get("status") == "open"]
+
+    last_event = events[-1] if events else None
+    last_scan = next((event for event in reversed(events) if event.get("type") == "scan"), None)
+    last_scan_started = next((event for event in reversed(events) if event.get("type") == "scan_started"), None)
+    last_startup = next((event for event in reversed(events) if event.get("type") == "startup"), None)
+    last_error_event = next((event for event in reversed(events) if event.get("type") in OKX_BOT_PRIMARY_ERROR_EVENT_TYPES), None)
+    if last_error_event is None:
+        last_error_event = next((event for event in reversed(events) if event.get("type") in OKX_BOT_ERROR_EVENT_TYPES), None)
+
+    last_scan_at = parse_float((last_scan or {}).get("created_at"))
+    last_scan_started_at = parse_float((last_scan_started or {}).get("created_at"))
+    last_event_at = parse_float((last_event or {}).get("created_at"))
+    configured_timeout = parse_float((last_startup or {}).get("scan_timeout_seconds")) or OKX_BOT_SCAN_TIMEOUT_SECONDS
+    scan_grace_seconds = max(60.0, configured_timeout * 0.25)
+    running_scan_overdue = (
+        last_scan_started_at is not None
+        and (last_scan_at is None or last_scan_started_at > last_scan_at)
+        and now - last_scan_started_at > configured_timeout + scan_grace_seconds
+    )
+    scan_stale = last_scan_at is not None and now - last_scan_at > max(configured_timeout * 2, 600)
+    health = "running"
+    health_label = "运行中"
+    if state_error:
+        health = "error"
+        health_label = "状态异常"
+    elif not event_log_path.exists():
+        health = "unknown"
+        health_label = "未发现日志"
+    elif running_scan_overdue:
+        health = "stalled"
+        health_label = "可能卡住"
+    elif scan_stale:
+        health = "stale"
+        health_label = "扫描过期"
+
+    last_error = state_error
+    if last_error_event:
+        last_error = last_error_event.get("error") or last_error_event.get("message") or last_error
+    normalized_open_positions = [
+        {**normalize_bot_position(position), "bot": "okx"}
+        for position in open_positions
+    ]
+    binance_positions = load_binance_bot_positions()
+    all_open_positions = normalized_open_positions + binance_positions
+
+    return {
+        "ok": bool(event_log_path.exists()) and not running_scan_overdue and not scan_stale and not bool(state_error),
+        "health": health,
+        "health_label": health_label,
+        "state_exists": state_path.exists(),
+        "event_log_exists": event_log_path.exists(),
+        "state_path": str(state_path),
+        "event_log_path": str(event_log_path),
+        "open_positions": len(open_positions),
+        "position_count": len([item for item in positions if isinstance(item, dict)]),
+        "positions": all_open_positions,
+        "okx_positions": normalized_open_positions,
+        "binance_positions": binance_positions,
+        "last_event_at": last_event_at,
+        "last_scan_at": last_scan_at,
+        "last_scan_started_at": last_scan_started_at,
+        "last_startup_at": parse_float((last_startup or {}).get("created_at")),
+        "last_event": last_event,
+        "last_scan": last_scan,
+        "last_startup": last_startup,
+        "last_error": last_error,
+        "last_error_event": last_error_event,
+        "scan_timeout_seconds": configured_timeout,
+        "seconds_since_last_scan": round(now - last_scan_at, 3) if last_scan_at is not None else None,
+        "running_scan_overdue": running_scan_overdue,
+        "scan_stale": scan_stale,
+    }
+
+
+def load_okx_bot_status(force_refresh: bool = False) -> dict[str, Any]:
+    state_path = okx_bot_state_path()
+    event_log_path = okx_bot_event_log_path()
+    signature = (
+        path_signature(state_path),
+        path_signature(event_log_path),
+        path_signature(BINANCE_BOT_STATE_FILE),
+    )
+    now = time.time()
+    with okx_bot_status_cache_lock:
+        cached = _okx_bot_status_cache.get("value")
+        if (
+            not force_refresh
+            and cached is not None
+            and _okx_bot_status_cache.get("signature") == signature
+            and now < float(_okx_bot_status_cache.get("expires_at") or 0)
+        ):
+            return dict(cached)
+
+    events = read_recent_jsonl(okx_bot_event_log_path(), limit=300)
+    state_payload, state_error = load_okx_bot_state_payload()
+    status = summarize_okx_bot_status(events, state_payload, state_error)
+    with okx_bot_status_cache_lock:
+        _okx_bot_status_cache.update(
+            {
+                "expires_at": now + 2.0,
+                "signature": signature,
+                "value": dict(status),
+            }
+        )
+    return status
+
+
+def load_okx_bot_errors(limit: int = 20) -> list[dict[str, Any]]:
+    events = read_recent_jsonl(okx_bot_event_log_path(), limit=max(100, limit * 5))
+    errors = [event for event in reversed(events) if event.get("type") in OKX_BOT_ERROR_EVENT_TYPES]
+    return errors[: max(1, min(limit, 100))]
+
+
+def load_okx_bot_health_detail() -> dict[str, Any]:
+    events = read_recent_jsonl(okx_bot_event_log_path(), limit=300)
+    state_payload, state_error = load_okx_bot_state_payload()
+    status = summarize_okx_bot_status(events, state_payload, state_error)
+    with okx_bot_status_cache_lock:
+        _okx_bot_status_cache.update(
+            {
+                "expires_at": time.time() + 2.0,
+                "signature": (
+                    path_signature(okx_bot_state_path()),
+                    path_signature(okx_bot_event_log_path()),
+                    path_signature(BINANCE_BOT_STATE_FILE),
+                ),
+                "value": dict(status),
+            }
+        )
+    return {
+        **status,
+        "code_fingerprint": code_fingerprint(),
+        "recent_errors": load_okx_bot_errors(10),
+        "recent_events": list(reversed(events[-20:])),
+    }
+
+
+def load_okx_bot_status_legacy() -> dict[str, Any]:
     status: dict[str, Any] = {
         "state_exists": OKX_BOT_STATE_FILE.exists(),
         "event_log_exists": OKX_BOT_EVENT_LOG_FILE.exists(),
@@ -2043,7 +2723,9 @@ def load_okx_bot_status() -> dict[str, Any]:
                 last_event = events[-1]
                 status["last_event_at"] = last_event.get("created_at")
                 last_scan = next((event for event in reversed(events) if event.get("type") == "scan"), None)
-                last_error = next((event for event in reversed(events) if event.get("type") in {"error", "startup_error"}), None)
+                last_error = next((event for event in reversed(events) if event.get("type") in OKX_BOT_PRIMARY_ERROR_EVENT_TYPES), None)
+                if last_error is None:
+                    last_error = next((event for event in reversed(events) if event.get("type") in OKX_BOT_ERROR_EVENT_TYPES), None)
                 status["last_scan_at"] = (last_scan or {}).get("created_at")
                 if last_error:
                     status["last_error"] = last_error.get("error") or status.get("last_error")
@@ -2056,6 +2738,7 @@ def load_okx_bot_status() -> dict[str, Any]:
 def snapshot() -> dict[str, Any]:
     discord_configured = bool(discord_webhook_url())
     okx_bot_status = load_okx_bot_status()
+    site_monitor = site_monitor_snapshot()
     with state_lock:
         discord_running = discord_configured and state.discord_last_error is None
         discord_status = {
@@ -2083,6 +2766,7 @@ def snapshot() -> dict[str, Any]:
             "notification_configured": discord_configured,
             "market_data_source": market_data_source(),
             "okx_bot_status": okx_bot_status,
+            "site_monitor": site_monitor,
         }
 
 
@@ -2139,6 +2823,10 @@ def create_app():
         initialize_state()
         start_monitor_thread()
 
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        await close_http_session()
+
     @app.get("/api/state")
     async def api_state() -> dict[str, Any]:
         return snapshot()
@@ -2147,6 +2835,7 @@ def create_app():
     async def api_health() -> dict[str, Any]:
         discord_url = discord_webhook_url()
         okx_bot_status = load_okx_bot_status()
+        site_monitor = site_monitor_snapshot()
         with state_lock:
             discord_last_ok_at = state.discord_last_ok_at
             discord_last_error = state.discord_last_error
@@ -2174,6 +2863,23 @@ def create_app():
             "okx_bot_last_event_at": okx_bot_status["last_event_at"],
             "okx_bot_last_scan_at": okx_bot_status["last_scan_at"],
             "okx_bot_last_error": okx_bot_status["last_error"],
+            "site_monitor_enabled": site_monitor["enabled"],
+            "site_monitor_ok": site_monitor["ok"],
+            "site_monitor_last_run_at": site_monitor["last_run_at"],
+            "site_monitor_failed_count": len([item for item in site_monitor["results"] if not item.get("ok")]),
+        }
+
+    @app.get("/api/okx-bot/health")
+    async def api_okx_bot_health() -> dict[str, Any]:
+        return load_okx_bot_health_detail()
+
+    @app.get("/api/okx-bot/errors")
+    async def api_okx_bot_errors(limit: int = 20) -> dict[str, Any]:
+        normalized_limit = min(max(parse_int(limit, 20), 1), 100)
+        errors = load_okx_bot_errors(normalized_limit)
+        return {
+            "count": len(errors),
+            "errors": errors,
         }
 
     @app.get("/api/reports")
@@ -2184,10 +2890,14 @@ def create_app():
             "reports": reports,
         }
 
+    @app.get("/api/site-monitor")
+    async def api_site_monitor() -> dict[str, Any]:
+        return site_monitor_snapshot()
+
     @app.get("/api/network-test")
     async def api_network_test(symbol: str = "BTCUSDT") -> dict[str, Any]:
         normalized_symbol = symbol.upper().strip() or "BTCUSDT"
-        return await asyncio.to_thread(test_market_api, normalized_symbol)
+        return await asyncio.to_thread(test_external_dependencies, normalized_symbol, discord_webhook_url())
 
     @app.get("/api/backtest")
     async def api_backtest(
@@ -2237,6 +2947,9 @@ def create_app():
         try:
             payload = await request.json()
             watchlist = normalize_watchlist(payload.get("watchlist", []))
+            invalid_symbols = invalid_watchlist_symbols(watchlist)
+            if invalid_symbols:
+                raise HTTPException(status_code=400, detail=f"未知交易对：{', '.join(invalid_symbols[:8])}")
             save_watchlist(watchlist)
             with state_lock:
                 state.watchlist = watchlist

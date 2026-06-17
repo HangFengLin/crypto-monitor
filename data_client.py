@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import http.client
 import base64
 import hmac
@@ -113,7 +114,34 @@ def normalize_ticker(ticker: dict[str, Any]) -> dict[str, Any]:
 
 
 def market_data_source() -> str:
-    return os.getenv("MARKET_DATA_SOURCE", "binance").strip().lower()
+    source = os.getenv("MARKET_DATA_SOURCE", "binance").strip().lower()
+    return source if source in {"binance", "gate"} else "binance"
+
+
+def secondary_market_data_source() -> str:
+    return "binance" if market_data_source() == "gate" else "gate"
+
+
+def market_source_order() -> list[str]:
+    primary = market_data_source()
+    secondary = secondary_market_data_source()
+    return [primary, secondary] if primary != secondary else [primary]
+
+
+def recoverable_http_errors() -> tuple[type[BaseException], ...]:
+    errors: tuple[type[BaseException], ...] = (
+        http.client.IncompleteRead,
+        OSError,
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        KeyError,
+        IndexError,
+        ValueError,
+    )
+    if aiohttp is not None:
+        errors = (aiohttp.ClientError, *errors)
+    return errors
 
 
 def gate_currency_pair(symbol: str) -> str:
@@ -173,11 +201,61 @@ def fetch_gate_tickers(symbols: list[str]) -> dict[str, dict[str, Any]]:
     for symbol in symbols:
         pair = gate_currency_pair(symbol)
         params = urllib.parse.urlencode({"currency_pair": pair})
-        payload = read_json_url(f"{GATE_SPOT_TICKERS_URL}?{params}", timeout=8, attempts=1)
+        payload = read_json_url(f"{GATE_SPOT_TICKERS_URL}?{params}", timeout=8, attempts=3)
         rows = payload if isinstance(payload, list) else [payload]
         if rows:
             tickers[symbol] = normalize_gate_ticker(rows[0], symbol)
     return tickers
+
+
+_shared_sessions: dict[int, aiohttp.ClientSession] = {}
+
+
+async def get_http_session() -> aiohttp.ClientSession:
+    if aiohttp is None:
+        raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements-backtest.txt")
+
+    loop_key = id(asyncio.get_running_loop())
+    session = _shared_sessions.get(loop_key)
+    if session is None or session.closed:
+        session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=20),
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept-Encoding": "identity",
+                "Connection": "keep-alive",
+            },
+            trust_env=True,
+        )
+        _shared_sessions[loop_key] = session
+    return session
+
+
+async def close_http_session() -> None:
+    loop_key = id(asyncio.get_running_loop())
+    session = _shared_sessions.pop(loop_key, None)
+    if session is not None and not session.closed:
+        await session.close()
+
+
+async def async_fetch_gate_tickers(symbols: list[str], concurrency: int = 8) -> dict[str, dict[str, Any]]:
+    if not symbols:
+        return {}
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+    results: dict[str, dict[str, Any]] = {}
+
+    async def load_one(symbol: str) -> None:
+        pair = gate_currency_pair(symbol)
+        params = urllib.parse.urlencode({"currency_pair": pair})
+        async with sem:
+            payload = await async_read_json_url(f"{GATE_SPOT_TICKERS_URL}?{params}", timeout=8, attempts=3)
+        rows = payload if isinstance(payload, list) else [payload]
+        if rows:
+            results[symbol] = normalize_gate_ticker(rows[0], symbol)
+
+    await asyncio.gather(*(load_one(symbol) for symbol in symbols))
+    return results
 
 
 def normalize_gate_candlestick(row: list[Any], interval: str) -> dict[str, Any]:
@@ -201,23 +279,30 @@ def fetch_gate_klines(symbol: str, interval: str, limit: int = 300) -> list[dict
             "limit": min(max(1, limit), 1000),
         }
     )
-    payload = read_json_url(f"{GATE_SPOT_CANDLESTICKS_URL}?{params}", timeout=8, attempts=1)
+    payload = read_json_url(f"{GATE_SPOT_CANDLESTICKS_URL}?{params}", timeout=8, attempts=3)
     rows = payload if isinstance(payload, list) else []
     return [normalize_gate_candlestick(row, interval) for row in rows if isinstance(row, list) and len(row) >= 6]
+
+
+def fetch_binance_tickers(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    params = urllib.parse.urlencode({"symbols": json.dumps(symbols, separators=(",", ":"))})
+    payload = read_json_url(f"{BINANCE_TICKER_URL}?{params}", timeout=12)
+    tickers = payload if isinstance(payload, list) else [payload]
+    return {ticker["symbol"]: normalize_ticker(ticker) for ticker in tickers}
 
 
 def fetch_tickers(symbols: list[str]) -> dict[str, dict[str, Any]]:
     if not symbols:
         return {}
-    if market_data_source() == "gate":
-        return fetch_gate_tickers(symbols)
-    params = urllib.parse.urlencode({"symbols": json.dumps(symbols, separators=(",", ":"))})
-    try:
-        payload = read_json_url(f"{BINANCE_TICKER_URL}?{params}", timeout=12)
-        tickers = payload if isinstance(payload, list) else [payload]
-        return {ticker["symbol"]: normalize_ticker(ticker) for ticker in tickers}
-    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
-        return fetch_gate_tickers(symbols)
+    errors: list[str] = []
+    for source in market_source_order():
+        try:
+            if source == "gate":
+                return fetch_gate_tickers(symbols)
+            return fetch_binance_tickers(symbols)
+        except recoverable_http_errors() as exc:
+            errors.append(f"{source}: {exc}")
+    raise RuntimeError("; ".join(errors) or "market ticker request failed")
 
 
 def fetch_all_tickers() -> dict[str, dict[str, Any]]:
@@ -265,13 +350,18 @@ def fetch_coingecko_top_market_symbols(limit: int = 100) -> list[dict[str, Any]]
 
 
 def fetch_klines(symbol: str, interval: str, limit: int = 300) -> list[dict[str, Any]]:
-    if market_data_source() == "gate":
-        return fetch_gate_klines(symbol, interval, limit)
     params = urllib.parse.urlencode({"symbol": symbol, "interval": interval, "limit": limit})
-    try:
-        payload = read_json_url(f"{BINANCE_KLINES_URL}?{params}")
-    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return fetch_gate_klines(symbol, interval, limit)
+    errors: list[str] = []
+    for source in market_source_order():
+        try:
+            if source == "gate":
+                return fetch_gate_klines(symbol, interval, limit)
+            payload = read_json_url(f"{BINANCE_KLINES_URL}?{params}")
+            break
+        except recoverable_http_errors() as exc:
+            errors.append(f"{source}: {exc}")
+    else:
+        raise RuntimeError("; ".join(errors) or "market kline request failed")
     klines = []
     for row in payload:
         klines.append(
@@ -697,23 +787,103 @@ def test_market_api(symbol: str) -> dict[str, Any]:
         }
 
 
+def test_json_dependency(name: str, url: str, timeout: int = 12, attempts: int = 1) -> dict[str, Any]:
+    started_at = time.time()
+    try:
+        payload = read_json_url(url, timeout=timeout, attempts=attempts)
+        return {
+            "ok": True,
+            "name": name,
+            "duration_ms": round((time.time() - started_at) * 1000),
+            "sample": summarize_dependency_payload(payload),
+        }
+    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+        return {
+            "ok": False,
+            "name": name,
+            "error": str(exc),
+            "duration_ms": round((time.time() - started_at) * 1000),
+        }
+
+
+def summarize_dependency_payload(payload: Any) -> str:
+    if isinstance(payload, list):
+        return f"{len(payload)} rows"
+    if isinstance(payload, dict):
+        keys = ", ".join(list(payload.keys())[:5])
+        return keys or "object"
+    return type(payload).__name__
+
+
+def test_external_dependencies(symbol: str, discord_url: str = "") -> dict[str, Any]:
+    normalized_symbol = symbol.upper().strip() or "BTCUSDT"
+    gate_pair = gate_currency_pair(normalized_symbol)
+    binance_params = urllib.parse.urlencode({"symbols": json.dumps([normalized_symbol], separators=(",", ":"))})
+    gate_params = urllib.parse.urlencode({"currency_pair": gate_pair})
+    okx_params = urllib.parse.urlencode({"instType": "SWAP"})
+    coingecko_params = urllib.parse.urlencode(
+        {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": 1,
+            "page": 1,
+            "sparkline": "false",
+        }
+    )
+
+    checks = [
+        {
+            **test_json_dependency("Binance Spot Ticker", f"{BINANCE_TICKER_URL}?{binance_params}", timeout=12, attempts=3),
+            "source": "binance",
+        },
+        {
+            **test_json_dependency("Gate.io Spot Ticker", f"{GATE_SPOT_TICKERS_URL}?{gate_params}", timeout=8, attempts=3),
+            "source": "gate",
+        },
+        {
+            **test_json_dependency("OKX Public Instruments", f"{OKX_BASE_URL}{OKX_PUBLIC_INSTRUMENTS_PATH}?{okx_params}", timeout=12, attempts=2),
+            "source": "okx",
+        },
+        {
+            **test_json_dependency("CoinGecko Markets", f"{COINGECKO_MARKETS_URL}?{coingecko_params}", timeout=12, attempts=2),
+            "source": "coingecko",
+        },
+    ]
+
+    if discord_url:
+        checks.append({**test_json_dependency("Discord Webhook", discord_url, timeout=10, attempts=1), "source": "discord"})
+    else:
+        checks.append(
+            {
+                "ok": False,
+                "skipped": True,
+                "name": "Discord Webhook",
+                "source": "discord",
+                "error": "DISCORD_WEBHOOK_URL is not configured",
+                "duration_ms": 0,
+            }
+        )
+
+    return {
+        "ok": all(check.get("ok") or check.get("skipped") for check in checks),
+        "symbol": normalized_symbol,
+        "market_data_source": market_data_source(),
+        "checks": checks,
+    }
+
+
 async def async_read_json_url(url: str, timeout: int = 20, attempts: int = 3) -> Any:
     if aiohttp is None:
         raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements-backtest.txt")
 
     last_error: Optional[Exception] = None
     timeout_config = aiohttp.ClientTimeout(total=timeout)
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept-Encoding": "identity",
-        "Connection": "close",
-    }
     for _ in range(attempts):
         try:
-            async with aiohttp.ClientSession(timeout=timeout_config, headers=headers, trust_env=True) as session:
-                async with session.get(url) as response:
-                    response.raise_for_status()
-                    return await response.json()
+            session = await get_http_session()
+            async with session.get(url, timeout=timeout_config) as response:
+                response.raise_for_status()
+                return await response.json()
         except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
             await _async_sleep(0.3)
@@ -723,39 +893,43 @@ async def async_read_json_url(url: str, timeout: int = 20, attempts: int = 3) ->
 
 
 async def _async_sleep(seconds: float) -> None:
-    import asyncio
-
     await asyncio.sleep(seconds)
 
 
 async def async_fetch_tickers(symbols: list[str]) -> dict[str, dict[str, Any]]:
     if not symbols:
         return {}
-    if market_data_source() == "gate":
-        return await asyncio_to_thread(fetch_gate_tickers, symbols)
-    params = urllib.parse.urlencode({"symbols": json.dumps(symbols, separators=(",", ":"))})
-    try:
-        payload = await async_read_json_url(f"{BINANCE_TICKER_URL}?{params}", timeout=12)
-        tickers = payload if isinstance(payload, list) else [payload]
-        return {ticker["symbol"]: normalize_ticker(ticker) for ticker in tickers}
-    except (aiohttp.ClientError if aiohttp else OSError, TimeoutError, json.JSONDecodeError, KeyError):
-        return await asyncio_to_thread(fetch_gate_tickers, symbols)
+    errors: list[str] = []
+    for source in market_source_order():
+        try:
+            if source == "gate":
+                return await async_fetch_gate_tickers(symbols)
+            params = urllib.parse.urlencode({"symbols": json.dumps(symbols, separators=(",", ":"))})
+            payload = await async_read_json_url(f"{BINANCE_TICKER_URL}?{params}", timeout=12)
+            tickers = payload if isinstance(payload, list) else [payload]
+            return {ticker["symbol"]: normalize_ticker(ticker) for ticker in tickers}
+        except recoverable_http_errors() as exc:
+            errors.append(f"{source}: {exc}")
+    raise RuntimeError("; ".join(errors) or "market ticker request failed")
 
 
 async def asyncio_to_thread(func, *args):
-    import asyncio
-
     return await asyncio.to_thread(func, *args)
 
 
 async def async_fetch_klines(symbol: str, interval: str, limit: int = 300) -> list[dict[str, Any]]:
-    if market_data_source() == "gate":
-        return await asyncio_to_thread(fetch_gate_klines, symbol, interval, limit)
     params = urllib.parse.urlencode({"symbol": symbol, "interval": interval, "limit": limit})
-    try:
-        payload = await async_read_json_url(f"{BINANCE_KLINES_URL}?{params}")
-    except (aiohttp.ClientError if aiohttp else OSError, TimeoutError, json.JSONDecodeError):
-        return await asyncio_to_thread(fetch_gate_klines, symbol, interval, limit)
+    errors: list[str] = []
+    for source in market_source_order():
+        try:
+            if source == "gate":
+                return await asyncio_to_thread(fetch_gate_klines, symbol, interval, limit)
+            payload = await async_read_json_url(f"{BINANCE_KLINES_URL}?{params}")
+            break
+        except recoverable_http_errors() as exc:
+            errors.append(f"{source}: {exc}")
+    else:
+        raise RuntimeError("; ".join(errors) or "market kline request failed")
     return [
         {
             "open_time": row[0],

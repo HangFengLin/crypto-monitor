@@ -28,6 +28,8 @@ binance_strategy_bot_events.jsonl
 okx_demo_bot_state.json
 okx_market_cap_bot_state.json
 okx_market_cap_bot_events.jsonl
+runtime/*
+!runtime/.gitkeep
 
 # Generated reports
 reports/*

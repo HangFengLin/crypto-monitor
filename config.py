@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 CONFIG_FILE = Path(__file__).resolve().parent / "config.yaml"
 ENV_FILE = Path(__file__).resolve().parent / ".env"
@@ -66,20 +68,10 @@ def load_config(path: Path = CONFIG_FILE) -> dict[str, Any]:
     if not path.exists():
         return {}
 
-    config: dict[str, Any] = {}
-    section: dict[str, Any] | None = None
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        if not line.startswith(" ") and line.endswith(":"):
-            section = {}
-            config[line[:-1].strip()] = section
-            continue
-        if section is not None and line.startswith("  ") and ":" in line:
-            key, value = line.strip().split(":", 1)
-            section[key.strip()] = _parse_scalar(value)
-    return config
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError("config.yaml top-level value must be a mapping")
+    return data
 
 
 def config_value(config: dict[str, Any], section: str, key: str, default: Any) -> Any:

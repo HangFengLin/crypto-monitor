@@ -63,21 +63,37 @@ WantedBy=multi-user.target
 
 如果直接暴露端口，防火墙需要放行 `8080`；如果使用 Nginx/Caddy，应用保持监听 `127.0.0.1:8080`，只开放 `80/443`。
 
-项目也提供 Docker 部署方式，`docker-compose.yml` 已经把服务器 `80` 端口映射到应用 `8080`：
+项目也提供 Docker 部署方式，`docker-compose.yml` 已经把服务器 `80` 端口映射到应用 `8080`。默认只启动监控网站，不会启动带下单能力的 OKX 机器人：
 
 ```bash
 docker compose up -d --build
 ```
 
-当前 Docker Compose 会启动两个服务：
+当前 Docker Compose 默认启动：
 
 - `crypto-project`：监控网站，只负责 BTCUSDT、ETHUSDT 面板和提醒。
-- `okx-strategy-bot`：OKX Demo 市值前百策略机器人，独立扫描 OKX SWAP 市值前 100 交易池，并以 `--place-order` 模式运行。
 
-云服务器上的 `.env` 必须至少包含：
+OKX Demo 市值前百策略机器人被放在 `trading` profile 中，只有显式启用才会运行，并且该 profile 内仍以 `--place-order` 模式运行：
+
+```bash
+docker compose --profile trading up -d --build
+```
+
+如果只想单独启动或重建机器人：
+
+```bash
+docker compose --profile trading up -d --build okx-strategy-bot
+```
+
+云服务器上的 `.env` 如果只运行监控网站，至少需要：
 
 ```env
 DISCORD_WEBHOOK_URL=your_discord_webhook_url
+```
+
+启用 `trading` profile 前，还必须配置 OKX Demo 凭证：
+
+```env
 OKX_API_KEY=your_okx_demo_api_key
 OKX_SECRET_KEY=your_okx_demo_secret_key
 OKX_PASSPHRASE=your_okx_demo_passphrase
@@ -85,12 +101,31 @@ OKX_PASSPHRASE=your_okx_demo_passphrase
 
 如果 `OKX_API_KEY`、`OKX_SECRET_KEY` 或 `OKX_PASSPHRASE` 缺失，`okx-strategy-bot` 会拒绝启动下单模式，并在 `okx_market_cap_bot_events.jsonl` 里写入 `startup_error`。这可以避免云服务器上看起来“在跑”，实际却没有接上 OKX API。
 
-查看云端服务状态：
+机器人每轮扫描会先写入 `scan_started`，完成后写入 `scan`。默认单轮扫描超时是 300 秒，可通过 `config.yaml` 的 `bot.scan_timeout_seconds` 或环境变量 `BOT_SCAN_TIMEOUT_SECONDS` 调整。若某轮扫描卡住超过阈值，机器人会写入 `scan_timeout`、推送 Discord、主动退出，并由 Docker 的 `restart: unless-stopped` 自动拉起，避免容器还在但业务假死。若整轮扫描在拉取交易宇宙或行情前置步骤失败，机器人会写入 `scan_error` 后受控退出，方便 `/api/okx-bot/health` 直接暴露真实失败原因。
+
+查看云端监控服务状态：
 
 ```bash
 docker compose ps
+```
+
+启用 `trading` profile 后，再查看机器人日志和事件：
+
+```bash
 docker compose logs -f okx-strategy-bot
-tail -f okx_market_cap_bot_events.jsonl
+tail -f runtime/okx_market_cap_bot_events.jsonl
+```
+
+部署脚本默认只重建 `crypto-project`。如果需要同时重启 OKX 交易机器人，必须显式确认，避免在有未平仓持仓时误重启：
+
+```bash
+CONFIRM_RESTART_OKX_BOT=yes SERVICE='crypto-project okx-strategy-bot' ./deploy_vps.sh
+```
+
+也可以先只构建 OKX 交易机器人镜像、不重启运行中的容器：
+
+```bash
+BUILD_ONLY=yes SERVICE='okx-strategy-bot' ./deploy_vps.sh
 ```
 
 部署到有公网 IP 的云服务器后，手机可以直接访问：
@@ -139,6 +174,34 @@ docker compose exec crypto-project python discord_diagnose.py --content "contain
 proxy_buffering off;
 proxy_cache off;
 ```
+
+## 自用站点监控
+
+应用内置了轻量站点探针，不需要注册账号、门户或多租户系统。默认每 60 秒从服务内部检查：
+
+- `http://127.0.0.1:8080/api/health`
+- `http://127.0.0.1:8080/api/reports`
+- `http://127.0.0.1:8080/reports.html`
+
+连续失败达到阈值后才会推送 Discord，恢复后可再推送一次恢复通知。查看完整探针状态：
+
+```bash
+curl http://你的服务器公网IP/api/site-monitor
+```
+
+常用配置放在 `.env`：
+
+```env
+SITE_MONITOR_ENABLED=true
+SITE_MONITOR_INTERVAL_SECONDS=60
+SITE_MONITOR_FAILURE_THRESHOLD=3
+SITE_MONITOR_TARGETS=health=http://127.0.0.1:8080/api/health,reports_api=http://127.0.0.1:8080/api/reports,reports_page=http://127.0.0.1:8080/reports.html
+SITE_MONITOR_MIN_REPORT_COUNT=0
+SITE_MONITOR_REQUIRE_OKX_BOT_FILES=false
+SITE_MONITOR_REQUIRE_OKX_BOT_OK=false
+```
+
+如果希望把报告和 OKX 机器人也纳入硬性告警，可以把 `SITE_MONITOR_MIN_REPORT_COUNT` 设为 `1`，并在确认 `trading` profile 正常运行后开启 `SITE_MONITOR_REQUIRE_OKX_BOT_FILES=true` 或 `SITE_MONITOR_REQUIRE_OKX_BOT_OK=true`。
 
 ## 回测报告托管
 
@@ -265,9 +328,13 @@ python3 okx_market_cap_bot.py --once
 python3 okx_market_cap_bot.py --place-order
 ```
 
-它会独立维护多个持仓，达到止损、2R 目标或 1R 保护位时自动平仓。状态保存在 `okx_market_cap_bot_state.json`，事件写入 `okx_market_cap_bot_events.jsonl`。
+它会独立维护多个持仓，达到止损、2R 目标或 1R 保护位时自动平仓。Docker 部署时状态保存在 `runtime/okx_market_cap_bot_state.json`，事件写入 `runtime/okx_market_cap_bot_events.jsonl`。
 
-云服务器使用 Docker Compose 时，`okx-strategy-bot` 已经默认以 `--place-order` 启动；本地手动运行才需要自己添加该参数。机器人启动、每轮扫描、开仓、平仓和错误都会写入 `okx_market_cap_bot_events.jsonl`。
+默认仓位模式是 `bot.position_sizing: risk`：机器人在 `--place-order` 模式会读取 OKX Demo 的 USDT 权益，按 `risk_per_trade_pct` 和信号止损距离计算合约张数，再用 `max_position_notional_usdt` 限制单笔名义价值，最后按 OKX 的 `lotSz/minSz` 裁剪。当前默认参数是单笔风险 `0.5%`、名义价值上限 `50 USDT`；signal-only 模式未配置权益时会用 `1000 USDT` 纸面权益估算，不读取私有余额。如需临时回到固定张数，可把 `position_sizing` 改成 `fixed`，或启动时传 `--position-sizing fixed --size 1`。
+
+云服务器使用 Docker Compose 时，只有显式启用 `trading` profile 才会启动 `okx-strategy-bot`，该 profile 内默认以 `--place-order` 启动；本地手动运行仍需要自己添加该参数。机器人启动、每轮扫描、开仓、平仓和错误都会写入 `runtime/okx_market_cap_bot_events.jsonl`。
+
+如果 OKX Demo 账户是双向持仓模式，在 `.env` 里设置 `OKX_POSITION_MODE=long_short`。机器人会在 SWAP 开仓和平仓订单里自动带上 `posSide=long/short`；单向持仓或现货模式不需要设置。OKX 下单失败时，事件日志会记录 `symbol`、`side`、`posSide`、`size`、`tdMode` 和完整错误，Discord 也会收到同样的失败摘要。
 
 ## OKX 回测与模拟盘
 
