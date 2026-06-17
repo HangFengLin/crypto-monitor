@@ -922,6 +922,10 @@ tbody tr.is-hidden {
   margin-top: 16px;
 }
 
+.testGrid .event span {
+  white-space: pre-line;
+}
+
 @media (max-width: 1180px) {
   .monitorFrame {
     grid-template-columns: 1fr;

@@ -4,6 +4,15 @@ const serverResult = document.querySelector("#serverResult");
 const browserResult = document.querySelector("#browserResult");
 
 function formatResult(result) {
+  if (Array.isArray(result.checks)) {
+    return result.checks
+      .map((check) => {
+        const state = check.skipped ? "跳过" : check.ok ? "成功" : "失败";
+        const detail = check.ok ? check.sample || "" : check.error || "未知错误";
+        return `${check.name}：${state} · ${detail} · ${check.duration_ms || 0}ms`;
+      })
+      .join("\n");
+  }
   if (!result.ok) {
     return `失败：${result.error || "未知错误"} · ${result.duration_ms || "--"}ms`;
   }
