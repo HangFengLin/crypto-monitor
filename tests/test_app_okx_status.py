@@ -10,6 +10,29 @@ import app
 
 
 class AppOkxStatusTest(unittest.TestCase):
+    def test_successful_scan_clears_old_current_error_but_keeps_history(self) -> None:
+        events = [
+            {"created_at": 1000, "type": "error", "symbol": "BTCUSDT", "error": "rate limited"},
+            {"created_at": 1010, "type": "scan", "errors": 0, "opened": 0},
+        ]
+
+        with patch.object(app.time, "time", return_value=1020), patch.object(Path, "exists", return_value=True):
+            status = app.summarize_okx_bot_status(events, {"positions": []})
+
+        self.assertIsNone(status["last_error"])
+        self.assertEqual(status["last_error_event"]["error"], "rate limited")
+
+    def test_scan_with_errors_keeps_current_error(self) -> None:
+        events = [
+            {"created_at": 1000, "type": "error", "symbol": "BTCUSDT", "error": "rate limited"},
+            {"created_at": 1010, "type": "scan", "errors": 1, "opened": 0},
+        ]
+
+        with patch.object(app.time, "time", return_value=1020), patch.object(Path, "exists", return_value=True):
+            status = app.summarize_okx_bot_status(events, {"positions": []})
+
+        self.assertEqual(status["last_error"], "rate limited")
+
     def test_okx_status_falls_back_to_legacy_bot_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

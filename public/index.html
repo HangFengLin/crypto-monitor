@@ -12,190 +12,172 @@
         <aside class="navRail" aria-label="监控导航">
           <div class="brandMark">C</div>
           <nav>
-            <a class="navItem active" href="#overview">总览</a>
+            <a class="navItem active" href="#overview">监控</a>
             <a class="navItem" href="#markets">行情</a>
-            <a class="navItem" href="#strategyPanel">策略</a>
-            <a class="navItem" href="#eventsPanel">通知</a>
             <a class="navItem" href="reports.html">报告</a>
-            <a class="navItem" href="http-test.html">测试</a>
+            <a class="navItem" href="#toolsPanel">工具</a>
           </nav>
-          <div class="railStatus">
-            <span id="connectionDot" class="dot"></span>
-            <strong id="connectionText">连接中</strong>
-            <small>API 延迟 <span id="apiLatency">--</span></small>
-          </div>
         </aside>
 
         <div class="workspace">
           <header class="topbar">
             <div class="titleBlock">
-              <p class="eyebrow">Chanlun Crypto Monitor</p>
-              <h1>币种实时监控</h1>
+              <h1>实时监控</h1>
+              <p class="pageIntro">先看异常与持仓，再看行情细节</p>
             </div>
             <div class="headerActions">
-              <div class="statusPill">
-                <span class="label">连接状态</span>
-                <strong><span id="headerConnectionDot" class="dot"></span><span id="headerConnectionText">连接中</span></strong>
+              <div class="healthPill" aria-live="polite">
+                <span id="headerConnectionDot" class="dot"></span>
+                <span>
+                  <small>系统健康</small>
+                  <strong id="headerConnectionText">连接中</strong>
+                </span>
               </div>
-              <div class="statusPill">
-                <span class="label">数据源</span>
-                <strong id="marketDataSource">检测中</strong>
-              </div>
-              <div class="statusPill">
-                <span class="label">最近更新</span>
+              <div class="updateStamp">
+                <small>最近更新</small>
                 <strong id="updatedAt">--</strong>
               </div>
-              <button id="addRow" class="primaryButton" type="button">+ 添加币种</button>
+              <button id="manageWatchlist" type="button" aria-pressed="false">管理币种</button>
+              <button id="addRow" class="primaryButton managementOnly" type="button">+ 添加币种</button>
             </div>
           </header>
 
-          <section class="serviceStrip">
-            <div id="discordStatus" class="serviceStatus">
-              <span id="discordDot" class="dot"></span>
-              <strong id="discordStateText">检测中</strong>
-              <small id="discordDetail">--</small>
-            </div>
-            <div id="botStatus" class="serviceStatus">
-              <span id="botDot" class="dot"></span>
-              <strong id="botStateText">检测中</strong>
-              <small id="botDetail">--</small>
-            </div>
-            <p id="errorText"></p>
-          </section>
+          <p id="errorText" class="alertBar" role="alert"></p>
 
-          <section id="overview" class="overviewGrid" aria-label="监控总览">
-            <article class="statCard">
-              <span>监控币种</span>
-              <strong id="watchCount">--</strong>
-              <small id="watchMeta">实时跟踪中</small>
+          <section id="overview" class="actionSummary" aria-label="需要关注的监控摘要">
+            <article class="summaryItem primarySummary">
+              <span>真实持仓</span>
+              <strong id="livePositionCount">--</strong>
+              <small>OKX / Binance 当前仓位</small>
             </article>
-            <article class="statCard">
-              <span>触发提醒</span>
-              <strong id="triggerCount">--</strong>
-              <small>最近 24 小时</small>
-            </article>
-            <article class="statCard">
-              <span>今日信号</span>
+            <article class="summaryItem">
+              <span>活跃信号</span>
               <strong id="signalCount">--</strong>
-              <small>缠论 / 指标合计</small>
+              <small>当前缠论与指标信号</small>
             </article>
-            <article class="statCard">
-              <span>24h 成交额</span>
-              <strong id="volumeTotal">--</strong>
-              <small>监控列表合计</small>
+            <article class="summaryItem">
+              <span>24h 告警</span>
+              <strong id="triggerCount">--</strong>
+              <small>需要复核的触发记录</small>
             </article>
           </section>
 
-          <section class="contentGrid">
-            <div id="markets" class="panel marketPanel">
-              <div class="panelHead marketHead">
-                <div>
-                  <h2>实时行情</h2>
-                  <p>价格、涨跌、支撑位与策略信号集中查看</p>
-                </div>
-                <div class="marketTools">
-                  <label class="searchBox">
-                    <span>搜索</span>
-                    <input id="marketSearch" type="search" placeholder="BTC / ETH" />
-                  </label>
-                  <label class="selectBox">
-                    <span>筛选</span>
-                    <select id="marketFilter">
-                      <option value="all">全部</option>
-                      <option value="up">上涨</option>
-                      <option value="down">下跌</option>
-                      <option value="signal">有信号</option>
-                    </select>
-                  </label>
-                </div>
+          <section id="strategyPanel" class="panel focusPanel">
+            <div class="panelHead compact">
+              <div>
+                <span class="sectionKicker">需要行动</span>
+                <h2>当前真实持仓</h2>
               </div>
+              <p id="botPositionHint">正在读取机器人状态</p>
+            </div>
+            <div id="botPositions" class="tradeList botPositions"></div>
+            <details class="inlineDisclosure">
+              <summary>查看策略累计与最近交易 <span id="strategyStatus"></span></summary>
+              <div id="strategySummary" class="metricGrid"></div>
+              <div id="strategyTrades" class="tradeList"></div>
+            </details>
+          </section>
 
-              <div class="tableWrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>交易对</th>
-                      <th>最新价</th>
-                      <th>24h 涨跌</th>
-                      <th>24h 高/低</th>
-                      <th>支撑提醒</th>
-                      <th>状态</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="coinRows"></tbody>
-                </table>
+          <section id="markets" class="panel marketPanel">
+            <div class="panelHead marketHead">
+              <div>
+                <span class="sectionKicker">行情详情</span>
+                <h2>实时行情</h2>
               </div>
-              <div class="actions">
-                <span id="rowCount">共 -- 条</span>
-                <div>
-                  <button id="saveList" type="button">保存监控列表</button>
-                  <span id="saveMessage"></span>
-                </div>
+              <div class="marketTools">
+                <label class="searchBox">
+                  <span>搜索</span>
+                  <input id="marketSearch" type="search" placeholder="BTC / ETH" />
+                </label>
+                <label class="selectBox">
+                  <span>筛选</span>
+                  <select id="marketFilter">
+                    <option value="all">全部</option>
+                    <option value="up">上涨</option>
+                    <option value="down">下跌</option>
+                    <option value="signal">有信号</option>
+                  </select>
+                </label>
+                <button id="toggleMarketDetails" class="quietButton" type="button" aria-pressed="false">展开细节</button>
               </div>
             </div>
 
-            <aside class="sideStack">
-              <section id="strategyPanel" class="panel">
-                <div class="panelHead compact">
-                  <div>
-                    <h2>策略实盘累计</h2>
-                    <p id="strategyStatus"></p>
-                  </div>
-                </div>
-                <div id="botPositions" class="tradeList botPositions"></div>
-                <div id="strategySummary" class="metricGrid"></div>
-                <div id="strategyTrades" class="tradeList"></div>
-              </section>
+            <div class="tableWrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>交易对</th>
+                    <th>最新价</th>
+                    <th>24h 涨跌</th>
+                    <th class="marketDetail">24h 高/低</th>
+                    <th>支撑位</th>
+                    <th>当前信号</th>
+                    <th class="managementOnly">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="coinRows"></tbody>
+              </table>
+            </div>
+            <div class="actions">
+              <span id="rowCount">共 -- 条</span>
+              <div class="managementOnly">
+                <button id="saveList" class="primaryButton" type="button">保存监控列表</button>
+                <span id="saveMessage"></span>
+              </div>
+            </div>
+          </section>
 
-              <section class="panel">
-                <div class="panelHead compact">
-                  <div>
-                    <h2>信号胜率</h2>
-                    <p id="backtestStatus"></p>
-                  </div>
-                  <button id="runBacktest" type="button">统计</button>
+          <section id="toolsPanel" class="toolShelf" aria-label="低频工具">
+            <details class="toolDisclosure">
+              <summary>
+                <span><b>系统详情</b><small>连接、机器人、通知与数据源</small></span>
+                <span class="summaryAction">展开</span>
+              </summary>
+              <div class="systemDetailGrid">
+                <div id="botStatus" class="serviceStatus">
+                  <span id="botDot" class="dot"></span>
+                  <strong id="botStateText">检测中</strong>
+                  <small id="botDetail">--</small>
                 </div>
+                <div id="discordStatus" class="serviceStatus">
+                  <span id="discordDot" class="dot"></span>
+                  <strong id="discordStateText">检测中</strong>
+                  <small id="discordDetail">--</small>
+                </div>
+                <div class="detailMetric"><span>数据源</span><strong id="marketDataSource">检测中</strong></div>
+                <div class="detailMetric"><span>API 延迟</span><strong id="apiLatency">--</strong></div>
+                <div class="detailMetric"><span>监控币种</span><strong id="watchCount">--</strong><small id="watchMeta"></small></div>
+                <div class="detailMetric"><span>24h 成交额</span><strong id="volumeTotal">--</strong></div>
+              </div>
+            </details>
+
+            <details class="toolDisclosure">
+              <summary>
+                <span><b>信号回测</b><small id="backtestStatus">按需统计，不占用监控首屏</small></span>
+                <span class="summaryAction">展开</span>
+              </summary>
+              <div class="backtestWorkspace">
                 <div class="backtestControls">
-                  <label>
-                    <span class="label">交易对</span>
-                    <select id="backtestSymbol"></select>
-                  </label>
-                  <label>
-                    <span class="label">周期</span>
-                    <select id="backtestInterval">
-                      <option value="15m">15m</option>
-                      <option value="1h">1h</option>
-                      <option value="4h">4h</option>
-                      <option value="1d">1d</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span class="label">K线数</span>
-                    <input id="backtestLimit" type="number" min="300" max="50000" step="1000" value="30000" />
-                  </label>
-                  <label>
-                    <span class="label">目标R</span>
-                    <input id="backtestRewardRisk" type="number" min="0.3" max="5" step="0.1" value="2" />
-                  </label>
-                  <label class="wideControl">
-                    <span class="label">止损</span>
-                    <select id="backtestStopMode">
-                      <option value="all">全部对比</option>
-                      <option value="structure_atr">结构ATR</option>
-                      <option value="atr_trailing_after_1r">1R后移动</option>
-                    </select>
-                  </label>
+                  <label><span class="label">交易对</span><select id="backtestSymbol"></select></label>
+                  <label><span class="label">周期</span><select id="backtestInterval"><option value="15m">15m</option><option value="1h">1h</option><option value="4h">4h</option><option value="1d">1d</option></select></label>
+                  <label><span class="label">K线数</span><input id="backtestLimit" type="number" min="300" max="50000" step="1000" value="30000" /></label>
+                  <label><span class="label">目标R</span><input id="backtestRewardRisk" type="number" min="0.3" max="5" step="0.1" value="2" /></label>
+                  <label class="wideControl"><span class="label">止损</span><select id="backtestStopMode"><option value="all">全部对比</option><option value="structure_atr">结构ATR</option><option value="atr_trailing_after_1r">1R后移动</option></select></label>
+                  <button id="runBacktest" class="primaryButton wideControl" type="button">开始统计</button>
                 </div>
-                <div id="backtestSummary" class="metricGrid"></div>
-                <div id="backtestGroups" class="groupList"></div>
-              </section>
+                <div><div id="backtestSummary" class="metricGrid"></div><div id="backtestGroups" class="groupList"></div></div>
+              </div>
+            </details>
 
-              <section id="eventsPanel" class="panel">
-                <h2>通知记录</h2>
-                <div id="events" class="events"></div>
-              </section>
-            </aside>
+            <details id="eventsPanel" class="toolDisclosure">
+              <summary>
+                <span><b>完整通知记录</b><small>只有复盘或排错时需要展开</small></span>
+                <span class="summaryAction">展开</span>
+              </summary>
+              <div id="events" class="events"></div>
+            </details>
+
+            <a class="diagnosticLink" href="http-test.html">打开网络诊断工具</a>
           </section>
         </div>
       </section>
@@ -214,47 +196,28 @@
         </td>
         <td class="price">--</td>
         <td class="change">--</td>
-        <td class="range">--</td>
+        <td class="range marketDetail">--</td>
         <td>
           <div class="supportControls">
-            <label class="checkLine">
-              <input class="supportAlert" type="checkbox" />
-              <span>提醒</span>
-            </label>
+            <label class="checkLine managementOnly"><input class="supportAlert" type="checkbox" /><span>启用提醒</span></label>
             <div class="supportLevels">--</div>
           </div>
         </td>
         <td>
           <div class="signalControls">
-            <div class="signalToggles">
-              <label class="checkLine">
-                <input class="signal" type="checkbox" />
-                <span>信号</span>
-              </label>
-              <label class="checkLine">
-                <input class="indicatorAlert" type="checkbox" />
-                <span>4h</span>
-              </label>
-              <select class="interval" aria-label="信号周期">
-                <option value="1m">1m</option>
-                <option value="3m">3m</option>
-                <option value="5m">5m</option>
-                <option value="15m">15m</option>
-                <option value="30m">30m</option>
-                <option value="1h">1h</option>
-                <option value="4h">4h</option>
-                <option value="1d">1d</option>
-              </select>
+            <div class="signalToggles managementOnly">
+              <label class="checkLine"><input class="signal" type="checkbox" /><span>信号</span></label>
+              <label class="checkLine"><input class="indicatorAlert" type="checkbox" /><span>4h</span></label>
+              <select class="interval" aria-label="信号周期"><option value="1m">1m</option><option value="3m">3m</option><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option><option value="1h">1h</option><option value="4h">4h</option><option value="1d">1d</option></select>
             </div>
             <span class="signalText">--</span>
           </div>
         </td>
-        <td>
-          <button class="remove" type="button" aria-label="删除">删</button>
-        </td>
+        <td class="managementOnly"><button class="remove" type="button" aria-label="删除">删除</button></td>
       </tr>
     </template>
 
-    <script src="app.js?v=ui-monitor-1"></script>
+    <script src="config.js?v=1"></script>
+    <script src="app.js?v=ui-monitor-2"></script>
   </body>
 </html>

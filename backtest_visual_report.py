@@ -31,7 +31,7 @@ except ModuleNotFoundError as exc:
     missing_package = exc.name or "unknown"
     raise SystemExit(
         f"缺少依赖包: {missing_package}\n"
-        "请先运行: python3 -m pip install -r requirements-backtest.txt"
+        "请先运行: python3 -m pip install -r requirements.txt"
     ) from exc
 
 

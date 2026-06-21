@@ -36,6 +36,7 @@ GATE_SPOT_CANDLESTICKS_URL = "https://api.gateio.ws/api/v4/spot/candlesticks"
 OKX_BASE_URL = "https://www.okx.com"
 OKX_CANDLES_PATH = "/api/v5/market/candles"
 OKX_HISTORY_CANDLES_PATH = "/api/v5/market/history-candles"
+OKX_TICKERS_PATH = "/api/v5/market/tickers"
 OKX_PUBLIC_INSTRUMENTS_PATH = "/api/v5/public/instruments"
 OKX_ACCOUNT_POSITIONS_PATH = "/api/v5/account/positions"
 
@@ -75,9 +76,9 @@ def parse_float(value: Any) -> Optional[float]:
         return None
 
 
-def read_json_url(url: str, timeout: int = 20, attempts: int = 3) -> Any:
+def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
     last_error: Optional[Exception] = None
-    for _ in range(attempts):
+    for attempt in range(attempts):
         try:
             request = urllib.request.Request(
                 url,
@@ -89,6 +90,13 @@ def read_json_url(url: str, timeout: int = 20, attempts: int = 3) -> Any:
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code != 429:
+                time.sleep(0.3)
+                continue
+            retry_after = parse_float(exc.headers.get("Retry-After")) if exc.headers else None
+            time.sleep(retry_after if retry_after is not None else min(30.0, 0.75 * (2**attempt)))
         except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
             time.sleep(0.3)
@@ -213,7 +221,7 @@ _shared_sessions: dict[int, aiohttp.ClientSession] = {}
 
 async def get_http_session() -> aiohttp.ClientSession:
     if aiohttp is None:
-        raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements-backtest.txt")
+        raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements.txt")
 
     loop_key = id(asyncio.get_running_loop())
     session = _shared_sessions.get(loop_key)
@@ -494,6 +502,36 @@ def fetch_okx_trade_symbols(quote_asset: str = "USDT", instrument_type: str = "S
             continue
         symbols[normalize_okx_symbol(inst_id)] = inst_id
     return symbols
+
+
+def fetch_okx_tickers(instrument_type: str = "SWAP") -> dict[str, dict[str, Any]]:
+    """Return OKX tickers keyed by compact symbol, including estimated quote volume."""
+    inst_type = instrument_type.upper()
+    params = urllib.parse.urlencode({"instType": inst_type})
+    payload = read_json_url(f"{OKX_BASE_URL}{OKX_TICKERS_PATH}?{params}", timeout=20)
+    if str(payload.get("code")) != "0":
+        raise RuntimeError(f"OKX tickers failed: {payload.get('msg') or payload}")
+
+    tickers: dict[str, dict[str, Any]] = {}
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        inst_id = str(item.get("instId", "")).upper()
+        last_price = parse_float(item.get("last"))
+        currency_volume = parse_float(item.get("volCcy24h"))
+        if not inst_id:
+            continue
+        # For derivatives OKX reports volCcy24h in base currency; convert it
+        # to an estimated quote value so the liquidity threshold stays in USDT.
+        quote_volume = currency_volume
+        if inst_type in {"SWAP", "FUTURES", "OPTION"}:
+            quote_volume = currency_volume * last_price if currency_volume is not None and last_price is not None else None
+        tickers[normalize_okx_symbol(inst_id)] = {
+            "inst_id": inst_id,
+            "last_price": last_price,
+            "quote_volume": quote_volume,
+        }
+    return tickers
 
 
 def fetch_okx_instrument(symbol: str, instrument_type: str = "SWAP") -> dict[str, Any]:
@@ -874,7 +912,7 @@ def test_external_dependencies(symbol: str, discord_url: str = "") -> dict[str, 
 
 async def async_read_json_url(url: str, timeout: int = 20, attempts: int = 3) -> Any:
     if aiohttp is None:
-        raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements-backtest.txt")
+        raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements.txt")
 
     last_error: Optional[Exception] = None
     timeout_config = aiohttp.ClientTimeout(total=timeout)

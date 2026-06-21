@@ -12,8 +12,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal as os_signal
+import threading
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,6 +22,9 @@ from config import config_value, load_config, load_env_file
 from data_client import fetch_klines, parse_float
 from indicators import calculate_indicators
 from project_signal_backtest import fetch_higher_timeframe_context
+from position_manager import calculate_target_levels as target_levels
+from position_manager import evaluate_bar_exit
+from runtime_utils import append_jsonl, atomic_write_text, post_discord
 from strategy import ProjectSignalEngine
 from strategy_universe import build_market_cap_universe
 
@@ -30,6 +34,11 @@ CONFIG = load_config()
 STATE_FILE = ROOT / "binance_strategy_bot_state.json"
 EVENT_LOG_FILE = ROOT / "binance_strategy_bot_events.jsonl"
 SIGNAL_ENGINES: dict[tuple[str, str], ProjectSignalEngine] = {}
+SHUTDOWN_EVENT = threading.Event()
+
+
+def shutdown_signal_handler(signum: int, frame: Any) -> None:
+    SHUTDOWN_EVENT.set()
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,15 +63,7 @@ def send_discord(content: str) -> None:
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook_url:
         return
-    payload = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=12) as response:
-        response.read()
+    post_discord(webhook_url, content)
 
 
 def load_state() -> dict[str, Any]:
@@ -76,12 +77,11 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def append_event(event: dict[str, Any]) -> None:
-    with EVENT_LOG_FILE.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    append_jsonl(EVENT_LOG_FILE, event)
 
 
 def signal_debug_enabled(args: argparse.Namespace) -> bool:
@@ -119,21 +119,6 @@ def signal_engine(symbol: str, interval: str) -> ProjectSignalEngine:
         engine = ProjectSignalEngine()
         SIGNAL_ENGINES[key] = engine
     return engine
-
-
-def target_levels(direction: str, entry_price: float, stop_loss: float, reward_risk: float) -> Optional[dict[str, float]]:
-    if direction == "long":
-        risk = entry_price - stop_loss
-        if risk <= 0:
-            return None
-        return {"risk": risk, "target_price": entry_price + risk * reward_risk, "protection_price": entry_price + risk}
-
-    if direction == "short":
-        risk = stop_loss - entry_price
-        if risk <= 0:
-            return None
-        return {"risk": risk, "target_price": entry_price - risk * reward_risk, "protection_price": entry_price - risk}
-    return None
 
 
 def latest_signal(symbol: str, interval: str, limit: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -202,27 +187,11 @@ def evaluate_position(position: dict[str, Any], bars: list[dict[str, Any]]) -> b
         if high is None or low is None:
             continue
 
-        reason = None
-        exit_price = None
-        if direction == "long":
-            if low <= stop_loss:
-                reason, exit_price = "stop_loss", stop_loss
-            elif high >= target_price:
-                reason, exit_price = "take_profit", target_price
-            elif high >= protection_price:
-                reason, exit_price = "protection_reached", protection_price
-        elif direction == "short":
-            if high >= stop_loss:
-                reason, exit_price = "stop_loss", stop_loss
-            elif low <= target_price:
-                reason, exit_price = "take_profit", target_price
-            elif low <= protection_price:
-                reason, exit_price = "protection_reached", protection_price
-
-        if reason and exit_price is not None:
+        decision = evaluate_bar_exit(direction, low, high, stop_loss, target_price, protection_price)
+        if decision:
             position["status"] = "closed"
-            position["exit_reason"] = reason
-            position["exit_price"] = exit_price
+            position["exit_reason"] = decision.reason
+            position["exit_price"] = decision.exit_price
             position["closed_at"] = time.time()
             return True
     return False
@@ -296,10 +265,13 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
 
 def main() -> None:
     args = parse_args()
+    SHUTDOWN_EVENT.clear()
+    os_signal.signal(os_signal.SIGTERM, shutdown_signal_handler)
+    os_signal.signal(os_signal.SIGINT, shutdown_signal_handler)
     state = load_state()
     send_discord(f"Binance 策略机器人启动：top={args.top_n} interval={args.interval} max_positions={args.max_open_positions}")
 
-    while True:
+    while not SHUTDOWN_EVENT.is_set():
         started_at = time.time()
         scan_once(args, state)
         print(
@@ -309,10 +281,13 @@ def main() -> None:
             len([position for position in state.get("positions", []) if position.get("status") == "open"]),
             flush=True,
         )
-        if args.once:
+        if args.once or SHUTDOWN_EVENT.is_set():
             break
         elapsed = time.time() - started_at
-        time.sleep(max(10, args.poll_seconds - int(elapsed)))
+        SHUTDOWN_EVENT.wait(max(10, args.poll_seconds - int(elapsed)))
+
+    save_state(state)
+    append_event({"type": "shutdown", "created_at": time.time()})
 
 
 if __name__ == "__main__":

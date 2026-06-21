@@ -13,6 +13,30 @@ import okx_market_cap_bot as bot
 
 
 class PositionSizingTest(unittest.TestCase):
+    def test_startup_reconciliation_accepts_matching_positions(self) -> None:
+        args = argparse.Namespace(place_order=True, okx_instrument_type="SWAP")
+        state = {
+            "positions": [
+                {"symbol": "BTCUSDT", "inst_id": "BTC-USDT-SWAP", "direction": "long", "size": "2", "status": "open"}
+            ]
+        }
+        exchange = [{"instId": "BTC-USDT-SWAP", "posSide": "long", "pos": "2"}]
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(bot, "EVENT_LOG_FILE", Path(tmpdir) / "events.jsonl"), patch.object(
+            bot, "fetch_okx_demo_positions", return_value=exchange
+        ):
+            bot.reconcile_startup_positions(args, state)
+
+    def test_startup_reconciliation_blocks_untracked_exchange_position(self) -> None:
+        args = argparse.Namespace(place_order=True, okx_instrument_type="SWAP")
+        exchange = [{"instId": "ETH-USDT-SWAP", "posSide": "short", "pos": "1"}]
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(bot, "EVENT_LOG_FILE", Path(tmpdir) / "events.jsonl"), patch.object(
+            bot, "fetch_okx_demo_positions", return_value=exchange
+        ), patch.object(bot, "send_discord"):
+            with self.assertRaisesRegex(RuntimeError, "startup reconciliation failed"):
+                bot.reconcile_startup_positions(args, {"positions": []})
+
     def test_extract_okx_equity_prefers_total_equity(self) -> None:
         balance = {"totalEq": "123.45", "details": [{"ccy": "USDT", "availEq": "99"}]}
 
@@ -131,7 +155,10 @@ class PositionSizingTest(unittest.TestCase):
             self.assertIn("state_migrated", event_log.read_text(encoding="utf-8"))
 
     def test_configured_order_symbol_blocklist_normalizes_symbols(self) -> None:
-        with patch.object(bot, "CONFIG", {"bot": {"okx_order_symbol_blocklist": ["tao-usdt-swap", " BTC-USDT-SWAP "]}}):
+        with patch.object(bot, "CONFIG", {"bot": {"okx_order_symbol_blocklist": ["tao-usdt-swap", " BTC-USDT-SWAP "]}}), patch.dict(
+            os.environ, {}, clear=False
+        ):
+            os.environ.pop("OKX_ORDER_SYMBOL_BLOCKLIST", None)
             self.assertEqual(bot.configured_order_symbol_blocklist(), {"TAO-USDT-SWAP", "BTC-USDT-SWAP"})
 
     def test_configured_order_symbol_blocklist_prefers_non_empty_env(self) -> None:
@@ -144,6 +171,7 @@ class PositionSizingTest(unittest.TestCase):
         args = argparse.Namespace(
             top_n=100,
             quote_asset="USDT",
+            min_quote_volume=10_000_000,
             okx_instrument_type="SWAP",
             place_order=True,
             interval="15m",
@@ -154,7 +182,8 @@ class PositionSizingTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             event_log = Path(tmpdir) / "events.jsonl"
-            with patch.object(bot, "EVENT_LOG_FILE", event_log), patch.object(
+            state_file = Path(tmpdir) / "state.json"
+            with patch.object(bot, "EVENT_LOG_FILE", event_log), patch.object(bot, "STATE_FILE", state_file), patch.object(
                 bot,
                 "build_okx_market_cap_universe",
                 return_value=[{"symbol": "TAOUSDT", "inst_id": "TAO-USDT-SWAP"}],
@@ -166,6 +195,68 @@ class PositionSizingTest(unittest.TestCase):
 
         latest_signal.assert_not_called()
         self.assertEqual(scan_event["skipped"], {"order_symbol_blocklisted": 1})
+
+    def test_scan_once_records_exclusive_signal_reason_and_state(self) -> None:
+        args = argparse.Namespace(
+            top_n=200,
+            quote_asset="USDT",
+            min_quote_volume=10_000_000,
+            okx_instrument_type="SWAP",
+            place_order=True,
+            interval="15m",
+            limit=1000,
+            max_open_positions=5,
+            min_signal_score=0,
+            min_structure_score=0,
+            debug_signals=False,
+        )
+        state = {"positions": []}
+        signal = {
+            "signal": "filtered_buy",
+            "signal_name": "底背驰被共振/量价/震荡过滤",
+            "filter": "✗ 4h未多头共振",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_log = Path(tmpdir) / "events.jsonl"
+            state_file = Path(tmpdir) / "state.json"
+            with patch.object(bot, "EVENT_LOG_FILE", event_log), patch.object(bot, "STATE_FILE", state_file), patch.object(
+                bot, "build_okx_market_cap_universe", return_value=[{"symbol": "BTCUSDT", "inst_id": "BTC-USDT-SWAP"}]
+            ), patch.object(bot, "configured_order_symbol_blocklist", return_value=set()), patch.object(
+                bot, "configured_scan_symbol_blocklist", return_value=set()
+            ), patch.object(bot, "latest_signal", return_value=(signal, [])):
+                bot.scan_once(args, state)
+                scan_event = json.loads(event_log.read_text(encoding="utf-8").splitlines()[-1])
+
+        self.assertEqual(scan_event["signal_reasons"], {"higher_timeframe_misaligned": 1})
+        self.assertEqual(scan_event["signal_states"], {"底背驰被共振/量价/震荡过滤": 1})
+
+    def test_scan_once_skips_market_data_blocklist_before_signal_fetch(self) -> None:
+        args = argparse.Namespace(
+            top_n=200,
+            quote_asset="USDT",
+            min_quote_volume=10_000_000,
+            okx_instrument_type="SWAP",
+            place_order=True,
+            interval="15m",
+            limit=1000,
+            max_open_positions=5,
+        )
+        state = {"positions": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_log = Path(tmpdir) / "events.jsonl"
+            state_file = Path(tmpdir) / "state.json"
+            with patch.object(bot, "EVENT_LOG_FILE", event_log), patch.object(bot, "STATE_FILE", state_file), patch.object(
+                bot, "build_okx_market_cap_universe", return_value=[{"symbol": "GRAMUSDT", "inst_id": "GRAM-USDT-SWAP"}]
+            ), patch.object(bot, "configured_order_symbol_blocklist", return_value=set()), patch.object(
+                bot, "configured_scan_symbol_blocklist", return_value={"GRAMUSDT"}
+            ), patch.object(bot, "latest_signal") as latest_signal:
+                bot.scan_once(args, state)
+                scan_event = json.loads(event_log.read_text(encoding="utf-8").splitlines()[-1])
+
+        latest_signal.assert_not_called()
+        self.assertEqual(scan_event["skipped"], {"scan_symbol_blocklisted": 1})
 
 
 if __name__ == "__main__":

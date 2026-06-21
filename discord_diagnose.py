@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import socket
@@ -16,28 +15,25 @@ from pathlib import Path
 from typing import Any
 
 from config import ENV_FILE, load_env_file
+from runtime_utils import code_fingerprint as build_code_fingerprint
 
 
 ROOT = Path(__file__).resolve().parent
 
 
 def code_fingerprint() -> str:
-    digest = hashlib.sha256()
-    for relative_path in (
-        "app.py",
-        "config.py",
-        "docker-compose.yml",
-        "okx_market_cap_bot.py",
-        "binance_strategy_bot.py",
-    ):
-        path = ROOT / relative_path
-        if not path.exists():
-            digest.update(f"{relative_path}:missing\n".encode("utf-8"))
-            continue
-        digest.update(f"{relative_path}:".encode("utf-8"))
-        digest.update(path.read_bytes())
-        digest.update(b"\n")
-    return digest.hexdigest()[:16]
+    return build_code_fingerprint(
+        ROOT,
+        (
+            "app.py",
+            "config.py",
+            "docker-compose.yml",
+            "okx_market_cap_bot.py",
+            "binance_strategy_bot.py",
+            "position_manager.py",
+            "runtime_utils.py",
+        ),
+    )
 
 
 def masked(value: str) -> str:

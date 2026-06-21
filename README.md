@@ -3,7 +3,34 @@
 项目分成两部分：
 
 1. 信号监控网站：只监控 `BTCUSDT`、`ETHUSDT`，用于看盘、支撑位、指标与项目信号提醒。
-2. 策略交易机器人：独立扫描 Binance 可交易的市值前 100 候选币种，继续使用项目里同一套 `ProjectSignalEngine` 策略。
+2. 策略交易机器人：独立扫描交易所可交易且满足流动性门槛的市值排名候选币种，继续使用项目里同一套 `ProjectSignalEngine` 策略。
+
+## 15 分钟快速上手
+
+只启动网站（不会下单）：
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 app.py
+```
+
+然后打开 `http://127.0.0.1:8080`，并用 `curl http://127.0.0.1:8080/api/health` 确认服务状态。需要理解完整组件关系、机器人选型和状态边界时，阅读 [架构与入口指南](docs/ARCHITECTURE.md)；接口清单见 [HTTP API](docs/API.md)，FastAPI 运行后也可直接打开 `/docs`。
+
+## 策略研究与抗过拟合验证
+
+参数研究使用独立的 `strategy_validation.py`，复用生产信号与持仓生命周期，但不会改写
+`config.yaml`、下单或部署。它提供两年历史数据缓存、固定品种快照、walk-forward、
+最终 20% 留出集、周分块 bootstrap、BH-FDR、成本压力和 OKX 跨市场复核。
+
+一周 BTC 网络冒烟：
+
+```bash
+python3 strategy_validation.py --smoke --end 2024-01-08 --skip-okx --bootstrap-iterations 200
+```
+
+完整流程、候选覆盖文件和报告字段见 [抗过拟合策略验证](docs/STRATEGY_VALIDATION.md)。
+官方数据限流或归档失败时，可用 `resume_strategy_validation.py --report-dir <报告目录>`
+补齐缺失品种并重建统计，无需重跑已经完成的全部候选回放。
 
 ## 信号监控网站
 
@@ -34,7 +61,7 @@ Monitoring dashboard: http://192.168.1.23:8080
 安装依赖：
 
 ```bash
-python3 -m pip install -r requirements-backtest.txt
+python3 -m pip install -r requirements.txt
 ```
 
 以前台方式启动测试：
@@ -73,7 +100,7 @@ docker compose up -d --build
 
 - `crypto-project`：监控网站，只负责 BTCUSDT、ETHUSDT 面板和提醒。
 
-OKX Demo 市值前百策略机器人被放在 `trading` profile 中，只有显式启用才会运行，并且该 profile 内仍以 `--place-order` 模式运行：
+OKX Demo 市值排名策略机器人被放在 `trading` profile 中，只有显式启用才会运行。这个 profile 默认仍是 signal-only，不会下单：
 
 ```bash
 docker compose --profile trading up -d --build
@@ -91,7 +118,7 @@ docker compose --profile trading up -d --build okx-strategy-bot
 DISCORD_WEBHOOK_URL=your_discord_webhook_url
 ```
 
-启用 `trading` profile 前，还必须配置 OKX Demo 凭证：
+只有准备启用 OKX Demo 下单时，才需要配置凭证：
 
 ```env
 OKX_API_KEY=your_okx_demo_api_key
@@ -99,7 +126,13 @@ OKX_SECRET_KEY=your_okx_demo_secret_key
 OKX_PASSPHRASE=your_okx_demo_passphrase
 ```
 
-如果 `OKX_API_KEY`、`OKX_SECRET_KEY` 或 `OKX_PASSPHRASE` 缺失，`okx-strategy-bot` 会拒绝启动下单模式，并在 `okx_market_cap_bot_events.jsonl` 里写入 `startup_error`。这可以避免云服务器上看起来“在跑”，实际却没有接上 OKX API。
+下单模式必须显式叠加 order override；只写 `--profile trading` 不够：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.order.yml --profile trading up -d --build okx-strategy-bot
+```
+
+如果 `OKX_API_KEY`、`OKX_SECRET_KEY` 或 `OKX_PASSPHRASE` 缺失，机器人会拒绝启动下单模式并写入 `startup_error`。启动时还会把本地未平仓状态与 OKX Demo 持仓逐项对账；标的、方向或数量不一致时写入 `reconcile_error` 并拒绝下单，避免重复开仓或失去仓位追踪。
 
 机器人每轮扫描会先写入 `scan_started`，完成后写入 `scan`。默认单轮扫描超时是 300 秒，可通过 `config.yaml` 的 `bot.scan_timeout_seconds` 或环境变量 `BOT_SCAN_TIMEOUT_SECONDS` 调整。若某轮扫描卡住超过阈值，机器人会写入 `scan_timeout`、推送 Discord、主动退出，并由 Docker 的 `restart: unless-stopped` 自动拉起，避免容器还在但业务假死。若整轮扫描在拉取交易宇宙或行情前置步骤失败，机器人会写入 `scan_error` 后受控退出，方便 `/api/okx-bot/health` 直接暴露真实失败原因。
 
@@ -120,6 +153,12 @@ tail -f runtime/okx_market_cap_bot_events.jsonl
 
 ```bash
 CONFIRM_RESTART_OKX_BOT=yes SERVICE='crypto-project okx-strategy-bot' ./deploy_vps.sh
+```
+
+上面的命令会把机器人安全地重启为 signal-only。只有明确确认继续启用 OKX Demo 下单时，才使用：
+
+```bash
+ENABLE_OKX_ORDER_MODE=yes CONFIRM_RESTART_OKX_BOT=yes SERVICE='crypto-project okx-strategy-bot' ./deploy_vps.sh
 ```
 
 也可以先只构建 OKX 交易机器人镜像、不重启运行中的容器：
@@ -308,7 +347,7 @@ python3 binance_strategy_bot.py \
 
 机器人状态保存在 `binance_strategy_bot_state.json`，开平仓信号日志写入 `binance_strategy_bot_events.jsonl`。当前 Binance 机器人先做独立策略扫描、信号推送和纸面持仓管理；真实下单执行应再接 Binance API 执行适配器。
 
-## OKX 市值前百模拟盘机器人
+## OKX 高流动性市值排名模拟盘机器人
 
 多币种自动化模拟盘入口是：
 
@@ -330,9 +369,20 @@ python3 okx_market_cap_bot.py --place-order
 
 它会独立维护多个持仓，达到止损、2R 目标或 1R 保护位时自动平仓。Docker 部署时状态保存在 `runtime/okx_market_cap_bot_state.json`，事件写入 `runtime/okx_market_cap_bot_events.jsonl`。
 
+当前默认扫描市值前 `200` 的候选币，随后只保留 OKX 24 小时估算成交额不低于 `500 万 USDT` 的永续合约。实时策略只加载最近 `300` 根 K 线（信号窗口为 200 根），并在 OKX 返回 429 时退避重试，避免扩大标的池后制造无意义的限流错误。每轮 `scan` 事件同时记录 `signal_states` 和互斥的 `signal_reasons`，可直接区分无背驰、等待确认、高周期不共振、震荡过滤、量价未确认和最终买卖过滤失败。`okx_scan_symbol_blocklist` 用于在信号计算前隔离持续返回异常行情的标的，不等同于订单黑名单。
+
 默认仓位模式是 `bot.position_sizing: risk`：机器人在 `--place-order` 模式会读取 OKX Demo 的 USDT 权益，按 `risk_per_trade_pct` 和信号止损距离计算合约张数，再用 `max_position_notional_usdt` 限制单笔名义价值，最后按 OKX 的 `lotSz/minSz` 裁剪。当前默认参数是单笔风险 `0.5%`、名义价值上限 `50 USDT`；signal-only 模式未配置权益时会用 `1000 USDT` 纸面权益估算，不读取私有余额。如需临时回到固定张数，可把 `position_sizing` 改成 `fixed`，或启动时传 `--position-sizing fixed --size 1`。
 
-云服务器使用 Docker Compose 时，只有显式启用 `trading` profile 才会启动 `okx-strategy-bot`，该 profile 内默认以 `--place-order` 启动；本地手动运行仍需要自己添加该参数。机器人启动、每轮扫描、开仓、平仓和错误都会写入 `runtime/okx_market_cap_bot_events.jsonl`。
+云服务器使用 Docker Compose 时，只有显式启用 `trading` profile 才会启动 `okx-strategy-bot`，且默认仍是 signal-only。持续下单模式必须同时使用 `docker-compose.order.yml`。机器人启动、每轮扫描、开仓、平仓和错误都会写入 `runtime/okx_market_cap_bot_events.jsonl`。
+
+JSONL 事件日志默认达到 10 MiB 时轮转并保留 5 份历史，可用 `EVENT_LOG_MAX_BYTES` 和 `EVENT_LOG_BACKUP_COUNT` 调整。Compose 也会限制容器 stdout/stderr 日志、CPU 和内存；资源上限可通过 `WEB_CPUS`、`WEB_MEMORY_LIMIT`、`BOT_CPUS`、`BOT_MEMORY_LIMIT` 覆盖。
+
+## 配置边界
+
+- `config.yaml`：策略、监控交易对/周期、支撑容差和机器人默认参数。
+- `.env`：密钥、代理、运行路径和主机级覆盖；不要提交。
+- `public/config.js`：仅用于 `file://` 页面在连接后端之前探测本机端口。
+- `docker-compose.yml`：signal-only 安全默认；`docker-compose.order.yml`：显式 Demo 下单覆盖。
 
 如果 OKX Demo 账户是双向持仓模式，在 `.env` 里设置 `OKX_POSITION_MODE=long_short`。机器人会在 SWAP 开仓和平仓订单里自动带上 `posSide=long/short`；单向持仓或现货模式不需要设置。OKX 下单失败时，事件日志会记录 `symbol`、`side`、`posSide`、`size`、`tdMode` 和完整错误，Discord 也会收到同样的失败摘要。
 

@@ -3,6 +3,24 @@ app:
   kline_limit: 1000
   max_workers: 12
   hourly_summary_interval_seconds: 3600
+  hourly_summary_symbols:
+    - BTCUSDT
+    - ETHUSDT
+  indicator_intervals:
+    - 15m
+    - 1h
+    - 4h
+    - 1d
+  support_intervals:
+    - 15m
+    - 1h
+    - 4h
+    - 1d
+  support_touch_tolerance:
+    15m: 0.003
+    1h: 0.004
+    4h: 0.006
+    1d: 0.008
   sell_trend_breaker_interval: 4h
   sell_trend_breaker_limit: 60
   strategy_reward_risk: 2.0
@@ -11,13 +29,13 @@ app:
   record_strategy_trades: false
 
 bot:
-  universe_top_n: 100
+  universe_top_n: 200
   universe_quote_asset: USDT
   interval: 15m
-  kline_limit: 1000
+  kline_limit: 300
   poll_seconds: 60
   scan_timeout_seconds: 300
-  min_quote_volume: 10000000
+  min_quote_volume: 5000000
   max_open_positions: 5
   position_size: 1
   position_sizing: risk
@@ -28,11 +46,14 @@ bot:
   min_structure_score: 0
   okx_order_symbol_blocklist:
     - TAO-USDT-SWAP
+    - UNI-USDT-SWAP
+  okx_scan_symbol_blocklist:
+    - GRAMUSDT
 
 strategy:
   ma_fast_period: 5
   ma_slow_period: 10
-  min_divergence_strength: 0.25
+  min_divergence_strength: 0.20
   buy_rsi_threshold: 40
   buy_volume_ratio: 0.8
   sell_rsi_threshold: 60
@@ -40,7 +61,7 @@ strategy:
   confirm_max_bars: 12
   confirmation_mode: either
   extreme_window: 3
-  max_extreme_lag_bars: 3
+  max_extreme_lag_bars: 4
   higher_trend_interval: 4h
   require_higher_trend_alignment: true
   volume_confirmation_enabled: true

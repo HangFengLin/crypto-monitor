@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import http.client
 import os
@@ -11,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
@@ -34,6 +34,8 @@ from data_client import (
     test_market_api,
 )
 from indicators import calculate_indicators, macd, rolling_average
+from position_manager import calculate_return_pct, calculate_target_levels, evaluate_bar_exit, evaluate_price_exit
+from runtime_utils import append_jsonl, code_fingerprint as build_code_fingerprint, post_discord
 from strategy import (
     build_chan_structure_context,
     check_buy_filter,
@@ -82,6 +84,14 @@ def config_int(section: str, key: str, default: int, env_name: Optional[str] = N
         return default
 
 
+def config_string_tuple(section: str, key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = config_value(CONFIG, section, key, list(default))
+    if not isinstance(value, (list, tuple)):
+        return default
+    normalized = tuple(str(item).strip() for item in value if str(item).strip())
+    return normalized or default
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -105,15 +115,15 @@ OKX_BOT_PRIMARY_ERROR_EVENT_TYPES = OKX_BOT_ERROR_EVENT_TYPES - {"discord_error"
 STARTED_AT = time.time()
 EVENT_HISTORY_LIMIT = 500
 DEFAULT_SIGNAL_INTERVAL = str(config_value(CONFIG, "app", "default_signal_interval", "15m"))
-HOURLY_SUMMARY_SYMBOLS = ("BTCUSDT", "ETHUSDT")
+HOURLY_SUMMARY_SYMBOLS = config_string_tuple("app", "hourly_summary_symbols", ("BTCUSDT", "ETHUSDT"))
 HOURLY_SUMMARY_INTERVAL_SECONDS = int(config_value(CONFIG, "app", "hourly_summary_interval_seconds", 3600))
-INDICATOR_INTERVALS = ("15m", "1h", "4h", "1d")
-SUPPORT_INTERVALS = ("15m", "1h", "4h", "1d")
+INDICATOR_INTERVALS = config_string_tuple("app", "indicator_intervals", ("15m", "1h", "4h", "1d"))
+SUPPORT_INTERVALS = config_string_tuple("app", "support_intervals", ("15m", "1h", "4h", "1d"))
 SUPPORT_TOUCH_TOLERANCE = {
-    "15m": 0.003,
-    "1h": 0.004,
-    "4h": 0.006,
-    "1d": 0.008,
+    str(interval): float(tolerance)
+    for interval, tolerance in dict(
+        config_value(CONFIG, "app", "support_touch_tolerance", {"15m": 0.003, "1h": 0.004, "4h": 0.006, "1d": 0.008})
+    ).items()
 }
 MA_FAST_PERIOD = int(config_value(CONFIG, "strategy", "ma_fast_period", 5))
 MA_SLOW_PERIOD = int(config_value(CONFIG, "strategy", "ma_slow_period", 10))
@@ -209,22 +219,18 @@ def env_file_has_key(key: str) -> bool:
 
 
 def code_fingerprint() -> str:
-    digest = hashlib.sha256()
-    for relative_path in (
-        "app.py",
-        "config.py",
-        "docker-compose.yml",
-        "okx_market_cap_bot.py",
-        "binance_strategy_bot.py",
-    ):
-        path = ROOT / relative_path
-        if not path.exists():
-            digest.update(f"{relative_path}:missing\n".encode("utf-8"))
-            continue
-        digest.update(f"{relative_path}:".encode("utf-8"))
-        digest.update(path.read_bytes())
-        digest.update(b"\n")
-    return digest.hexdigest()[:16]
+    return build_code_fingerprint(
+        ROOT,
+        (
+            "app.py",
+            "config.py",
+            "docker-compose.yml",
+            "okx_market_cap_bot.py",
+            "binance_strategy_bot.py",
+            "position_manager.py",
+            "runtime_utils.py",
+        ),
+    )
 
 
 def list_report_files() -> list[dict[str, Any]]:
@@ -661,9 +667,7 @@ def save_strategy_trades(trades: list[dict[str, Any]]) -> None:
 
 def append_event_to_disk(event: dict[str, Any]) -> None:
     try:
-        EVENT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with EVENT_LOG_FILE.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        append_jsonl(EVENT_LOG_FILE, event)
     except OSError:
         with state_lock:
             state.signal_error = "事件日志写入失败"
@@ -748,26 +752,7 @@ def strategy_trade_id(signal: dict[str, Any]) -> str:
 
 
 def calculate_strategy_levels(direction: str, entry_price: float, stop_loss: float) -> Optional[dict[str, float]]:
-    if direction == "long":
-        risk = entry_price - stop_loss
-        if risk <= 0:
-            return None
-        return {
-            "risk": risk,
-            "target_price": entry_price + risk * STRATEGY_REWARD_RISK,
-            "protection_price": entry_price + risk,
-        }
-
-    if direction == "short":
-        risk = stop_loss - entry_price
-        if risk <= 0:
-            return None
-        return {
-            "risk": risk,
-            "target_price": entry_price - risk * STRATEGY_REWARD_RISK,
-            "protection_price": entry_price - risk,
-        }
-    return None
+    return calculate_target_levels(direction, entry_price, stop_loss, STRATEGY_REWARD_RISK)
 
 
 def build_strategy_trade_from_signal(signal: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -819,8 +804,7 @@ def build_strategy_trade_from_signal(signal: dict[str, Any]) -> Optional[dict[st
 
 
 def strategy_return_pct(direction: str, entry_price: float, exit_price: float) -> float:
-    gross_return = exit_price / entry_price - 1 if direction == "long" else entry_price / exit_price - 1
-    return gross_return - STRATEGY_FEE_RATE * 2
+    return calculate_return_pct(direction, entry_price, exit_price, STRATEGY_FEE_RATE)
 
 
 def refresh_strategy_trade_mark(trade: dict[str, Any], current_price: float) -> None:
@@ -858,27 +842,11 @@ def evaluate_open_strategy_trade(trade: dict[str, Any], current_price: float) ->
     if stop_loss is None or target_price is None or protection_price is None:
         return False
 
-    if direction == "long":
-        if current_price <= stop_loss:
-            close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
-            return True
-        if current_price >= target_price:
-            close_strategy_trade(trade, target_price, "take_profit", "win")
-            return True
-        if current_price >= protection_price:
-            close_strategy_trade(trade, protection_price, "protection_reached", "win")
-            return True
-    elif direction == "short":
-        if current_price >= stop_loss:
-            close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
-            return True
-        if current_price <= target_price:
-            close_strategy_trade(trade, target_price, "take_profit", "win")
-            return True
-        if current_price <= protection_price:
-            close_strategy_trade(trade, protection_price, "protection_reached", "win")
-            return True
-    return False
+    decision = evaluate_price_exit(direction, current_price, stop_loss, target_price, protection_price)
+    if not decision:
+        return False
+    close_strategy_trade(trade, decision.exit_price, decision.reason, decision.outcome)
+    return True
 
 
 def evaluate_open_strategy_trade_with_bars(trade: dict[str, Any], bars: list[dict[str, Any]], current_price: Optional[float]) -> bool:
@@ -910,26 +878,10 @@ def evaluate_open_strategy_trade_with_bars(trade: dict[str, Any], bars: list[dic
         if close is not None:
             refresh_strategy_trade_mark(trade, close)
 
-        if direction == "long":
-            if low <= stop_loss:
-                close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
-                return True
-            if high >= target_price:
-                close_strategy_trade(trade, target_price, "take_profit", "win")
-                return True
-            if high >= protection_price:
-                close_strategy_trade(trade, protection_price, "protection_reached", "win")
-                return True
-        elif direction == "short":
-            if high >= stop_loss:
-                close_strategy_trade(trade, stop_loss, "stop_loss", "loss")
-                return True
-            if low <= target_price:
-                close_strategy_trade(trade, target_price, "take_profit", "win")
-                return True
-            if low <= protection_price:
-                close_strategy_trade(trade, protection_price, "protection_reached", "win")
-                return True
+        decision = evaluate_bar_exit(direction, low, high, stop_loss, target_price, protection_price)
+        if decision:
+            close_strategy_trade(trade, decision.exit_price, decision.reason, decision.outcome)
+            return True
 
     if current_price is None:
         return False
@@ -971,44 +923,6 @@ def register_strategy_signal(signal: dict[str, Any]) -> None:
             state.strategy_trades = state.strategy_trades[-STRATEGY_HISTORY_LIMIT:]
             state.strategy_stats = calculate_strategy_stats(state.strategy_trades)
             changed = True
-        trades_snapshot = [dict(item) for item in state.strategy_trades]
-
-    if changed:
-        save_strategy_trades(trades_snapshot)
-
-
-def update_strategy_trades_with_prices(prices: dict[str, dict[str, Any]]) -> None:
-    changed = False
-    with state_lock:
-        open_keys = sorted(
-            {
-                (str(trade.get("symbol", "")).upper(), normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL)))
-                for trade in state.strategy_trades
-                if trade.get("status") == "open"
-            }
-        )
-
-    bars_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for symbol, interval in open_keys:
-        try:
-            bars_by_key[(symbol, interval)] = fetch_klines(symbol, interval, KLINE_LIMIT)
-        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError):
-            bars_by_key[(symbol, interval)] = []
-
-    with state_lock:
-        for trade in state.strategy_trades:
-            if trade.get("status") != "open":
-                continue
-            symbol = str(trade.get("symbol", "")).upper()
-            interval = normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL))
-            ticker = prices.get(symbol)
-            current_price = parse_float((ticker or {}).get("lastPrice"))
-            bars = bars_by_key.get((symbol, interval), [])
-            if bars and evaluate_open_strategy_trade_with_bars(trade, bars, current_price):
-                changed = True
-            elif not bars and current_price is not None and evaluate_open_strategy_trade(trade, current_price):
-                changed = True
-        state.strategy_stats = calculate_strategy_stats(state.strategy_trades)
         trades_snapshot = [dict(item) for item in state.strategy_trades]
 
     if changed:
@@ -1157,11 +1071,6 @@ def direction_label(direction: str) -> str:
     if direction == "down":
         return "下穿"
     return "未触发"
-
-
-def detect_indicator_signal(symbol: str, interval: str) -> dict[str, Any]:
-    bars = fetch_klines(symbol, interval, KLINE_LIMIT)
-    return build_indicator_signal_from_bars(symbol, interval, bars)
 
 
 async def detect_indicator_signal_async(symbol: str, interval: str) -> dict[str, Any]:
@@ -1639,7 +1548,7 @@ def run_signal_backtest_summary(
         missing = exc.name or "回测依赖"
         return {
             "ok": False,
-            "error": f"缺少依赖包 {missing}，请先运行 python3 -m pip install -r requirements-backtest.txt",
+            "error": f"缺少依赖包 {missing}，请先运行 python3 -m pip install -r requirements.txt",
         }
 
     bars = project_signal_backtest.fetch_binance_klines(symbol, interval, limit)
@@ -1730,12 +1639,9 @@ def run_signal_backtest_summary(
     }
 
 
-def monitor_loop() -> None:
-    asyncio.run(monitor_loop_async())
-
-
-async def monitor_loop_async() -> None:
-    while True:
+async def monitor_loop_async(stop_event: Optional[asyncio.Event] = None) -> None:
+    stop_event = stop_event or asyncio.Event()
+    while not stop_event.is_set():
         with state_lock:
             watchlist = list(state.watchlist)
         symbols = sorted({item["symbol"] for item in watchlist} | set(HOURLY_SUMMARY_SYMBOLS))
@@ -1766,47 +1672,17 @@ async def monitor_loop_async() -> None:
                     "last_error": str(exc),
                     "last_run_at": time.time(),
                 }
-        await asyncio.sleep(10)
-
-
-def evaluate_chanlun_signals(watchlist: list[dict[str, Any]]) -> None:
-    next_signals = {}
-    signal_error = None
-    signal_items = [item for item in watchlist if item.get("signal", True)]
-    results: list[tuple[dict[str, Any], dict[str, Any]]] = []
-
-    for item in signal_items:
         try:
-            results.append((item, detect_project_signal(item["symbol"], item.get("interval", DEFAULT_SIGNAL_INTERVAL))))
-        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError, RuntimeError) as exc:
-            signal_error = str(exc)
+            await asyncio.wait_for(stop_event.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            pass
 
-    for item, signal in results:
-        symbol = item["symbol"]
-        interval = item.get("interval", DEFAULT_SIGNAL_INTERVAL)
 
-        state_key = f"{symbol}:{interval}"
-        next_signals[state_key] = signal
-        if signal.get("signal") not in {"long", "short"}:
-            continue
-        if os.getenv("SIGNAL_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}:
-            print(f"2. 主程序已捕获信号: {signal}", flush=True)
-
-        alert_key = f"macd_td:{symbol}:{interval}:{signal['signal']}:{signal.get('divergence_time')}"
-        if alert_key in state.sent_alerts:
-            continue
-
-        message = {**signal, "email": item.get("email", "")}
-        record_event(message, alert_key)
-        if RECORD_STRATEGY_TRADES:
-            register_strategy_signal({**message, "event_key": alert_key})
-        with state_lock:
-            state.signal_error = None
-        send_alert_notifications(message)
-
-    with state_lock:
-        state.signals = next_signals
-        state.signal_error = signal_error
+async def run_monitor_loop(stop_event: asyncio.Event) -> None:
+    try:
+        await monitor_loop_async(stop_event)
+    finally:
+        await close_http_session()
 
 
 async def evaluate_chanlun_signals_async(watchlist: list[dict[str, Any]]) -> None:
@@ -1856,84 +1732,6 @@ async def evaluate_chanlun_signals_async(watchlist: list[dict[str, Any]]) -> Non
     with state_lock:
         state.signals = next_signals
         state.signal_error = signal_error
-
-
-def evaluate_indicator_signals(watchlist: list[dict[str, Any]]) -> None:
-    next_indicator_signals: dict[str, dict[str, Any]] = {}
-    indicator_error = None
-    symbols = sorted(
-        {
-            item["symbol"]
-            for item in watchlist
-            if item.get("signal", True) or item.get("indicator_alert", True)
-        }
-    )
-    email_by_symbol = {
-        item["symbol"]: item.get("email", "")
-        for item in watchlist
-        if item.get("signal", True) or item.get("indicator_alert", True)
-    }
-    ma_alert_symbols = {
-        item["symbol"]
-        for item in watchlist
-        if item.get("signal", True)
-    }
-    macd_alert_symbols = {
-        item["symbol"]
-        for item in watchlist
-        if item.get("indicator_alert", True)
-    }
-
-    results: dict[tuple[str, str], dict[str, Any]] = {}
-    tasks = [(symbol, interval) for symbol in symbols for interval in INDICATOR_INTERVALS]
-
-    for symbol, interval in tasks:
-        try:
-            results[(symbol, interval)] = detect_indicator_signal(symbol, interval)
-        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
-            indicator_error = str(exc)
-
-    for symbol in symbols:
-        symbol_signals = {}
-        for interval in INDICATOR_INTERVALS:
-            signal = results.get((symbol, interval))
-            if signal is None:
-                continue
-
-            symbol_signals[interval] = signal
-            for indicator_name in ("ma", "macd"):
-                if indicator_name == "ma" and symbol not in ma_alert_symbols:
-                    continue
-                if indicator_name == "macd" and (symbol not in macd_alert_symbols or interval != "4h"):
-                    continue
-                indicator = signal.get(indicator_name, {})
-                direction = indicator.get("direction")
-                if direction not in {"up", "down"}:
-                    continue
-
-                alert_key = f"indicator:{symbol}:{interval}:{indicator_name}:{direction}:{signal.get('kline_close_time')}"
-                with state_lock:
-                    already_sent = alert_key in state.sent_alerts
-                if already_sent:
-                    continue
-
-                message = {
-                    **signal,
-                    "indicator": indicator_name,
-                    "indicator_name": "均线" if indicator_name == "ma" else "MACD",
-                    "indicator_label": indicator.get("label", ""),
-                    "direction": direction,
-                    "email": email_by_symbol.get(symbol, ""),
-                }
-                record_event(message, alert_key)
-                send_alert_notifications(message)
-
-        next_indicator_signals[symbol] = symbol_signals
-
-    with state_lock:
-        state.indicator_signals = next_indicator_signals
-        if indicator_error:
-            state.signal_error = indicator_error
 
 
 async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> None:
@@ -2022,64 +1820,6 @@ async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> N
             state.signal_error = indicator_error
 
 
-def evaluate_support_alerts(watchlist: list[dict[str, Any]], prices: dict[str, dict[str, Any]]) -> None:
-    next_support_levels: dict[str, dict[str, Any]] = {}
-    support_error = None
-    tasks = [
-        (item, interval, prices.get(item["symbol"], {}).get("lastPrice"))
-        for item in watchlist
-        for interval in SUPPORT_INTERVALS
-    ]
-    results: dict[tuple[str, str], dict[str, Any]] = {}
-
-    for item, interval, price in tasks:
-        try:
-            results[(item["symbol"], interval)] = detect_support_level(item["symbol"], interval, price)
-        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
-            support_error = str(exc)
-
-    for item in watchlist:
-        symbol = item["symbol"]
-        symbol_levels = {}
-        for interval in SUPPORT_INTERVALS:
-            level = results.get((symbol, interval))
-            if level is None:
-                continue
-            symbol_levels[interval] = level
-            support = level.get("support")
-            alert_key = f"support:{symbol}:{interval}:touch:{level.get('kline_close_time')}"
-            reset_key = f"support:{symbol}:{interval}:active"
-            reset_distance = level.get("tolerance_pct", 0.4) * 2
-            distance_pct = level.get("distance_pct")
-
-            if distance_pct is not None and distance_pct > reset_distance:
-                with state_lock:
-                    state.sent_alerts.discard(reset_key)
-                continue
-            if not item.get("support_alert", True) or not level.get("touched") or support is None:
-                continue
-            with state_lock:
-                already_sent = reset_key in state.sent_alerts or alert_key in state.sent_alerts
-            if already_sent:
-                continue
-
-            message = {
-                **level,
-                "email": item.get("email", ""),
-            }
-            with state_lock:
-                state.sent_alerts.add(reset_key)
-            record_event(message, alert_key)
-            send_alert_notifications(message)
-
-        next_support_levels[symbol] = symbol_levels
-
-    with state_lock:
-        state.support_levels = next_support_levels
-        if support_error:
-            state.signal_error = support_error
-
-
 async def evaluate_support_alerts_async(watchlist: list[dict[str, Any]], prices: dict[str, dict[str, Any]]) -> None:
     next_support_levels: dict[str, dict[str, Any]] = {}
     support_error = None
@@ -2144,33 +1884,6 @@ async def evaluate_support_alerts_async(watchlist: list[dict[str, Any]], prices:
         state.support_levels = next_support_levels
         if support_error:
             state.signal_error = support_error
-
-
-def send_hourly_market_summary(prices: dict[str, dict[str, Any]]) -> None:
-    if not discord_webhook_url():
-        return
-
-    now = time.time()
-    with state_lock:
-        last_summary_at = state.last_summary_at
-        if last_summary_at and now - last_summary_at < HOURLY_SUMMARY_INTERVAL_SECONDS:
-            return
-        state.last_summary_at = now
-
-    try:
-        lines = ["**Binance 每小时行情简报**"]
-        for symbol in HOURLY_SUMMARY_SYMBOLS:
-            ticker = prices.get(symbol) or fetch_tickers([symbol]).get(symbol, {})
-            funding = fetch_funding_rate(symbol)
-            lines.append(format_market_summary_line(symbol, ticker, funding))
-
-        send_discord_message("\n".join(lines))
-        with state_lock:
-            state.summary_error = None
-    except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
-        with state_lock:
-            state.summary_error = str(exc)
-            state.last_summary_at = None
 
 
 async def send_hourly_market_summary_async(prices: dict[str, dict[str, Any]]) -> None:
@@ -2389,23 +2102,11 @@ def send_discord_message(content: str) -> None:
     if not webhook_url:
         return
 
-    payload = json.dumps({"content": content[:2000]}, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Chanlun-Crypto-Monitor/1.0",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            if getattr(response, "status", 204) >= 400:
-                raise urllib.error.URLError(f"Discord returned HTTP {response.status}")
-            with state_lock:
-                state.discord_last_ok_at = time.time()
-                state.discord_last_error = None
+        post_discord(webhook_url, content[:2000], timeout=15)
+        with state_lock:
+            state.discord_last_ok_at = time.time()
+            state.discord_last_error = None
     except (OSError, urllib.error.URLError) as exc:
         with state_lock:
             state.discord_last_error = str(exc)
@@ -2582,7 +2283,18 @@ def summarize_okx_bot_status(events: list[dict[str, Any]], state_payload: dict[s
         health_label = "扫描过期"
 
     last_error = state_error
-    if last_error_event:
+    last_error_at = parse_float((last_error_event or {}).get("created_at"))
+    latest_scan_errors = int((last_scan or {}).get("errors", 0) or 0)
+    error_is_current = (
+        last_error_event is not None
+        and (
+            last_scan_at is None
+            or last_error_at is None
+            or last_error_at >= last_scan_at
+            or latest_scan_errors > 0
+        )
+    )
+    if error_is_current and last_error_event:
         last_error = last_error_event.get("error") or last_error_event.get("message") or last_error
     normalized_open_positions = [
         {**normalize_bot_position(position), "bot": "okx"}
@@ -2770,9 +2482,6 @@ def snapshot() -> dict[str, Any]:
         }
 
 
-_monitor_started = False
-
-
 def initialize_state() -> None:
     PUBLIC_DIR.mkdir(exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -2791,14 +2500,6 @@ def initialize_state() -> None:
     save_strategy_trades(strategy_trades)
 
 
-def start_monitor_thread() -> None:
-    global _monitor_started
-    if _monitor_started:
-        return
-    threading.Thread(target=monitor_loop, daemon=True).start()
-    _monitor_started = True
-
-
 async def state_event_stream():
     while True:
         data = json.dumps(snapshot(), ensure_ascii=False)
@@ -2808,24 +2509,34 @@ async def state_event_stream():
 
 def create_app():
     if FastAPI is None or StreamingResponse is None or StaticFiles is None or CORSMiddleware is None:
-        raise RuntimeError("FastAPI runtime is not installed; run python3 -m pip install -r requirements-backtest.txt")
+        raise RuntimeError("FastAPI runtime is not installed; run python3 -m pip install -r requirements.txt")
 
-    app = FastAPI(title="Chanlun Crypto Monitor")
+    PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        initialize_state()
+        monitor_stop_event = asyncio.Event()
+        monitor_task = asyncio.create_task(run_monitor_loop(monitor_stop_event), name="market-monitor")
+        try:
+            yield
+        finally:
+            monitor_stop_event.set()
+            try:
+                await asyncio.wait_for(monitor_task, timeout=25)
+            except asyncio.TimeoutError:
+                monitor_task.cancel()
+                await asyncio.gather(monitor_task, return_exceptions=True)
+            await close_http_session()
+
+    app = FastAPI(title="Chanlun Crypto Monitor", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    @app.on_event("startup")
-    async def _startup() -> None:
-        initialize_state()
-        start_monitor_thread()
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        await close_http_session()
 
     @app.get("/api/state")
     async def api_state() -> dict[str, Any]:
@@ -2983,7 +2694,7 @@ def main() -> None:
     if host in {"0.0.0.0", "::"}:
         print("Same Wi-Fi phone URL: use the address above in the phone browser.")
     if uvicorn is None:
-        raise RuntimeError("uvicorn is not installed; run python3 -m pip install -r requirements-backtest.txt")
+        raise RuntimeError("uvicorn is not installed; run python3 -m pip install -r requirements.txt")
     uvicorn.run(create_app(), host=host, port=port)
 
 

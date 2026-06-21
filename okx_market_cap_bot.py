@@ -15,17 +15,26 @@ import json
 import os
 import signal as os_signal
 import sys
+import threading
 import time
-import urllib.request
 from collections import Counter
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
 from typing import Any, Optional
 
 from config import config_value, load_config, load_env_file
-from data_client import fetch_okx_demo_balance, fetch_okx_instrument, parse_float, place_okx_demo_order
+from data_client import (
+    fetch_okx_demo_balance,
+    fetch_okx_demo_positions,
+    fetch_okx_instrument,
+    normalize_okx_inst_id,
+    parse_float,
+    place_okx_demo_order,
+)
 from indicators import calculate_indicators
+from position_manager import calculate_return_pct, calculate_target_levels as target_levels, evaluate_bar_exit
 from project_signal_backtest import fetch_exchange_klines, fetch_higher_timeframe_context
+from runtime_utils import append_jsonl, atomic_write_text, post_discord
 from strategy import ProjectSignalEngine
 from strategy_universe import build_okx_market_cap_universe
 
@@ -72,16 +81,27 @@ EVENT_LOG_FILE = Path(os.getenv("OKX_BOT_EVENT_LOG_FILE", str(DEFAULT_EVENT_LOG_
 SIGNAL_ENGINES: dict[tuple[str, str], ProjectSignalEngine] = {}
 NON_RETRYABLE_ORDER_ERROR_CODES = {"51001", "51087"}
 ORDER_SYMBOL_DISABLE_SECONDS = 24 * 60 * 60
+SHUTDOWN_EVENT = threading.Event()
 
 
 class ScanTimeout(RuntimeError):
     pass
 
 
+def shutdown_signal_handler(signum: int, frame: Any) -> None:
+    SHUTDOWN_EVENT.set()
+
+
+def install_shutdown_handlers() -> None:
+    os_signal.signal(os_signal.SIGTERM, shutdown_signal_handler)
+    os_signal.signal(os_signal.SIGINT, shutdown_signal_handler)
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="OKX Demo 市值前百多币种策略机器人")
+    parser = argparse.ArgumentParser(description="OKX Demo 高流动性市值排名多币种策略机器人")
     parser.add_argument("--top-n", type=int, default=int(config_value(CONFIG, "bot", "universe_top_n", 100)))
     parser.add_argument("--quote-asset", default=str(config_value(CONFIG, "bot", "universe_quote_asset", "USDT")))
+    parser.add_argument("--min-quote-volume", type=float, default=float(config_value(CONFIG, "bot", "min_quote_volume", 10_000_000)))
     parser.add_argument("--interval", default=str(config_value(CONFIG, "bot", "interval", "15m")))
     parser.add_argument("--limit", type=int, default=int(config_value(CONFIG, "bot", "kline_limit", 1000)))
     parser.add_argument("--poll-seconds", type=int, default=int(config_value(CONFIG, "bot", "poll_seconds", 60)))
@@ -160,16 +180,8 @@ def send_discord(content: str) -> None:
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook_url:
         return
-    payload = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
-            response.read()
+        post_discord(webhook_url, content)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         print(f"discord_notify_failed: {message}", flush=True)
@@ -200,14 +212,11 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def append_event(event: dict[str, Any]) -> None:
-    EVENT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with EVENT_LOG_FILE.open("a", encoding="utf-8") as file:
-        file.write(json.dumps({"created_at": time.time(), **event}, ensure_ascii=False, separators=(",", ":")) + "\n")
+    append_jsonl(EVENT_LOG_FILE, {"created_at": time.time(), **event})
 
 
 def scan_timeout_handler(signum: int, frame: Any) -> None:
@@ -473,25 +482,40 @@ def configured_order_symbol_blocklist() -> set[str]:
     return config_symbol_set("bot", "okx_order_symbol_blocklist", env_name="OKX_ORDER_SYMBOL_BLOCKLIST")
 
 
+def configured_scan_symbol_blocklist() -> set[str]:
+    return config_symbol_set("bot", "okx_scan_symbol_blocklist", env_name="OKX_SCAN_SYMBOL_BLOCKLIST")
+
+
+def signal_skip_reason(signal: dict[str, Any]) -> str:
+    """Return one exclusive reason for a non-trade signal."""
+    name = str(signal.get("signal_name") or "")
+    filter_text = str(signal.get("filter") or "")
+    if "确认超时" in name:
+        return "confirmation_timeout"
+    if "等待确认" in name:
+        return "awaiting_confirmation"
+    if "共振/量价/震荡过滤" in name:
+        if "高周期数据不足" in filter_text:
+            return "higher_timeframe_data_missing"
+        if "未多头共振" in filter_text or "未空头共振" in filter_text:
+            return "higher_timeframe_misaligned"
+        if "震荡过滤" in filter_text:
+            return "choppy_market"
+        if "无缩量/爆量/OBV确认" in filter_text:
+            return "volume_unconfirmed"
+        return "entry_context_filtered"
+    if "被买入过滤" in name or "被卖出过滤" in name:
+        return "entry_filter_failed"
+    if name in {"等待MACD背驰", "K线不足", ""}:
+        return "awaiting_divergence"
+    return "other_non_trade_signal"
+
+
 def disable_order_symbol(state: dict[str, Any], order_symbol: str, exc: Exception) -> None:
     disabled_order_symbols(state)[order_symbol] = {
         "until": time.time() + ORDER_SYMBOL_DISABLE_SECONDS,
         "reason": f"{type(exc).__name__}: {exc}",
     }
-
-
-def target_levels(direction: str, entry_price: float, stop_loss: float, reward_risk: float) -> Optional[dict[str, float]]:
-    if direction == "long":
-        risk = entry_price - stop_loss
-        if risk <= 0:
-            return None
-        return {"risk": risk, "target_price": entry_price + risk * reward_risk, "protection_price": entry_price + risk}
-    if direction == "short":
-        risk = stop_loss - entry_price
-        if risk <= 0:
-            return None
-        return {"risk": risk, "target_price": entry_price - risk * reward_risk, "protection_price": entry_price - risk}
-    return None
 
 
 def latest_signal(symbol: str, interval: str, limit: int, instrument_type: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -592,7 +616,7 @@ def open_position(args: argparse.Namespace, symbol: str, signal: dict[str, Any],
     send_discord(
         "\n".join(
             [
-                f"**市值前百策略开仓 {mode}**",
+                f"**市值排名策略开仓 {mode}**",
                 f"{symbol} {args.interval} {position['direction'].upper()} size={order_size} sizing={sizing.get('mode')}",
                 f"notional={sizing.get('notional_usdt', '-')} USDT risk_budget={sizing.get('risk_budget_usdt', '-')}",
                 f"entry={position['entry_price']:.6g} stop={position['stop_loss']:.6g} target={position['target_price']:.6g}",
@@ -633,7 +657,7 @@ def close_position(args: argparse.Namespace, position: dict[str, Any], exit_pric
         close_order_id = str(order.get("ordId", ""))
 
     entry_price = float(position["entry_price"])
-    return_pct = exit_price / entry_price - 1 if direction == "long" else entry_price / exit_price - 1
+    return_pct = calculate_return_pct(direction, entry_price, exit_price)
     position.update(
         {
             "status": "closed",
@@ -648,7 +672,7 @@ def close_position(args: argparse.Namespace, position: dict[str, Any], exit_pric
     send_discord(
         "\n".join(
             [
-                f"**市值前百策略平仓 {mode}**",
+                f"**市值排名策略平仓 {mode}**",
                 f"{position['symbol']} {position['interval']} {direction.upper()} reason={reason}",
                 f"entry={entry_price:.6g} exit={exit_price:.6g} return={return_pct:.2%}",
                 f"close_order={close_order_id}",
@@ -674,40 +698,78 @@ def evaluate_position(args: argparse.Namespace, position: dict[str, Any], bars: 
     target_price = float(position["target_price"])
     protection_price = float(position["protection_price"])
 
-    if direction == "long":
-        if low <= stop_loss:
-            close_position(args, position, stop_loss, "stop_loss")
-            return True
-        if high >= target_price:
-            close_position(args, position, target_price, "take_profit")
-            return True
-        if high >= protection_price:
-            close_position(args, position, protection_price, "protection_reached")
-            return True
-    else:
-        if high >= stop_loss:
-            close_position(args, position, stop_loss, "stop_loss")
-            return True
-        if low <= target_price:
-            close_position(args, position, target_price, "take_profit")
-            return True
-        if low <= protection_price:
-            close_position(args, position, protection_price, "protection_reached")
-            return True
-    return False
+    decision = evaluate_bar_exit(direction, low, high, stop_loss, target_price, protection_price)
+    if not decision:
+        return False
+    close_position(args, position, decision.exit_price, decision.reason)
+    return True
 
 
 def active_positions(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [position for position in state.get("positions", []) if position.get("status") == "open"]
 
 
+def startup_position_snapshot(args: argparse.Namespace, state: dict[str, Any]) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float]]:
+    """Return comparable local and OKX position sizes for startup reconciliation."""
+    local: dict[tuple[str, str], float] = {}
+    for position in active_positions(state):
+        inst_id = normalize_okx_inst_id(str(position.get("inst_id") or position.get("symbol")), args.okx_instrument_type)
+        direction = str(position.get("direction") or "").lower()
+        size = parse_float(position.get("size"))
+        if direction in {"long", "short"} and size is not None and abs(size) > 0:
+            local[(inst_id, direction)] = local.get((inst_id, direction), 0.0) + abs(size)
+
+    exchange: dict[tuple[str, str], float] = {}
+    for position in fetch_okx_demo_positions(instrument_type=args.okx_instrument_type):
+        size = parse_float(position.get("pos"))
+        if size is None or abs(size) <= 0:
+            continue
+        inst_id = normalize_okx_inst_id(str(position.get("instId") or ""), args.okx_instrument_type)
+        position_side = str(position.get("posSide") or "").lower()
+        direction = position_side if position_side in {"long", "short"} else ("long" if size > 0 else "short")
+        exchange[(inst_id, direction)] = exchange.get((inst_id, direction), 0.0) + abs(size)
+    return local, exchange
+
+
+def reconcile_startup_positions(args: argparse.Namespace, state: dict[str, Any]) -> None:
+    """Refuse order mode when local state and exchange positions disagree."""
+    if not args.place_order:
+        return
+    local, exchange = startup_position_snapshot(args, state)
+    missing_exchange = sorted(f"{inst_id}:{direction}" for inst_id, direction in local.keys() - exchange.keys())
+    untracked_exchange = sorted(f"{inst_id}:{direction}" for inst_id, direction in exchange.keys() - local.keys())
+    size_mismatches = []
+    for key in local.keys() & exchange.keys():
+        local_size = local[key]
+        exchange_size = exchange[key]
+        if abs(local_size - exchange_size) > max(1e-9, max(local_size, exchange_size) * 1e-8):
+            size_mismatches.append(
+                {"position": f"{key[0]}:{key[1]}", "local_size": local_size, "exchange_size": exchange_size}
+            )
+
+    if missing_exchange or untracked_exchange or size_mismatches:
+        details = {
+            "missing_exchange": missing_exchange,
+            "untracked_exchange": untracked_exchange,
+            "size_mismatches": size_mismatches,
+        }
+        message = f"OKX startup reconciliation failed; refusing order mode: {json.dumps(details, ensure_ascii=False)}"
+        append_event({"type": "reconcile_error", "error": message, **details})
+        send_discord(message)
+        raise RuntimeError(message)
+    append_event({"type": "reconcile_ok", "positions": len(local)})
+
+
 def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
-    universe = build_okx_market_cap_universe(args.top_n, args.quote_asset, args.okx_instrument_type)
+    universe = build_okx_market_cap_universe(args.top_n, args.quote_asset, args.okx_instrument_type, args.min_quote_volume)
     skipped: Counter[str] = Counter()
+    signal_reasons: Counter[str] = Counter()
+    signal_states: Counter[str] = Counter()
     opened_count = 0
     error_count = 0
     open_symbols = {str(position.get("symbol")) for position in active_positions(state)}
     order_symbol_blocklist = configured_order_symbol_blocklist() if args.place_order else set()
+    scan_symbol_blocklist = configured_scan_symbol_blocklist()
 
     for position in active_positions(state):
         try:
@@ -730,6 +792,8 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
                 "opened": opened_count,
                 "errors": error_count,
                 "skipped": dict(skipped),
+                "signal_reasons": dict(signal_reasons),
+                "signal_states": dict(signal_states),
                 "capacity": 0,
                 "place_order": args.place_order,
             }
@@ -740,6 +804,9 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
     for item in universe:
         symbol = str(item["symbol"])
         order_symbol = str(item.get("inst_id") or symbol)
+        if symbol.upper() in scan_symbol_blocklist or order_symbol.upper() in scan_symbol_blocklist:
+            skipped["scan_symbol_blocklisted"] += 1
+            continue
         if symbol in open_symbols:
             skipped["already_open"] += 1
             continue
@@ -760,6 +827,8 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
 
         if signal.get("signal") not in {"long", "short"}:
             skipped["not_trade_signal"] += 1
+            signal_states[str(signal.get("signal_name") or "unknown")] += 1
+            signal_reasons[signal_skip_reason(signal)] += 1
             debug_signal(args, symbol, signal, "not_trade_signal")
             continue
         if should_skip_signal(signal, args.min_signal_score, args.min_structure_score):
@@ -806,6 +875,8 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
             "opened": opened_count,
             "errors": error_count,
             "skipped": dict(skipped),
+            "signal_reasons": dict(signal_reasons),
+            "signal_states": dict(signal_states),
             "capacity": max(0, args.max_open_positions - len(active_positions(state))),
             "place_order": args.place_order,
         }
@@ -814,15 +885,19 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
 
 def main() -> None:
     args = parse_args()
+    SHUTDOWN_EVENT.clear()
+    install_shutdown_handlers()
     if args.place_order:
         ensure_order_environment(args)
     state = load_state()
+    reconcile_startup_positions(args, state)
 
     mode = "OKX Demo 下单" if args.place_order else "只记录信号"
     append_event(
         {
             "type": "startup",
             "top_n": args.top_n,
+            "min_quote_volume": args.min_quote_volume,
             "interval": args.interval,
             "max_open_positions": args.max_open_positions,
             "scan_timeout_seconds": args.scan_timeout_seconds,
@@ -834,14 +909,15 @@ def main() -> None:
             "place_order": args.place_order,
             "mode": mode,
             "order_symbol_blocklist": sorted(configured_order_symbol_blocklist()) if args.place_order else [],
+            "scan_symbol_blocklist": sorted(configured_scan_symbol_blocklist()),
         }
     )
     send_discord(
-        f"市值前百 OKX 策略机器人启动：top={args.top_n} interval={args.interval} "
+        f"市值排名 OKX 策略机器人启动：top={args.top_n} interval={args.interval} "
         f"max_positions={args.max_open_positions} sizing={args.position_sizing} mode={mode}"
     )
 
-    while True:
+    while not SHUTDOWN_EVENT.is_set():
         started_at = time.time()
         append_event({"type": "scan_started", "timeout_seconds": args.scan_timeout_seconds, "place_order": args.place_order})
         try:
@@ -849,13 +925,13 @@ def main() -> None:
             scan_once(args, state)
         except ScanTimeout as exc:
             elapsed = time.time() - started_at
-            message = f"市值前百 OKX 策略机器人扫描超时：elapsed={elapsed:.1f}s timeout={args.scan_timeout_seconds}s，进程将退出并由 Docker 重启。"
+            message = f"市值排名 OKX 策略机器人扫描超时：elapsed={elapsed:.1f}s timeout={args.scan_timeout_seconds}s，进程将退出并由 Docker 重启。"
             append_event({"type": "scan_timeout", "elapsed_seconds": round(elapsed, 3), "timeout_seconds": args.scan_timeout_seconds, "error": f"{type(exc).__name__}: {exc}"})
             send_discord(message)
             raise SystemExit(124) from exc
         except Exception as exc:
             elapsed = time.time() - started_at
-            message = f"市值前百 OKX 策略机器人扫描异常：elapsed={elapsed:.1f}s error={type(exc).__name__}: {exc}，进程将退出并由 Docker 重启。"
+            message = f"市值排名 OKX 策略机器人扫描异常：elapsed={elapsed:.1f}s error={type(exc).__name__}: {exc}，进程将退出并由 Docker 重启。"
             append_event(
                 {
                     "type": "scan_error",
@@ -882,10 +958,13 @@ def main() -> None:
             mode,
             flush=True,
         )
-        if args.once:
+        if args.once or SHUTDOWN_EVENT.is_set():
             break
         elapsed = time.time() - started_at
-        time.sleep(max(10, args.poll_seconds - int(elapsed)))
+        SHUTDOWN_EVENT.wait(max(10, args.poll_seconds - int(elapsed)))
+
+    save_state(state)
+    append_event({"type": "shutdown", "place_order": args.place_order, "open_positions": len(active_positions(state))})
 
 
 if __name__ == "__main__":

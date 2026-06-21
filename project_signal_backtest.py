@@ -25,9 +25,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from data_client import fetch_historical_klines, fetch_okx_historical_klines, normalize_okx_symbol
+from backtest_statistics import build_exploratory_group_tables, weekly_block_bootstrap_mean, wilson_interval
+from data_client import fetch_historical_klines, fetch_okx_historical_klines, interval_ms, normalize_okx_symbol
 from indicators import calculate_indicators
-from strategy import HIGHER_TREND_INTERVAL, ProjectSignalEngine
+from position_manager import calculate_return_pct, calculate_target_levels, evaluate_bar_exit
+from strategy import DEFAULT_CONFIG, HIGHER_TREND_INTERVAL, ProjectSignalEngine, StrategyConfig
 
 
 @dataclass
@@ -77,7 +79,7 @@ def parse_args() -> argparse.Namespace:
         default="structure_atr",
         help="止损模式：结构ATR硬止损、1R后ATR移动止损，或 all 对比两者",
     )
-    parser.add_argument("--min-group-trades", type=int, default=3, help="优化候选组合最少样本数，默认 3")
+    parser.add_argument("--min-group-trades", type=int, default=30, help="探索性分组最少样本数，默认 30")
     parser.add_argument("--min-signal-score", type=int, default=0, help="只交易评分不低于该值的信号，默认 0 表示不过滤")
     parser.add_argument("--min-structure-score", type=int, default=0, help="只交易结构分不低于该值的信号，默认 0 表示不过滤")
     parser.add_argument(
@@ -155,7 +157,10 @@ def fetch_higher_timeframe_context(symbol: str, bars: list[dict[str, Any]], inte
         return bars
     if interval in {HIGHER_TREND_INTERVAL, "1d"}:
         return add_higher_timeframe_context(bars, bars)
-    higher_limit = max(120, min(1000, len(bars) // 8 + 120))
+    lower_ms = interval_ms(interval)
+    higher_ms = interval_ms(HIGHER_TREND_INTERVAL)
+    covered_higher_bars = max(1, (len(bars) * lower_ms + higher_ms - 1) // higher_ms)
+    higher_limit = max(250, covered_higher_bars + 250)
     higher_bars = calculate_indicators(fetch_exchange_klines(exchange, symbol, HIGHER_TREND_INTERVAL, higher_limit, okx_instrument_type))
     return add_higher_timeframe_context(bars, higher_bars)
 
@@ -204,16 +209,12 @@ def evaluate_trade(
     entry_price = entry_bar["open"]
     stop_loss = float(signal["stop_loss"])
 
-    if direction == "long":
-        risk = entry_price - stop_loss
-        if risk <= 0:
-            return None
-        target_price = entry_price + risk * reward_risk
-    else:
-        risk = stop_loss - entry_price
-        if risk <= 0:
-            return None
-        target_price = entry_price - risk * reward_risk
+    levels = calculate_target_levels(direction, entry_price, stop_loss, reward_risk)
+    if levels is None:
+        return None
+    risk = levels["risk"]
+    target_price = levels["target_price"]
+    protection_price = levels["protection_price"]
 
     last_index = min(len(bars) - 1, entry_index + max_hold_bars)
     exit_index = last_index
@@ -224,11 +225,18 @@ def evaluate_trade(
     active_stop = stop_loss
     highest_price = entry_price
     lowest_price = entry_price
-    protection_price = entry_price + risk if direction == "long" else entry_price - risk
     protection_reached = False
 
     for index in range(entry_index, last_index + 1):
         bar = bars[index]
+        if stop_mode == "structure_atr":
+            decision = evaluate_bar_exit(direction, float(bar["low"]), float(bar["high"]), active_stop, target_price, protection_price)
+            if decision is not None:
+                exit_index = index
+                exit_bar, exit_price, exit_reason = bar, decision.exit_price, decision.reason
+                protection_reached = decision.reason == "protection_reached"
+                break
+            continue
         if direction == "long":
             # 单根 K 线内无法知道先后顺序，保守按先止损处理。
             if bar["low"] <= active_stop:
@@ -239,11 +247,6 @@ def evaluate_trade(
             if bar["high"] >= target_price:
                 exit_index = index
                 exit_bar, exit_price, exit_reason = bar, target_price, "take_profit"
-                break
-            if bar["high"] >= protection_price:
-                protection_reached = True
-                exit_index = index
-                exit_bar, exit_price, exit_reason = bar, protection_price, "protection_reached"
                 break
             highest_price = max(highest_price, bar["high"])
             if stop_mode == "atr_trailing_after_1r":
@@ -259,19 +262,12 @@ def evaluate_trade(
                 exit_index = index
                 exit_bar, exit_price, exit_reason = bar, target_price, "take_profit"
                 break
-            if bar["low"] <= protection_price:
-                protection_reached = True
-                exit_index = index
-                exit_bar, exit_price, exit_reason = bar, protection_price, "protection_reached"
-                break
             lowest_price = min(lowest_price, bar["low"])
             if stop_mode == "atr_trailing_after_1r":
                 active_stop = update_trailing_stop(direction, active_stop, entry_price, risk, lowest_price, bar.get("atr"), fee_rate)
 
-    gross_return = exit_price / entry_price - 1 if direction == "long" else entry_price / exit_price - 1
-    net_return = gross_return - fee_rate * 2
-    success_reasons = {"take_profit", "protection_reached", "trailing_stop"}
-    outcome = "win" if exit_reason in success_reasons or protection_reached else "loss"
+    net_return = calculate_return_pct(direction, entry_price, exit_price, fee_rate)
+    outcome = "win" if net_return > 0 else "loss"
 
     return SignalTrade(
         signal=direction,
@@ -335,12 +331,13 @@ def run_backtest(
     min_structure_score: int = 0,
     divergence_filter: str = "all",
     block_local_countertrend: bool = False,
+    strategy_config: Optional[StrategyConfig] = None,
+    entry_start_time: Optional[Any] = None,
+    entry_end_time: Optional[Any] = None,
 ) -> tuple[list[SignalTrade], pd.Series]:
     """逐根 K 线滚动生成信号并验证结果，同时生成累计收益曲线。"""
-    engine = ProjectSignalEngine()
+    engine = ProjectSignalEngine(strategy_config or DEFAULT_CONFIG)
     trades: list[SignalTrade] = []
-    equity = 1.0
-    equity_points = []
     used_exit_until = -1
     seen_signal_keys: set[tuple[str, Any]] = set()
     ready_bars: list[dict[str, Any]] = []
@@ -348,57 +345,98 @@ def run_backtest(
     for index in range(len(bars)):
         if bars[index].get("macd") is not None:
             ready_bars.append(bars[index])
-        signal = engine.detect(ready_bars)
+        # The strategy only reads the latest 200 bars. Keep 250 bars so pending
+        # confirmations retain their full history without repeatedly copying an
+        # ever-growing list on long (30k+) research runs.
+        signal = engine.detect(ready_bars[-250:])
         if signal.get("signal") not in {"long", "short"}:
-            equity_points.append((bars[index]["time"], equity))
             continue
 
         signal_key = (str(signal["signal"]), signal.get("divergence_time"))
         if signal_key in seen_signal_keys:
-            equity_points.append((bars[index]["time"], equity))
             continue
         seen_signal_keys.add(signal_key)
 
+        next_index = index + 1
+        if next_index >= len(bars):
+            continue
+        next_time = pd.Timestamp(bars[next_index]["time"])
+        if entry_start_time is not None and next_time < pd.Timestamp(entry_start_time):
+            continue
+        if entry_end_time is not None and next_time >= pd.Timestamp(entry_end_time):
+            continue
+
         # 同一持仓窗口内不重复开仓，避免一段行情里连续信号夸大交易次数。
         if index <= used_exit_until:
-            equity_points.append((bars[index]["time"], equity))
             continue
 
         if not signal_passes_trade_filters(signal, bars[index], min_signal_score, min_structure_score, divergence_filter, block_local_countertrend):
-            equity_points.append((bars[index]["time"], equity))
             continue
 
         trade = evaluate_trade(signal, bars, index + 1, reward_risk, max_hold_bars, fee_rate, stop_mode)
         if trade is None:
-            equity_points.append((bars[index]["time"], equity))
             continue
         trades.append(trade)
-        equity *= 1 + trade.return_pct
         used_exit_until = min(len(bars) - 1, index + 1 + trade.bars_held)
-        equity_points.append((bars[index]["time"], equity))
-
-    equity_curve = pd.Series([point[1] for point in equity_points], index=[point[0] for point in equity_points], name="Equity")
+    equity_curve = build_equity_curve(bars, trades)
     return trades, equity_curve
 
 
-def calculate_metrics(trades: list[SignalTrade], equity_curve: pd.Series) -> dict[str, float]:
+def build_equity_curve(bars: list[dict[str, Any]], trades: list[SignalTrade]) -> pd.Series:
+    """Book returns at exit time so the equity time axis never sees future PnL."""
+    if not bars:
+        return pd.Series(dtype=float, name="Equity")
+    returns_by_exit: dict[pd.Timestamp, list[float]] = {}
+    for trade in trades:
+        exit_time = pd.Timestamp(trade.exit_time)
+        returns_by_exit.setdefault(exit_time, []).append(trade.return_pct)
+    equity = 1.0
+    points: list[float] = []
+    index: list[pd.Timestamp] = []
+    for bar in bars:
+        timestamp = pd.Timestamp(bar["time"])
+        for trade_return in returns_by_exit.get(timestamp, []):
+            equity *= 1.0 + trade_return
+        index.append(timestamp)
+        points.append(equity)
+    return pd.Series(points, index=index, name="Equity")
+
+
+def calculate_metrics(
+    trades: list[SignalTrade],
+    equity_curve: pd.Series,
+    bootstrap_iterations: int = 2000,
+    bootstrap_seed: int = 20260620,
+) -> dict[str, float]:
     """计算信号有效性指标。"""
     returns = [trade.return_pct for trade in trades]
     wins = [ret for ret in returns if ret > 0]
     losses = [ret for ret in returns if ret <= 0]
-    successful_trades = [trade for trade in trades if trade.outcome == "win"]
-    failed_trades = [trade for trade in trades if trade.outcome == "loss"]
+    successful_trades = [trade for trade in trades if trade.return_pct > 0]
+    failed_trades = [trade for trade in trades if trade.return_pct <= 0]
     stop_trades = [trade for trade in trades if trade.exit_reason == "stop_loss"]
     protected_trades = [trade for trade in trades if trade.exit_reason in {"protection_reached", "trailing_stop"}]
     bars_held = [trade.bars_held for trade in trades]
     confirm_bars = [trade.confirm_bars for trade in trades]
     running_peak = equity_curve.cummax()
     drawdown = equity_curve / running_peak - 1
+    win_rate_ci_low, win_rate_ci_high = wilson_interval(len(successful_trades), len(trades))
+    expectancy = sum(returns) / len(returns) if returns else 0.0
+    if bootstrap_iterations > 0:
+        expectancy_ci_low, expectancy_ci_high = weekly_block_bootstrap_mean(
+            [trade.__dict__ for trade in trades], iterations=bootstrap_iterations, seed=bootstrap_seed
+        )
+    else:
+        expectancy_ci_low = expectancy_ci_high = expectancy
     return {
         "total_trades": float(len(trades)),
         "win_rate": len(successful_trades) / len(trades) if trades else 0.0,
         "loss_rate": len(failed_trades) / len(trades) if trades else 0.0,
-        "expectancy": sum(returns) / len(returns) if returns else 0.0,
+        "win_rate_ci_low": win_rate_ci_low,
+        "win_rate_ci_high": win_rate_ci_high,
+        "expectancy": expectancy,
+        "expectancy_ci_low": expectancy_ci_low,
+        "expectancy_ci_high": expectancy_ci_high,
         "total_return": equity_curve.iloc[-1] / equity_curve.iloc[0] - 1 if len(equity_curve) > 1 else 0.0,
         "max_drawdown": float(drawdown.min()) if not drawdown.empty else 0.0,
         "avg_win": sum(wins) / len(wins) if wins else 0.0,
@@ -410,28 +448,21 @@ def calculate_metrics(trades: list[SignalTrade], equity_curve: pd.Series) -> dic
     }
 
 
-def build_group_stats(trades: list[SignalTrade]) -> pd.DataFrame:
-    """按方向、趋势、背驰类型和强度分组，暴露可优化的条件。"""
+def build_group_stats(trades: list[SignalTrade], min_trades: int = 30) -> pd.DataFrame:
+    """Return sample-gated marginal and predeclared two-dimensional groups."""
     if not trades:
         return pd.DataFrame()
     frame = pd.DataFrame([trade.__dict__ for trade in trades])
-    frame["strength_bucket"] = pd.cut(frame["strength"], bins=[0, 0.4, 0.7, 1.0], labels=["低强度", "中强度", "高强度"], include_lowest=True)
-    frame["score_bucket"] = pd.cut(frame["signal_score"], bins=[-1, 6, 9, 20], labels=["低分", "中分", "高分"], include_lowest=True)
-    frame["structure_bucket"] = pd.cut(frame["structure_score"], bins=[-1, 0, 1, 3], labels=["无结构", "弱结构", "强结构"], include_lowest=True)
-    grouped = (
-        frame.groupby(["signal", "trend", "higher_trend", "signal_grade", "score_bucket", "structure_bucket", "divergence_type", "strength_bucket"], observed=True)
-        .agg(
-            trades=("return_pct", "count"),
-            win_rate=("outcome", lambda values: (values == "win").mean()),
-            avg_return=("return_pct", "mean"),
-            avg_score=("signal_score", "mean"),
-            avg_structure=("structure_score", "mean"),
-            avg_confirm_bars=("confirm_bars", "mean"),
-        )
-        .reset_index()
-        .sort_values(["win_rate", "avg_return", "trades"], ascending=[False, False, False])
-    )
-    return grouped
+    report_safe, _full = build_exploratory_group_tables(frame, min_trades=min_trades)
+    return report_safe
+
+
+def build_full_group_stats(trades: list[SignalTrade]) -> pd.DataFrame:
+    """Return the unranked full 8-D table for diagnostics only."""
+    if not trades:
+        return pd.DataFrame()
+    _report_safe, full = build_exploratory_group_tables(pd.DataFrame([trade.__dict__ for trade in trades]), min_trades=1)
+    return full
 
 
 def build_report(
@@ -473,27 +504,20 @@ def build_report(
 
     table = group_stats.copy()
     if table.empty:
-        table_values = [["无"], ["无"], ["无"], ["无"], ["无"], ["无"], ["无"], ["无"], ["0"], ["0.0"], ["0.0"], ["0.00%"], ["0.00%"], ["0.0"]]
+        table_values = [["样本不足"], ["-"], ["0"], ["0.00%"], ["-"], ["0.00%"], ["0.0"]]
     else:
         table_values = [
-            table["signal"].astype(str).tolist(),
-            table["trend"].astype(str).tolist(),
-            table["higher_trend"].astype(str).tolist(),
-            table["signal_grade"].astype(str).tolist(),
-            table["score_bucket"].astype(str).tolist(),
-            table["structure_bucket"].astype(str).tolist(),
-            table["divergence_type"].astype(str).tolist(),
-            table["strength_bucket"].astype(str).tolist(),
+            table["group_dimensions"].astype(str).tolist(),
+            table["group_value"].astype(str).tolist(),
             table["trades"].astype(str).tolist(),
-            table["avg_score"].map(lambda value: f"{value:.1f}").tolist(),
-            table["avg_structure"].map(lambda value: f"{value:.1f}").tolist(),
             table["win_rate"].map(lambda value: f"{value:.2%}").tolist(),
+            [f"{low:.2%}–{high:.2%}" for low, high in zip(table["win_rate_ci_low"], table["win_rate_ci_high"])],
             table["avg_return"].map(lambda value: f"{value:.2%}").tolist(),
             table["avg_confirm_bars"].map(lambda value: f"{value:.1f}").tolist(),
         ]
     fig.add_trace(
         go.Table(
-            header=dict(values=["方向", "趋势", "高周期", "等级", "分数段", "结构", "背驰类型", "强度", "次数", "均分", "结构分", "胜率", "均值收益", "确认K"], fill_color="#f3f4f6", align="left"),
+            header=dict(values=["探索维度", "分组", "次数", "胜率", "胜率95%区间", "均值收益", "确认K"], fill_color="#f3f4f6", align="left"),
             cells=dict(values=table_values, align="left"),
         ),
         row=4,
@@ -502,9 +526,9 @@ def build_report(
 
     summary = (
         f"交易次数: {metrics['total_trades']:.0f}<br>"
-        f"胜率: {metrics['win_rate']:.2%}<br>"
+        f"胜率: {metrics['win_rate']:.2%}（95% {metrics['win_rate_ci_low']:.2%}–{metrics['win_rate_ci_high']:.2%}）<br>"
         f"最大回撤: {metrics['max_drawdown']:.2%}<br>"
-        f"预期收益/笔: {metrics['expectancy']:.2%}<br>"
+        f"预期收益/笔: {metrics['expectancy']:.2%}（95% {metrics['expectancy_ci_low']:.2%}–{metrics['expectancy_ci_high']:.2%}）<br>"
         f"累计收益: {metrics['total_return']:.2%}<br>"
         f"止损触发占比: {metrics['stop_trigger_rate']:.2%}<br>"
         f"推保护成功占比: {metrics['protection_rate']:.2%}<br>"
@@ -525,10 +549,10 @@ def print_report(symbol: str, interval: str, trades: list[SignalTrade], metrics:
     print(f"\n{symbol} {interval} 项目信号回测完成")
     print(f"止损模式: {stop_mode}{filter_label}")
     print(f"总交易次数: {metrics['total_trades']:.0f}")
-    print(f"胜率: {metrics['win_rate']:.2%}")
+    print(f"胜率: {metrics['win_rate']:.2%}（95% {metrics['win_rate_ci_low']:.2%}–{metrics['win_rate_ci_high']:.2%}）")
     print(f"平均盈利: {metrics['avg_win']:.2%}")
     print(f"平均亏损: {metrics['avg_loss']:.2%}")
-    print(f"预期收益/笔: {metrics['expectancy']:.2%}")
+    print(f"预期收益/笔: {metrics['expectancy']:.2%}（95% {metrics['expectancy_ci_low']:.2%}–{metrics['expectancy_ci_high']:.2%}）")
     print(f"最大回撤: {metrics['max_drawdown']:.2%}")
     print(f"累计收益: {metrics['total_return']:.2%}")
     print(f"止损触发占比: {metrics['stop_trigger_rate']:.2%}")
@@ -543,7 +567,7 @@ def print_report(symbol: str, interval: str, trades: list[SignalTrade], metrics:
         if reliable.empty:
             print(f"\n优化提示：所有条件组合样本数都少于 {min_group_trades}，暂时不要根据单个组合改策略。")
         else:
-            print(f"\n表现较好的条件组合（样本数 >= {min_group_trades}）：")
+            print(f"\n探索性较好分组（仅用于提出假设，样本数 >= {min_group_trades}）：")
             print(reliable.head(5).to_string(index=False, formatters={"win_rate": "{:.2%}".format, "avg_return": "{:.2%}".format, "avg_score": "{:.1f}".format, "avg_structure": "{:.1f}".format, "avg_confirm_bars": "{:.1f}".format}))
             weak = reliable.sort_values(["avg_return", "win_rate"], ascending=[True, True]).head(5)
             print(f"\n优先排查/过滤的弱组合（样本数 >= {min_group_trades}）：")
@@ -560,6 +584,8 @@ def build_stop_mode_result(
     min_structure_score: int = 0,
     divergence_filter: str = "all",
     block_local_countertrend: bool = False,
+    min_group_trades: int = 30,
+    strategy_config: Optional[StrategyConfig] = None,
 ) -> dict[str, Any]:
     """运行单个止损模式并返回报告构建所需数据。"""
     trades, equity_curve = run_backtest(
@@ -572,15 +598,18 @@ def build_stop_mode_result(
         min_structure_score,
         divergence_filter,
         block_local_countertrend,
+        strategy_config,
     )
     metrics = calculate_metrics(trades, equity_curve)
-    group_stats = build_group_stats(trades)
+    group_stats = build_group_stats(trades, min_group_trades)
+    full_group_stats = build_full_group_stats(trades)
     return {
         "stop_mode": stop_mode,
         "trades": trades,
         "equity_curve": equity_curve,
         "metrics": metrics,
         "group_stats": group_stats,
+        "full_group_stats": full_group_stats,
     }
 
 
@@ -651,6 +680,7 @@ def main() -> None:
             args.min_structure_score,
             args.divergence_filter,
             args.block_local_countertrend,
+            args.min_group_trades,
         )
         for stop_mode in stop_modes
     ]
@@ -667,6 +697,8 @@ def main() -> None:
         primary["stop_mode"],
         filter_label,
     )
+    primary["group_stats"].to_csv(output_path.with_name(f"{output_path.stem}_groups.csv"), index=False)
+    primary["full_group_stats"].to_csv(output_path.with_name(f"{output_path.stem}_groups_full_8d.csv"), index=False)
     print_report(
         report_symbol,
         args.interval,

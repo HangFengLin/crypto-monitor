@@ -7,6 +7,9 @@ services:
       - .env
     ports:
       - "80:8080"
+    cpus: ${WEB_CPUS:-1.0}
+    mem_limit: ${WEB_MEMORY_LIMIT:-512m}
+    stop_grace_period: 45s
     environment:
       HOST: 0.0.0.0
       PORT: 8080
@@ -21,6 +24,17 @@ services:
       - ./.env:/app/.env:ro
       - ./runtime:/app/runtime
       - ./reports:/app/reports
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=5)); raise SystemExit(0 if data.get('ok') else 1)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILES:-3}
 
   okx-strategy-bot:
     build: .
@@ -30,14 +44,30 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    command: ["python", "okx_market_cap_bot.py", "--place-order"]
+    command: ["python", "okx_market_cap_bot.py"]
+    cpus: ${BOT_CPUS:-1.5}
+    mem_limit: ${BOT_MEMORY_LIMIT:-768m}
+    stop_grace_period: 330s
     environment:
       PYTHONUNBUFFERED: "1"
       OKX_BOT_STATE_FILE: /app/runtime/okx_market_cap_bot_state.json
       OKX_BOT_EVENT_LOG_FILE: /app/runtime/okx_market_cap_bot_events.jsonl
-      OKX_ORDER_SYMBOL_BLOCKLIST: TAO-USDT-SWAP
+      OKX_ORDER_SYMBOL_BLOCKLIST: TAO-USDT-SWAP,UNI-USDT-SWAP
+      OKX_SCAN_SYMBOL_BLOCKLIST: GRAMUSDT
     volumes:
       - ./.env:/app/.env:ro
       - ./runtime:/app/runtime
     depends_on:
-      - crypto-project
+      crypto-project:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILES:-3}

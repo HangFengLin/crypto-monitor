@@ -8,11 +8,11 @@ ENV PORT=8080
 WORKDIR /app
 RUN useradd -r -u 1000 appuser
 
-COPY requirements-backtest.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir \
     -i https://mirrors.cloud.tencent.com/pypi/simple \
     --trusted-host mirrors.cloud.tencent.com \
-    -r requirements-backtest.txt
+    -r requirements.txt
 
 COPY . .
 RUN chown -R appuser:appuser /app

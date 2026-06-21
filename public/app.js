@@ -36,7 +36,14 @@ const strategyStatusEl = document.querySelector("#strategyStatus");
 const strategySummaryEl = document.querySelector("#strategySummary");
 const strategyTradesEl = document.querySelector("#strategyTrades");
 const botPositionsEl = document.querySelector("#botPositions");
-const localPorts = [8085, 8084, 8083, 8082, 8081, 8080, 8000, 5000, 80];
+const livePositionCountEl = document.querySelector("#livePositionCount");
+const botPositionHintEl = document.querySelector("#botPositionHint");
+const manageWatchlistEl = document.querySelector("#manageWatchlist");
+const toggleMarketDetailsEl = document.querySelector("#toggleMarketDetails");
+const configuredLocalPorts = window.MONITOR_BOOTSTRAP?.localPorts;
+const localPorts = Array.isArray(configuredLocalPorts) && configuredLocalPorts.length
+  ? configuredLocalPorts.filter((port) => Number.isInteger(port) && port > 0 && port <= 65535)
+  : [8080, 80];
 const fallbackWatchlist = [
   { symbol: "BTCUSDT", email: "", signal: true, indicator_alert: true, support_alert: true, interval: "15m" },
   { symbol: "ETHUSDT", email: "", signal: true, indicator_alert: true, support_alert: true, interval: "15m" },
@@ -44,6 +51,9 @@ const fallbackWatchlist = [
 
 let latestState = null;
 let eventSource = null;
+let connectionStatus = "";
+let isManagingWatchlist = false;
+let showMarketDetails = false;
 
 function formatNumber(value, digits = 8) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
@@ -84,6 +94,7 @@ function addRow(item = {}) {
   tr.querySelector(".signal").checked = item.signal !== false;
   tr.querySelector(".indicatorAlert").checked = item.indicator_alert !== false;
   tr.querySelector(".interval").value = item.interval || "15m";
+  tr.querySelector(".symbol").readOnly = !isManagingWatchlist;
   tr.querySelector(".remove").addEventListener("click", () => {
     tr.remove();
     renderPrices();
@@ -138,6 +149,7 @@ function renderState(state) {
   renderDiscordStatus(state);
   renderBotStatus(state.okx_bot_status || {});
   errorTextEl.textContent = state.last_error ? `行情拉取失败：${state.last_error}` : "";
+  renderSystemHealth(state);
   updateOverview(state);
   renderBacktestSymbolOptions(state.watchlist || []);
   renderBotPositions(state.okx_bot_status || {});
@@ -170,7 +182,10 @@ function updateOverview(state) {
     const ticker = prices[item.symbol] || {};
     return total + Number(ticker.quoteVolume || ticker.volume || 0);
   }, 0);
+  const botStatus = state.okx_bot_status || {};
+  const positionCount = Number(botStatus.positions?.length || botStatus.open_positions || 0);
 
+  if (livePositionCountEl) livePositionCountEl.textContent = formatNumber(positionCount, 0);
   if (watchCountEl) watchCountEl.textContent = formatNumber(watchlist.length, 0);
   if (watchMetaEl) watchMetaEl.textContent = watchlist.length ? `${watchlist[0].interval || "15m"} 默认周期` : "等待添加币种";
   if (triggerCountEl) triggerCountEl.textContent = formatNumber(triggerCount, 0);
@@ -233,6 +248,48 @@ function renderBotStatus(status) {
   const positionCount = Number(status.positions?.length || status.open_positions || 0);
   const scanText = status.last_scan_at ? `最近扫描 ${formatTime(status.last_scan_at)}` : "暂无扫描记录";
   botDetail.textContent = `${positionCount} 个真实持仓 · ${scanText}`;
+  if (botPositionHintEl) {
+    botPositionHintEl.textContent = running ? `${positionCount} 个持仓 · ${scanText}` : `${status.health_label || "状态未知"} · ${scanText}`;
+  }
+}
+
+function renderSystemHealth(state = {}) {
+  if (!headerConnectionDot || !headerConnectionText) return;
+  const botHealth = state.okx_bot_status?.health || (state.okx_bot_status?.ok ? "running" : "unknown");
+  const botNeedsAttention = ["stale", "stalled", "error"].includes(botHealth);
+  const hasError = Boolean(state.last_error || state.okx_bot_status?.last_error);
+  let dotClass = "";
+  let label = "连接中";
+
+  if (connectionStatus === "offline") {
+    dotClass = "offline";
+    label = "连接异常";
+  } else if (botNeedsAttention || hasError) {
+    label = "需要关注";
+  } else if (connectionStatus === "online") {
+    dotClass = "online";
+    label = "运行正常";
+  }
+
+  headerConnectionDot.className = `dot ${dotClass}`;
+  headerConnectionText.textContent = label;
+}
+
+function setManagementMode(enabled) {
+  isManagingWatchlist = enabled;
+  document.body.classList.toggle("manageMode", enabled);
+  manageWatchlistEl?.setAttribute("aria-pressed", String(enabled));
+  if (manageWatchlistEl) manageWatchlistEl.textContent = enabled ? "完成管理" : "管理币种";
+  coinRows.querySelectorAll(".symbol").forEach((input) => {
+    input.readOnly = !enabled;
+  });
+}
+
+function toggleMarketDetailView() {
+  showMarketDetails = !showMarketDetails;
+  document.body.classList.toggle("showMarketDetails", showMarketDetails);
+  toggleMarketDetailsEl?.setAttribute("aria-pressed", String(showMarketDetails));
+  if (toggleMarketDetailsEl) toggleMarketDetailsEl.textContent = showMarketDetails ? "收起细节" : "展开细节";
 }
 
 function renderBotPositions(status) {
@@ -658,15 +715,17 @@ async function init() {
 }
 
 function setConnection(status, text) {
-  connectionDot.className = `dot ${status}`;
-  connectionText.textContent = text;
-  if (headerConnectionDot) headerConnectionDot.className = `dot ${status}`;
-  if (headerConnectionText) headerConnectionText.textContent = text;
+  connectionStatus = status;
+  if (connectionDot) connectionDot.className = `dot ${status}`;
+  if (connectionText) connectionText.textContent = text;
+  renderSystemHealth(latestState || {});
 }
 
 document.querySelector("#addRow").addEventListener("click", () => addRow());
 document.querySelector("#saveList").addEventListener("click", saveWatchlist);
 document.querySelector("#runBacktest").addEventListener("click", runBacktest);
+manageWatchlistEl?.addEventListener("click", () => setManagementMode(!isManagingWatchlist));
+toggleMarketDetailsEl?.addEventListener("click", toggleMarketDetailView);
 coinRows.addEventListener("input", () => {
   renderPrices();
   updateOverview(latestState || {});

@@ -6,6 +6,12 @@ REMOTE_DIR="${REMOTE_DIR:-/opt/crypto-project}"
 SERVICE="${SERVICE:-crypto-project}"
 CONFIRM_RESTART_OKX_BOT="${CONFIRM_RESTART_OKX_BOT:-}"
 BUILD_ONLY="${BUILD_ONLY:-}"
+ENABLE_OKX_ORDER_MODE="${ENABLE_OKX_ORDER_MODE:-}"
+COMPOSE_FILES="-f docker-compose.yml"
+
+if [[ "${ENABLE_OKX_ORDER_MODE}" == "yes" ]]; then
+  COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.order.yml"
+fi
 
 EXCLUDES=(
   "--exclude=.git/"
@@ -50,19 +56,24 @@ EOF
   exit 2
 fi
 
+if [[ "${ENABLE_OKX_ORDER_MODE}" == "yes" && " ${SERVICE} " != *" okx-strategy-bot "* ]]; then
+  echo "ENABLE_OKX_ORDER_MODE=yes requires SERVICE to include okx-strategy-bot." >&2
+  exit 2
+fi
+
 echo "Deploying local code to ${REMOTE_HOST}:${REMOTE_DIR}"
 rsync -az --delete "${EXCLUDES[@]}" ./ "${REMOTE_HOST}:${REMOTE_DIR}/"
 
 if [[ "${BUILD_ONLY}" == "yes" ]]; then
   echo "Building ${SERVICE} on ${REMOTE_HOST} without restarting containers"
-  ssh "${REMOTE_HOST}" "cd ${REMOTE_DIR} && sudo -n docker compose build ${SERVICE}"
+  ssh "${REMOTE_HOST}" "cd ${REMOTE_DIR} && sudo -n docker compose ${COMPOSE_FILES} build ${SERVICE}"
   echo
   echo "Done. Built ${SERVICE} without restarting running containers."
   exit 0
 fi
 
 echo "Rebuilding and restarting ${SERVICE} on ${REMOTE_HOST}"
-ssh "${REMOTE_HOST}" "cd ${REMOTE_DIR} && sudo -n docker compose up -d --build ${SERVICE}"
+ssh "${REMOTE_HOST}" "cd ${REMOTE_DIR} && sudo -n docker compose ${COMPOSE_FILES} up -d --build ${SERVICE}"
 
 echo "Checking health endpoint"
 ssh "${REMOTE_HOST}" "for i in 1 2 3 4 5 6 7 8 9 10; do curl -fsS http://127.0.0.1/api/health && exit 0; sleep 2; done; exit 1"

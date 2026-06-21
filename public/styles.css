@@ -1108,3 +1108,369 @@ tbody tr.is-hidden {
     flex-direction: column;
   }
 }
+
+/* Monitoring-first information hierarchy */
+.monitorFrame {
+  grid-template-columns: 104px minmax(0, 1fr);
+}
+
+.navRail {
+  padding-inline: 10px;
+}
+
+.navItem {
+  padding-inline: 10px;
+  text-align: center;
+}
+
+.pageIntro {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.headerActions {
+  flex-wrap: nowrap;
+}
+
+.healthPill,
+.updateStamp {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(11, 20, 24, 0.8);
+  padding: 8px 12px;
+}
+
+.healthPill small,
+.updateStamp small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.healthPill strong,
+.updateStamp strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+}
+
+.alertBar {
+  display: none;
+  margin-bottom: 12px;
+  border: 1px solid rgba(255, 98, 110, 0.32);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: #ffd8db;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.alertBar:not(:empty) {
+  display: block;
+}
+
+.actionSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.summaryItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: center;
+  min-height: 76px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 13px 15px;
+}
+
+.summaryItem span,
+.summaryItem small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.summaryItem strong {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  font-size: 27px;
+}
+
+.primarySummary {
+  border-color: rgba(67, 209, 132, 0.3);
+  background: linear-gradient(135deg, rgba(67, 209, 132, 0.12), var(--panel));
+}
+
+.focusPanel {
+  margin-bottom: 14px;
+  padding: 16px;
+}
+
+.sectionKicker {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+#botPositionHint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inlineDisclosure {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.inlineDisclosure summary,
+.toolDisclosure > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.inlineDisclosure summary::-webkit-details-marker,
+.toolDisclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.inlineDisclosure summary {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.inlineDisclosure summary::before {
+  content: "+";
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  margin-right: 7px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+.inlineDisclosure[open] summary::before {
+  content: "−";
+}
+
+#strategyStatus {
+  margin-left: 6px;
+}
+
+.marketPanel {
+  margin-bottom: 14px;
+}
+
+.quietButton {
+  align-self: end;
+  white-space: nowrap;
+}
+
+body:not(.manageMode) .managementOnly,
+body:not(.showMarketDetails) .marketDetail {
+  display: none !important;
+}
+
+.symbol[readonly] {
+  pointer-events: none;
+}
+
+.manageMode .symbol:not([readonly]) {
+  border: 1px solid var(--line);
+  background: rgba(6, 13, 15, 0.72);
+  padding-inline: 8px;
+}
+
+body:not(.showMarketDetails) th:nth-child(1),
+body:not(.showMarketDetails) td:nth-child(1) { width: 22%; }
+body:not(.showMarketDetails) th:nth-child(2),
+body:not(.showMarketDetails) td:nth-child(2) { width: 17%; }
+body:not(.showMarketDetails) th:nth-child(3),
+body:not(.showMarketDetails) td:nth-child(3) { width: 13%; }
+body:not(.showMarketDetails) th:nth-child(5),
+body:not(.showMarketDetails) td:nth-child(5) { width: 22%; }
+body:not(.showMarketDetails) th:nth-child(6),
+body:not(.showMarketDetails) td:nth-child(6) { width: 26%; }
+
+.toolShelf {
+  display: grid;
+  gap: 9px;
+  margin-top: 4px;
+}
+
+.toolDisclosure {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 19, 22, 0.64);
+}
+
+.toolDisclosure > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 13px 15px;
+}
+
+.toolDisclosure > summary b,
+.toolDisclosure > summary small {
+  display: block;
+}
+
+.toolDisclosure > summary b {
+  font-size: 14px;
+}
+
+.toolDisclosure > summary small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.summaryAction {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.toolDisclosure[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.toolDisclosure[open] .summaryAction {
+  font-size: 0;
+}
+
+.toolDisclosure[open] .summaryAction::after {
+  content: "收起";
+  font-size: 12px;
+}
+
+.systemDetailGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  padding: 14px;
+}
+
+.serviceStatus,
+.detailMetric {
+  min-height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 11px;
+}
+
+.serviceStatus {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.serviceStatus small {
+  grid-column: 1 / -1;
+}
+
+.detailMetric span,
+.detailMetric small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.detailMetric strong {
+  display: block;
+  margin-top: 5px;
+}
+
+.backtestWorkspace {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.38fr) minmax(0, 1fr);
+  gap: 18px;
+  padding: 14px;
+}
+
+.backtestControls {
+  margin-top: 0;
+}
+
+.toolDisclosure > .events {
+  margin: 0;
+  padding: 14px;
+}
+
+.diagnosticLink {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.diagnosticLink:hover {
+  color: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .headerActions {
+    flex-wrap: wrap;
+  }
+
+  .healthPill,
+  .updateStamp {
+    width: auto;
+  }
+
+  .actionSummary,
+  .systemDetailGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .backtestWorkspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .monitorFrame {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .headerActions,
+  .healthPill,
+  .updateStamp,
+  #manageWatchlist,
+  #addRow {
+    width: 100%;
+  }
+
+  .healthPill,
+  .updateStamp {
+    justify-content: flex-start;
+  }
+
+  .summaryItem {
+    min-height: 68px;
+  }
+
+  body:not(.showMarketDetails) td.marketDetail,
+  body:not(.manageMode) td.managementOnly {
+    display: none !important;
+  }
+
+  .marketTools .quietButton {
+    width: 100%;
+  }
+}

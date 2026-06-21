@@ -12,8 +12,9 @@ import argparse
 import getpass
 import json
 import os
+import signal as os_signal
+import threading
 import time
-import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -21,13 +22,17 @@ from typing import Any, Optional
 from config import load_env_file
 from data_client import fetch_okx_demo_positions, normalize_okx_inst_id, parse_float, place_okx_demo_order
 from indicators import calculate_indicators
+from position_manager import calculate_target_levels as target_levels
+from position_manager import evaluate_bar_exit
 from project_signal_backtest import fetch_exchange_klines, fetch_higher_timeframe_context
+from runtime_utils import atomic_write_text, post_discord
 from strategy import ProjectSignalEngine
 
 
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "okx_demo_bot_state.json"
 SIGNAL_ENGINE = ProjectSignalEngine()
+SHUTDOWN_EVENT = threading.Event()
 
 
 @dataclass
@@ -61,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=int, default=60, help="轮询间隔，默认 60 秒")
     parser.add_argument("--min-signal-score", type=int, default=0, help="最低信号评分")
     parser.add_argument("--min-structure-score", type=int, default=0, help="最低结构评分")
-    parser.add_argument("--no-order", action="store_true", help="只推送信号，不提交 OKX 模拟盘订单")
+    parser.add_argument("--place-order", action="store_true", help="显式确认提交 OKX Demo 模拟盘订单；默认只推送信号")
     parser.add_argument("--debug-orders", action="store_true", help="打印 OKX 下单请求和原始响应")
     parser.add_argument("--debug-signals", action="store_true", help="打印策略信号到机器人下单入口的传播节点")
     return parser.parse_args()
@@ -77,15 +82,7 @@ def send_discord(content: str) -> None:
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook_url:
         return
-    payload = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=12) as response:
-        response.read()
+    post_discord(webhook_url, content)
 
 
 def load_position() -> Optional[OpenPosition]:
@@ -101,13 +98,10 @@ def load_position() -> Optional[OpenPosition]:
 
 
 def save_position(position: Optional[OpenPosition]) -> None:
-    tmp_file = STATE_FILE.with_suffix(".tmp")
     if position is None:
-        tmp_file.write_text("null\n", encoding="utf-8")
-        tmp_file.replace(STATE_FILE)
+        atomic_write_text(STATE_FILE, "null\n")
         return
-    tmp_file.write_text(json.dumps(asdict(position), ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_file.replace(STATE_FILE)
+    atomic_write_text(STATE_FILE, json.dumps(asdict(position), ensure_ascii=False, indent=2))
 
 
 def exchange_position_size(position: dict[str, Any]) -> Optional[float]:
@@ -189,24 +183,6 @@ def latest_signal(symbol: str, interval: str, limit: int, instrument_type: str) 
         signal.setdefault("price", bars[-1].get("close"))
         signal.setdefault("kline_close_time", bars[-1].get("close_time") or bars[-1].get("open_time"))
     return signal, bars
-
-
-def target_levels(direction: str, entry_price: float, stop_loss: float, reward_risk: float) -> Optional[dict[str, float]]:
-    if direction == "long":
-        risk = entry_price - stop_loss
-        if risk <= 0:
-            return None
-        return {
-            "target_price": entry_price + risk * reward_risk,
-            "protection_price": entry_price + risk,
-        }
-    risk = stop_loss - entry_price
-    if risk <= 0:
-        return None
-    return {
-        "target_price": entry_price - risk * reward_risk,
-        "protection_price": entry_price - risk,
-    }
 
 
 def order_side(direction: str, closing: bool = False) -> str:
@@ -359,37 +335,32 @@ def evaluate_position(args: argparse.Namespace, position: OpenPosition, bars: li
     position.lowest_price = min(position.lowest_price, low, close)
     save_position(position)
 
-    if position.direction == "long":
-        if low <= position.stop_loss:
-            close_position(args, position, position.stop_loss, "stop_loss", no_order)
-            return None
-        if high >= position.target_price:
-            close_position(args, position, position.target_price, "take_profit", no_order)
-            return None
-        if high >= position.protection_price:
-            close_position(args, position, position.protection_price, "protection_reached", no_order)
-            return None
-    else:
-        if high >= position.stop_loss:
-            close_position(args, position, position.stop_loss, "stop_loss", no_order)
-            return None
-        if low <= position.target_price:
-            close_position(args, position, position.target_price, "take_profit", no_order)
-            return None
-        if low <= position.protection_price:
-            close_position(args, position, position.protection_price, "protection_reached", no_order)
-            return None
+    decision = evaluate_bar_exit(
+        position.direction,
+        low,
+        high,
+        position.stop_loss,
+        position.target_price,
+        position.protection_price,
+    )
+    if decision:
+        close_position(args, position, decision.exit_price, decision.reason, no_order)
+        return None
     return position
 
 
 def main() -> None:
     args = parse_args()
-    ensure_secret_env("OKX_API_KEY", "OKX_API_KEY: ")
-    ensure_secret_env("OKX_SECRET_KEY", "OKX_SECRET_KEY: ")
-    ensure_secret_env("OKX_PASSPHRASE", "OKX_PASSPHRASE: ")
-    ensure_secret_env("DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL: ")
+    SHUTDOWN_EVENT.clear()
+    os_signal.signal(os_signal.SIGTERM, lambda signum, frame: SHUTDOWN_EVENT.set())
+    os_signal.signal(os_signal.SIGINT, lambda signum, frame: SHUTDOWN_EVENT.set())
+    load_env_file()
+    if args.place_order:
+        ensure_secret_env("OKX_API_KEY", "OKX_API_KEY: ")
+        ensure_secret_env("OKX_SECRET_KEY", "OKX_SECRET_KEY: ")
+        ensure_secret_env("OKX_PASSPHRASE", "OKX_PASSPHRASE: ")
 
-    no_order = bool(args.no_order)
+    no_order = not args.place_order
     position = load_position()
     position, trading_paused = reconcile_startup_position(args, position, no_order)
     send_discord(
@@ -397,7 +368,7 @@ def main() -> None:
         f"{'(dry-run)' if no_order else '(模拟盘下单)'}"
     )
 
-    while True:
+    while not SHUTDOWN_EVENT.is_set():
         try:
             signal, bars = latest_signal(args.symbol, args.interval, args.limit, args.okx_instrument_type)
             if not bars:
@@ -443,7 +414,9 @@ def main() -> None:
                 send_discord(message)
             except Exception as discord_exc:
                 print(f"Discord 推送失败：{discord_exc}", flush=True)
-        time.sleep(max(10, args.poll_seconds))
+        SHUTDOWN_EVENT.wait(max(10, args.poll_seconds))
+
+    save_position(position)
 
 
 if __name__ == "__main__":
