@@ -16,18 +16,23 @@ import signal as os_signal
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from config import config_value, load_config, load_env_file
 from data_client import fetch_klines, parse_float
 from indicators import calculate_indicators
+from position_manager import (
+    STRUCTURE_ATR_STOP_MODE,
+    evaluate_bar_exit,
+    evaluate_lifecycle_bar,
+)
+from position_manager import (
+    calculate_target_levels as target_levels,
+)
 from project_signal_backtest import fetch_higher_timeframe_context
-from position_manager import calculate_target_levels as target_levels
-from position_manager import evaluate_bar_exit
 from runtime_utils import append_jsonl, atomic_write_text, post_discord
 from strategy import ProjectSignalEngine
 from strategy_universe import build_market_cap_universe
-
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = load_config()
@@ -35,6 +40,8 @@ STATE_FILE = ROOT / "binance_strategy_bot_state.json"
 EVENT_LOG_FILE = ROOT / "binance_strategy_bot_events.jsonl"
 SIGNAL_ENGINES: dict[tuple[str, str], ProjectSignalEngine] = {}
 SHUTDOWN_EVENT = threading.Event()
+POSITION_STOP_MODE = str(config_value(CONFIG, "bot", "position_stop_mode", STRUCTURE_ATR_STOP_MODE))
+POSITION_FEE_RATE = float(config_value(CONFIG, "bot", "fee_rate", config_value(CONFIG, "app", "strategy_fee_rate", 0.001)))
 
 
 def shutdown_signal_handler(signum: int, frame: Any) -> None:
@@ -141,7 +148,7 @@ def should_skip_signal(signal: dict[str, Any], min_signal_score: int, min_struct
     )
 
 
-def open_position(symbol: str, interval: str, signal: dict[str, Any], reward_risk: float) -> Optional[dict[str, Any]]:
+def open_position(symbol: str, interval: str, signal: dict[str, Any], reward_risk: float) -> dict[str, Any] | None:
     direction = str(signal.get("signal", ""))
     entry_price = parse_float(signal.get("price"))
     stop_loss = parse_float(signal.get("stop_loss"))
@@ -160,9 +167,14 @@ def open_position(symbol: str, interval: str, signal: dict[str, Any], reward_ris
         "status": "open",
         "entry_price": entry_price,
         "stop_loss": stop_loss,
+        "initial_stop_loss": stop_loss,
+        "active_stop": stop_loss,
         "target_price": levels["target_price"],
         "protection_price": levels["protection_price"],
         "risk": levels["risk"],
+        "protection_activated": False,
+        "protected_stop_price": 0.0,
+        "exit_mode": POSITION_STOP_MODE,
         "opened_at": time.time(),
         "opened_kline_close_time": signal.get("kline_close_time"),
         "signal_score": signal.get("signal_score"),
@@ -173,25 +185,67 @@ def open_position(symbol: str, interval: str, signal: dict[str, Any], reward_ris
 
 def evaluate_position(position: dict[str, Any], bars: list[dict[str, Any]]) -> bool:
     direction = str(position.get("direction"))
-    stop_loss = parse_float(position.get("stop_loss"))
+    entry_price = parse_float(position.get("entry_price"))
+    initial_stop = parse_float(position.get("initial_stop_loss")) or parse_float(position.get("stop_loss"))
+    active_stop = parse_float(position.get("active_stop")) or initial_stop
     target_price = parse_float(position.get("target_price"))
     protection_price = parse_float(position.get("protection_price"))
     opened_close_time = int(position.get("opened_kline_close_time") or 0)
-    if stop_loss is None or target_price is None or protection_price is None:
+    if initial_stop is None or target_price is None or protection_price is None:
+        return False
+    if entry_price is None:
+        future_bars = [bar for bar in bars if int(bar.get("close_time") or 0) > opened_close_time]
+        for bar in future_bars:
+            high = parse_float(bar.get("high"))
+            low = parse_float(bar.get("low"))
+            if high is None or low is None:
+                continue
+            decision = evaluate_bar_exit(direction, low, high, initial_stop, target_price, protection_price)
+            if decision:
+                position["status"] = "closed"
+                position["exit_reason"] = decision.reason
+                position["exit_price"] = decision.exit_price
+                position["closed_at"] = time.time()
+                return True
         return False
 
     future_bars = [bar for bar in bars if int(bar.get("close_time") or 0) > opened_close_time]
-    for bar in future_bars[-3:]:
+    for bar in future_bars:
         high = parse_float(bar.get("high"))
         low = parse_float(bar.get("low"))
+        close = parse_float(bar.get("close"))
         if high is None or low is None:
             continue
 
-        decision = evaluate_bar_exit(direction, low, high, stop_loss, target_price, protection_price)
-        if decision:
+        lifecycle = evaluate_lifecycle_bar(
+            direction,
+            low,
+            high,
+            close if close is not None else high,
+            entry_price,
+            initial_stop,
+            target_price,
+            protection_price,
+            active_stop=active_stop,
+            highest_price=parse_float(position.get("highest_price")),
+            lowest_price=parse_float(position.get("lowest_price")),
+            protection_activated=bool(position.get("protection_activated")),
+            protected_stop_price=parse_float(position.get("protected_stop_price")) or 0.0,
+            stop_mode=str(position.get("exit_mode") or POSITION_STOP_MODE),
+            fee_rate=POSITION_FEE_RATE,
+            atr_value=parse_float(bar.get("atr")),
+        )
+        active_stop = lifecycle.active_stop
+        position["active_stop"] = lifecycle.active_stop
+        position["stop_loss"] = lifecycle.active_stop
+        position["highest_price"] = lifecycle.highest_price
+        position["lowest_price"] = lifecycle.lowest_price
+        position["protection_activated"] = lifecycle.protection_activated
+        position["protected_stop_price"] = lifecycle.protected_stop_price
+        if lifecycle.decision:
             position["status"] = "closed"
-            position["exit_reason"] = decision.reason
-            position["exit_price"] = decision.exit_price
+            position["exit_reason"] = lifecycle.decision.reason
+            position["exit_price"] = lifecycle.decision.exit_price
             position["closed_at"] = time.time()
             return True
     return False

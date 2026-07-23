@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import unittest
 
-from position_manager import calculate_return_pct, calculate_target_levels, evaluate_bar_exit, evaluate_price_exit
+from position_manager import (
+    ATR_TRAILING_AFTER_1R_STOP_MODE,
+    STRUCTURE_ATR_BREAKEVEN_AFTER_1R_STOP_MODE,
+    STRUCTURE_ATR_STOP_MODE,
+    calculate_return_pct,
+    calculate_target_levels,
+    evaluate_bar_exit,
+    evaluate_lifecycle_bar,
+    evaluate_price_exit,
+)
 
 
 class PositionManagerTest(unittest.TestCase):
@@ -35,6 +44,132 @@ class PositionManagerTest(unittest.TestCase):
         decision = evaluate_price_exit("short", 94, 105, 90, 95)
         self.assertEqual((decision.reason, decision.exit_price), ("protection_reached", 95))
         self.assertIsNone(evaluate_price_exit("long", 102, 95, 110, 105))
+
+    def test_lifecycle_breakeven_arms_without_exiting_at_one_r(self) -> None:
+        result = evaluate_lifecycle_bar(
+            "long",
+            low=99,
+            high=106,
+            close=105,
+            entry_price=100,
+            initial_stop_loss=95,
+            target_price=110,
+            protection_price=105,
+            stop_mode=STRUCTURE_ATR_BREAKEVEN_AFTER_1R_STOP_MODE,
+            fee_rate=0.001,
+        )
+        self.assertIsNone(result.decision)
+        self.assertTrue(result.protection_activated)
+        self.assertAlmostEqual(result.active_stop, 100.2)
+
+        stopped = evaluate_lifecycle_bar(
+            "long",
+            low=100.1,
+            high=106,
+            close=100.2,
+            entry_price=100,
+            initial_stop_loss=95,
+            target_price=110,
+            protection_price=105,
+            active_stop=result.active_stop,
+            highest_price=result.highest_price,
+            lowest_price=result.lowest_price,
+            protection_activated=result.protection_activated,
+            protected_stop_price=result.protected_stop_price,
+            stop_mode=STRUCTURE_ATR_BREAKEVEN_AFTER_1R_STOP_MODE,
+            fee_rate=0.001,
+        )
+        self.assertEqual((stopped.decision.reason, stopped.decision.exit_price, stopped.decision.outcome), ("protected_stop", 100.2, "breakeven"))
+
+    def test_lifecycle_default_remains_structure_atr(self) -> None:
+        result = evaluate_lifecycle_bar(
+            "long",
+            low=99,
+            high=106,
+            close=105,
+            entry_price=100,
+            initial_stop_loss=95,
+            target_price=110,
+            protection_price=105,
+        )
+        self.assertEqual(STRUCTURE_ATR_STOP_MODE, "structure_atr")
+        self.assertEqual((result.decision.reason, result.decision.exit_price), ("protection_reached", 105))
+
+    def test_lifecycle_atr_trailing_long_moves_stop_after_one_r(self) -> None:
+        result = evaluate_lifecycle_bar(
+            "long",
+            low=99,
+            high=107,
+            close=106,
+            entry_price=100,
+            initial_stop_loss=95,
+            target_price=115,
+            protection_price=105,
+            stop_mode=ATR_TRAILING_AFTER_1R_STOP_MODE,
+            fee_rate=0.001,
+            atr_value=2,
+        )
+        self.assertIsNone(result.decision)
+        self.assertTrue(result.protection_activated)
+        self.assertAlmostEqual(result.active_stop, 104.6)
+
+        stopped = evaluate_lifecycle_bar(
+            "long",
+            low=104.5,
+            high=106,
+            close=105,
+            entry_price=100,
+            initial_stop_loss=95,
+            target_price=115,
+            protection_price=105,
+            active_stop=result.active_stop,
+            highest_price=result.highest_price,
+            lowest_price=result.lowest_price,
+            protection_activated=result.protection_activated,
+            protected_stop_price=result.protected_stop_price,
+            stop_mode=ATR_TRAILING_AFTER_1R_STOP_MODE,
+            fee_rate=0.001,
+            atr_value=2,
+        )
+        self.assertEqual((stopped.decision.reason, stopped.decision.exit_price, stopped.decision.outcome), ("trailing_stop", 104.6, "win"))
+
+    def test_lifecycle_atr_trailing_short_moves_stop_after_one_r(self) -> None:
+        result = evaluate_lifecycle_bar(
+            "short",
+            low=93,
+            high=101,
+            close=94,
+            entry_price=100,
+            initial_stop_loss=105,
+            target_price=85,
+            protection_price=95,
+            stop_mode=ATR_TRAILING_AFTER_1R_STOP_MODE,
+            fee_rate=0.001,
+            atr_value=2,
+        )
+        self.assertIsNone(result.decision)
+        self.assertTrue(result.protection_activated)
+        self.assertAlmostEqual(result.active_stop, 95.4)
+
+        stopped = evaluate_lifecycle_bar(
+            "short",
+            low=94,
+            high=95.5,
+            close=95,
+            entry_price=100,
+            initial_stop_loss=105,
+            target_price=85,
+            protection_price=95,
+            active_stop=result.active_stop,
+            highest_price=result.highest_price,
+            lowest_price=result.lowest_price,
+            protection_activated=result.protection_activated,
+            protected_stop_price=result.protected_stop_price,
+            stop_mode=ATR_TRAILING_AFTER_1R_STOP_MODE,
+            fee_rate=0.001,
+            atr_value=2,
+        )
+        self.assertEqual((stopped.decision.reason, stopped.decision.exit_price, stopped.decision.outcome), ("trailing_stop", 95.4, "win"))
 
     def test_return_calculation_supports_fees(self) -> None:
         self.assertAlmostEqual(calculate_return_pct("long", 100, 110, 0.001), 0.098)

@@ -167,6 +167,11 @@ class PositionSizingTest(unittest.TestCase):
         ):
             self.assertEqual(bot.configured_order_symbol_blocklist(), {"TAO-USDT-SWAP", "ETH-USDT-SWAP"})
 
+    def test_default_scan_symbol_blocklist_contains_known_bad_market_data_symbols(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OKX_SCAN_SYMBOL_BLOCKLIST", None)
+            self.assertGreaterEqual(bot.configured_scan_symbol_blocklist(), {"GRAMUSDT", "VVVUSDT"})
+
     def test_scan_once_skips_blocklisted_order_symbol_in_place_order_mode(self) -> None:
         args = argparse.Namespace(
             top_n=100,

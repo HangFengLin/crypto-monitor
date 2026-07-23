@@ -63,7 +63,7 @@ class StrategyValidationResumeTest(unittest.TestCase):
         trades = frame_to_trades(pd.DataFrame([values]))
         self.assertIsInstance(trades[0], SignalTrade)
         self.assertEqual(trades[0].entry_time, pd.Timestamp("2025-01-01T00:00:00Z"))
-        self.assertEqual(getattr(trades[0], "symbol"), "BTCUSDT")
+        self.assertEqual(trades[0].symbol, "BTCUSDT")
 
 
 if __name__ == "__main__":

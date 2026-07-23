@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import hashlib
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 import pandas as pd
 import yaml
@@ -70,14 +70,23 @@ def report_runtime_args(manifest: dict[str, Any], cli: argparse.Namespace) -> ar
 def frame_to_trades(frame: pd.DataFrame) -> list[SignalTrade]:
     if frame.empty:
         return []
-    names = [field.name for field in dataclasses.fields(SignalTrade)]
+    fields = list(dataclasses.fields(SignalTrade))
     trades: list[SignalTrade] = []
     for row in frame.to_dict("records"):
-        values = {name: row[name] for name in names}
+        values: dict[str, Any] = {}
+        for field in fields:
+            if field.name in row:
+                values[field.name] = row[field.name]
+            elif field.default is not dataclasses.MISSING:
+                values[field.name] = field.default
+            elif field.default_factory is not dataclasses.MISSING:
+                values[field.name] = field.default_factory()
+            else:
+                raise KeyError(field.name)
         values["entry_time"] = utc_timestamp(values["entry_time"])
         values["exit_time"] = utc_timestamp(values["exit_time"])
         item = SignalTrade(**values)
-        setattr(item, "symbol", str(row.get("symbol") or ""))
+        item.symbol = str(row.get("symbol") or "")
         trades.append(item)
     return trades
 
@@ -216,7 +225,7 @@ def main() -> None:
         validation_records = pd.concat([validation_records, pd.DataFrame(additions)], ignore_index=True, sort=False)
     fold_metrics, comparison = rebuild_validation_statistics(validation_records, candidates, windows, args)
     eligible = comparison[comparison["validation_gate"]] if not comparison.empty else pd.DataFrame()
-    selected_name: Optional[str] = str(eligible.iloc[0]["candidate"]) if not eligible.empty else None
+    selected_name: str | None = str(eligible.iloc[0]["candidate"]) if not eligible.empty else None
     old_summary = json.loads((report_dir / "test_summary.json").read_text(encoding="utf-8"))
     old_selected = old_summary.get("selected_candidate")
 

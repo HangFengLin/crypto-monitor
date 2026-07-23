@@ -17,7 +17,6 @@ from typing import Any
 from config import ENV_FILE, load_env_file
 from runtime_utils import code_fingerprint as build_code_fingerprint
 
-
 ROOT = Path(__file__).resolve().parent
 
 

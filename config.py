@@ -6,7 +6,6 @@ from typing import Any
 
 import yaml
 
-
 CONFIG_FILE = Path(__file__).resolve().parent / "config.yaml"
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 PROXY_ENV_KEYS = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}

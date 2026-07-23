@@ -17,7 +17,6 @@ import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 # macOS 系统 Python 可能使用 LibreSSL，urllib3 会给出兼容性警告；该警告不影响 yfinance 下载。
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL.*")
@@ -41,12 +40,12 @@ class Trade:
 
     entry_date: pd.Timestamp
     entry_price: float
-    exit_date: Optional[pd.Timestamp] = None
-    exit_price: Optional[float] = None
+    exit_date: pd.Timestamp | None = None
+    exit_price: float | None = None
     exit_reason: str = "open"
 
     @property
-    def return_pct(self) -> Optional[float]:
+    def return_pct(self) -> float | None:
         """计算单笔交易收益率；未平仓交易没有最终收益率。"""
         if self.exit_price is None:
             return None
@@ -82,7 +81,7 @@ def resolve_output_path(args: argparse.Namespace, default_filename: str) -> Path
     return output_path
 
 
-def fetch_daily_data(symbol: str, period: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
+def fetch_daily_data(symbol: str, period: str, start: str | None, end: str | None) -> pd.DataFrame:
     """使用 yfinance 获取日线 OHLCV 数据，并统一字段格式。"""
     if start or end:
         data = yf.download(symbol, start=start, end=end, interval="1d", auto_adjust=False, progress=False)
@@ -126,7 +125,7 @@ def run_backtest(
 
     cash_equity = 1.0
     shares = 0.0
-    current_trade: Optional[Trade] = None
+    current_trade: Trade | None = None
 
     for date, row in data.iterrows():
         close_price = float(row["Close"])

@@ -3,10 +3,10 @@ from __future__ import annotations
 import math
 import random
 from collections import defaultdict
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 import pandas as pd
-
 
 DEFAULT_BOOTSTRAP_SEED = 20260620
 DEFAULT_BOOTSTRAP_ITERATIONS = 2000
@@ -36,6 +36,83 @@ def _weekly_values(records: Iterable[dict[str, Any]], value_key: str, time_key: 
     return dict(weeks)
 
 
+def _mean(values: Sequence[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _confidence_bounds(estimates: list[float], confidence: float) -> tuple[float, float]:
+    if not estimates:
+        return 0.0, 0.0
+    estimates.sort()
+    tail = (1.0 - confidence) / 2.0
+    low_index = min(len(estimates) - 1, max(0, int(math.floor(tail * (len(estimates) - 1)))))
+    high_index = min(len(estimates) - 1, max(0, int(math.ceil((1.0 - tail) * (len(estimates) - 1)))))
+    return estimates[low_index], estimates[high_index]
+
+
+def bootstrap_mean_summary(
+    values: Iterable[Any],
+    *,
+    iterations: int = DEFAULT_BOOTSTRAP_ITERATIONS,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    confidence: float = 0.95,
+) -> dict[str, float]:
+    """Bootstrap a simple iid mean and return a standard summary payload."""
+    clean: list[float] = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            clean.append(number)
+    if not clean:
+        return {"n": 0.0, "mean": 0.0, "ci_low": 0.0, "ci_high": 0.0, "p_nonpositive": 1.0}
+
+    rng = random.Random(seed)
+    estimates = [_mean([rng.choice(clean) for _item in clean]) for _ in range(max(1, iterations))]
+    ci_low, ci_high = _confidence_bounds(estimates, confidence)
+    return {
+        "n": float(len(clean)),
+        "mean": _mean(clean),
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "p_nonpositive": sum(value <= 0 for value in estimates) / len(estimates),
+    }
+
+
+def weekly_block_bootstrap_summary(
+    records: Iterable[dict[str, Any]],
+    *,
+    value_key: str = "return_pct",
+    time_key: str = "exit_time",
+    iterations: int = DEFAULT_BOOTSTRAP_ITERATIONS,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    confidence: float = 0.95,
+) -> dict[str, float]:
+    """Bootstrap a mean by resampling UTC calendar weeks as dependence blocks."""
+    weeks = _weekly_values(records, value_key, time_key)
+    if not weeks:
+        return {"n": 0.0, "mean": 0.0, "ci_low": 0.0, "ci_high": 0.0, "p_nonpositive": 1.0}
+    keys = sorted(weeks)
+    observed = [value for values in weeks.values() for value in values]
+    rng = random.Random(seed)
+    estimates: list[float] = []
+    for _ in range(max(1, iterations)):
+        sample: list[float] = []
+        for _block in keys:
+            sample.extend(weeks[rng.choice(keys)])
+        estimates.append(_mean(sample))
+    ci_low, ci_high = _confidence_bounds(estimates, confidence)
+    return {
+        "n": float(len(observed)),
+        "mean": _mean(observed),
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "p_nonpositive": sum(value <= 0 for value in estimates) / len(estimates),
+    }
+
+
 def weekly_block_bootstrap_mean(
     records: Iterable[dict[str, Any]],
     *,
@@ -46,22 +123,15 @@ def weekly_block_bootstrap_mean(
     confidence: float = 0.95,
 ) -> tuple[float, float]:
     """Bootstrap the mean by resampling UTC calendar weeks as dependence blocks."""
-    weeks = _weekly_values(records, value_key, time_key)
-    if not weeks:
-        return 0.0, 0.0
-    keys = sorted(weeks)
-    rng = random.Random(seed)
-    estimates: list[float] = []
-    for _ in range(max(1, iterations)):
-        sample: list[float] = []
-        for _block in range(len(keys)):
-            sample.extend(weeks[rng.choice(keys)])
-        estimates.append(sum(sample) / len(sample) if sample else 0.0)
-    estimates.sort()
-    tail = (1.0 - confidence) / 2.0
-    low_index = min(len(estimates) - 1, max(0, int(math.floor(tail * (len(estimates) - 1)))))
-    high_index = min(len(estimates) - 1, max(0, int(math.ceil((1.0 - tail) * (len(estimates) - 1)))))
-    return estimates[low_index], estimates[high_index]
+    summary = weekly_block_bootstrap_summary(
+        records,
+        value_key=value_key,
+        time_key=time_key,
+        iterations=iterations,
+        seed=seed,
+        confidence=confidence,
+    )
+    return summary["ci_low"], summary["ci_high"]
 
 
 def weekly_block_bootstrap_difference(
@@ -95,10 +165,7 @@ def weekly_block_bootstrap_difference(
     for _ in range(max(1, iterations)):
         sampled = [rng.choice(keys) for _block in keys]
         estimates.append(flattened_mean(candidate, sampled) - flattened_mean(baseline, sampled))
-    estimates.sort()
-    tail = (1.0 - confidence) / 2.0
-    low_index = min(len(estimates) - 1, max(0, int(math.floor(tail * (len(estimates) - 1)))))
-    high_index = min(len(estimates) - 1, max(0, int(math.ceil((1.0 - tail) * (len(estimates) - 1)))))
+    ci_low, ci_high = _confidence_bounds(estimates, confidence)
     non_positive = sum(value <= 0 for value in estimates)
     non_negative = sum(value >= 0 for value in estimates)
     # The +1 correction prevents a finite Monte Carlo run from reporting an
@@ -106,8 +173,8 @@ def weekly_block_bootstrap_difference(
     p_value = min(1.0, 2.0 * (min(non_positive, non_negative) + 1) / (len(estimates) + 1))
     return {
         "delta": observed,
-        "ci_low": estimates[low_index],
-        "ci_high": estimates[high_index],
+        "ci_low": ci_low,
+        "ci_high": ci_high,
         "p_value": p_value,
     }
 

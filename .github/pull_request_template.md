@@ -10,6 +10,7 @@
 
 ## Verification
 
-- [ ] `ruff check --select E9,F63,F7,F82 .`
-- [ ] `python3 -m unittest discover -s tests -p "test_*.py"`
+- [ ] `ruff check .`
+- [ ] `mypy --config-file pyproject.toml backtest_statistics.py position_manager.py runtime_utils.py config.py`
+- [ ] `coverage run -m unittest discover -s tests -p "test_*.py" && coverage report --fail-under=1`
 - [ ] Relevant Docker/config validation completed.

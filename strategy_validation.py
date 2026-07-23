@@ -12,9 +12,10 @@ import math
 import os
 import platform
 import sys
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 import pandas as pd
 import yaml
@@ -23,12 +24,12 @@ from backtest_statistics import benjamini_hochberg, build_exploratory_group_tabl
 from config import config_value, load_config
 from data_client import fetch_coingecko_top_market_symbols, interval_ms, read_json_url
 from historical_market_data import (
+    enrich_microstructure,
     fetch_binance_funding_history,
     fetch_binance_oi_metrics,
     fetch_binance_um_klines,
     fetch_okx_funding_history,
     fetch_okx_klines_range,
-    enrich_microstructure,
     sha256_file,
     write_json,
 )
@@ -36,13 +37,11 @@ from indicators import calculate_indicators
 from project_signal_backtest import (
     SignalTrade,
     add_higher_timeframe_context,
-    build_full_group_stats,
     calculate_metrics,
     run_backtest,
 )
 from strategy import DEFAULT_CONFIG, HIGHER_TREND_INTERVAL, ProjectSignalEngine, StrategyConfig
 from strategy_universe import STABLE_BASE_ASSETS
-
 
 BINANCE_FUTURES_EXCHANGE_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_FUTURES_TICKERS = "https://fapi.binance.com/fapi/v1/ticker/24hr"
@@ -148,7 +147,7 @@ def builtin_candidates() -> list[dict[str, Any]]:
     return candidates
 
 
-def load_candidates(path: Optional[str]) -> list[dict[str, Any]]:
+def load_candidates(path: str | None) -> list[dict[str, Any]]:
     candidates = builtin_candidates()
     if path:
         payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
@@ -364,7 +363,7 @@ def prepared_cache_path(
     return cache_dir / "prepared" / exchange / symbol.upper() / interval / key
 
 
-def load_prepared_cache(path: Path) -> Optional[tuple[list[dict[str, Any]], dict[str, Any]]]:
+def load_prepared_cache(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     if not path.exists():
         return None
     try:
@@ -480,8 +479,8 @@ def run_window(
     score_end: pd.Timestamp,
     args: argparse.Namespace,
     *,
-    fee_rate: Optional[float] = None,
-    executor: Optional[concurrent.futures.Executor] = None,
+    fee_rate: float | None = None,
+    executor: concurrent.futures.Executor | None = None,
 ) -> tuple[list[SignalTrade], pd.DataFrame, dict[str, float]]:
     interval_delta = pd.Timedelta(milliseconds=interval_ms(args.interval))
     warmup = 250 * interval_delta
@@ -542,7 +541,7 @@ def score_symbol_window(task: tuple[Any, ...]) -> tuple[str, list[SignalTrade], 
     )
     retained = [trade for trade in trades if score_start <= utc_timestamp(trade.entry_time) and utc_timestamp(trade.exit_time) < score_end]
     for trade in retained:
-        setattr(trade, "symbol", symbol)
+        trade.symbol = symbol
     metrics = calculate_metrics(retained, trade_equity(retained), bootstrap_iterations=0)
     return symbol, retained, metrics
 
@@ -695,7 +694,7 @@ def apply_extra_roundtrip_cost(trades: Iterable[SignalTrade], extra_fee_rate: fl
         next_return = trade.return_pct - extra_fee_rate * 2
         next_trade = dataclasses.replace(trade, return_pct=next_return, outcome="win" if next_return > 0 else "loss")
         if hasattr(trade, "symbol"):
-            setattr(next_trade, "symbol", getattr(trade, "symbol"))
+            next_trade.symbol = trade.symbol
         adjusted.append(next_trade)
     return adjusted
 
@@ -998,7 +997,7 @@ def main() -> None:
 
     fold_metrics, validation_trades, validation_symbol_metrics = evaluate_validation_candidates(datasets, candidates, windows, args)
     comparison = compare_candidates(candidates, fold_metrics, validation_trades, validation_symbol_metrics, args.bootstrap_iterations, args.seed)
-    selected_name: Optional[str] = None
+    selected_name: str | None = None
     if not args.smoke and not comparison.empty:
         eligible = comparison[comparison["validation_gate"]]
         if not eligible.empty:

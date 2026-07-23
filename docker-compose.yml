@@ -53,7 +53,7 @@ services:
       OKX_BOT_STATE_FILE: /app/runtime/okx_market_cap_bot_state.json
       OKX_BOT_EVENT_LOG_FILE: /app/runtime/okx_market_cap_bot_events.jsonl
       OKX_ORDER_SYMBOL_BLOCKLIST: TAO-USDT-SWAP,UNI-USDT-SWAP
-      OKX_SCAN_SYMBOL_BLOCKLIST: GRAMUSDT
+      OKX_SCAN_SYMBOL_BLOCKLIST: GRAMUSDT,VVVUSDT
     volumes:
       - ./.env:/app/.env:ro
       - ./runtime:/app/runtime
@@ -66,6 +66,36 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILES:-3}
+
+  universe-backtest:
+    build: .
+    profiles:
+      - backtest
+    restart: "no"
+    init: true
+    env_file:
+      - .env
+    entrypoint: ["python", "universe_signal_backtest.py"]
+    command:
+      - --reports-dir
+      - /app/reports
+      - --cache-dir
+      - /app/runtime/backtest-data
+    cpus: ${BACKTEST_CPUS:-0.75}
+    mem_limit: ${BACKTEST_MEMORY_LIMIT:-700m}
+    memswap_limit: ${BACKTEST_MEMORY_SWAP_LIMIT:-1200m}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      REPORTS_DIR: /app/reports
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./reports:/app/reports
+      - ./runtime/backtest-data:/app/runtime/backtest-data
     logging:
       driver: json-file
       options:

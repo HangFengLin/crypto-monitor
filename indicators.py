@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -11,11 +11,11 @@ except ModuleNotFoundError:
     ta = None
 
 
-def _series(values: list[Optional[float]]) -> pd.Series:
+def _series(values: list[float | None]) -> pd.Series:
     return pd.Series(values, dtype="float64")
 
 
-def _to_list(series: pd.Series) -> list[Optional[float]]:
+def _to_list(series: pd.Series) -> list[float | None]:
     return [None if pd.isna(value) else float(value) for value in series.tolist()]
 
 
@@ -27,12 +27,12 @@ def _frame(bars: list[dict[str, Any]]) -> pd.DataFrame:
     return data
 
 
-def ema(values: list[Optional[float]], period: int) -> list[Optional[float]]:
+def ema(values: list[float | None], period: int) -> list[float | None]:
     close = _series(values)
     return _to_list(close.ewm(span=period, adjust=False, min_periods=period).mean())
 
 
-def macd(values: list[Optional[float]], fast: int, slow: int, signal: int) -> tuple[list[Optional[float]], list[Optional[float]], list[Optional[float]]]:
+def macd(values: list[float | None], fast: int, slow: int, signal: int) -> tuple[list[float | None], list[float | None], list[float | None]]:
     close = _series(values)
     if ta is not None:
         result = ta.macd(close, fast=fast, slow=slow, signal=signal)
@@ -46,7 +46,7 @@ def macd(values: list[Optional[float]], fast: int, slow: int, signal: int) -> tu
     return _to_list(macd_line), _to_list(signal_line), _to_list(hist)
 
 
-def rsi(values: list[Optional[float]], period: int = 14) -> list[Optional[float]]:
+def rsi(values: list[float | None], period: int = 14) -> list[float | None]:
     close = _series(values)
     if ta is not None:
         return _to_list(ta.rsi(close, length=period))
@@ -59,7 +59,7 @@ def rsi(values: list[Optional[float]], period: int = 14) -> list[Optional[float]
     return _to_list(100 - (100 / (1 + rs)))
 
 
-def mfi(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
+def mfi(bars: list[dict[str, Any]], period: int = 14) -> list[float | None]:
     data = _frame(bars)
     if ta is not None:
         return _to_list(ta.mfi(data["high"], data["low"], data["close"], data["volume"], length=period))
@@ -71,7 +71,7 @@ def mfi(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
     return _to_list(100 - (100 / (1 + money_ratio)))
 
 
-def atr(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
+def atr(bars: list[dict[str, Any]], period: int = 14) -> list[float | None]:
     data = _frame(bars)
     if ta is not None:
         return _to_list(ta.atr(data["high"], data["low"], data["close"], length=period))
@@ -87,7 +87,7 @@ def atr(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
     return _to_list(true_range.ewm(alpha=1 / period, adjust=False, min_periods=period).mean())
 
 
-def adx(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
+def adx(bars: list[dict[str, Any]], period: int = 14) -> list[float | None]:
     data = _frame(bars)
     if ta is not None:
         result = ta.adx(data["high"], data["low"], data["close"], length=period)
@@ -112,7 +112,7 @@ def adx(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
     return _to_list(dx.ewm(alpha=1 / period, adjust=False, min_periods=period).mean())
 
 
-def chop(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
+def chop(bars: list[dict[str, Any]], period: int = 14) -> list[float | None]:
     data = _frame(bars)
     previous_close = data["close"].shift(1)
     true_range = pd.concat(
@@ -132,18 +132,18 @@ def chop(bars: list[dict[str, Any]], period: int = 14) -> list[Optional[float]]:
     return _to_list(value)
 
 
-def rolling_std(values: list[Optional[float]], period: int) -> list[Optional[float]]:
+def rolling_std(values: list[float | None], period: int) -> list[float | None]:
     return _to_list(_series(values).rolling(period, min_periods=period).std(ddof=0))
 
 
-def obv(values: list[Optional[float]], volumes: list[Optional[float]]) -> list[Optional[float]]:
+def obv(values: list[float | None], volumes: list[float | None]) -> list[float | None]:
     close = _series(values)
     volume = _series(volumes).fillna(0)
     direction = close.diff().apply(lambda value: 1 if value > 0 else -1 if value < 0 else 0)
     return _to_list((direction * volume).cumsum())
 
 
-def rolling_average(values: list[Optional[float]], period: int) -> list[Optional[float]]:
+def rolling_average(values: list[float | None], period: int) -> list[float | None]:
     return _to_list(_series(values).rolling(period, min_periods=period).mean())
 
 

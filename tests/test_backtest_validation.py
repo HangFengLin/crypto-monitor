@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import unittest
 import argparse
 import csv
 import io
+import unittest
 import zipfile
-from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -14,13 +13,22 @@ import pandas as pd
 
 from backtest_statistics import (
     benjamini_hochberg,
+    bootstrap_mean_summary,
     build_exploratory_group_tables,
     weekly_block_bootstrap_difference,
     weekly_block_bootstrap_mean,
+    weekly_block_bootstrap_summary,
     wilson_interval,
 )
 from historical_market_data import _ascii_url, _parse_okx_funding_archive, enrich_microstructure
-from project_signal_backtest import SignalTrade, add_higher_timeframe_context, build_equity_curve, evaluate_trade, run_backtest
+from project_signal_backtest import (
+    SignalTrade,
+    add_higher_timeframe_context,
+    build_equity_curve,
+    evaluate_trade,
+    run_backtest,
+    signal_passes_trade_filters,
+)
 from strategy import DEFAULT_CONFIG
 from strategy_validation import (
     apply_extra_roundtrip_cost,
@@ -78,6 +86,15 @@ class BacktestStatisticsTest(unittest.TestCase):
         first = weekly_block_bootstrap_mean(records, iterations=200, seed=7)
         second = weekly_block_bootstrap_mean(records, iterations=200, seed=7)
         self.assertEqual(first, second)
+
+    def test_bootstrap_summaries_share_standard_fields(self) -> None:
+        records = [item.__dict__ for item in [trade(index, 0.01 if index % 2 else -0.005) for index in range(14)]]
+        weekly = weekly_block_bootstrap_summary(records, iterations=50, seed=3)
+        iid = bootstrap_mean_summary([record["return_pct"] for record in records], iterations=50, seed=3)
+
+        self.assertEqual(set(weekly), {"n", "mean", "ci_low", "ci_high", "p_nonpositive"})
+        self.assertEqual(set(iid), {"n", "mean", "ci_low", "ci_high", "p_nonpositive"})
+        self.assertEqual(weekly["n"], 14.0)
 
     def test_candidate_difference_uses_a_95_percent_interval(self) -> None:
         baseline = [item.__dict__ for item in [trade(index, 0.001 * (index % 5 - 2)) for index in range(70)]]
@@ -224,6 +241,134 @@ class BacktestConsistencyTest(unittest.TestCase):
         self.assertEqual(result.exit_reason, "protection_reached")
         self.assertEqual(result.exit_price, 105.0)
 
+    def test_breakeven_after_1r_mode_does_not_exit_at_protection(self) -> None:
+        entry_time = pd.Timestamp("2025-01-01T00:00:00Z")
+        bars = [
+            {"time": entry_time, "open": 100.0, "high": 105.5, "low": 99.0, "close": 105.0, "atr": 2.0},
+            {"time": entry_time + pd.Timedelta(minutes=15), "open": 105.0, "high": 111.0, "low": 104.0, "close": 110.0, "atr": 2.0},
+        ]
+        result = evaluate_trade(
+            {"signal": "long", "stop_loss": 95.0},
+            bars,
+            0,
+            2.0,
+            1,
+            0.0,
+            "structure_atr_breakeven_after_1r",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.exit_reason, "take_profit")
+        self.assertEqual(result.exit_price, 110.0)
+        self.assertTrue(result.protection_activated)
+        self.assertEqual(result.protected_stop_price, 100.0)
+        self.assertEqual(result.stop_loss, 100.0)
+
+    def test_breakeven_after_1r_mode_exits_on_protected_stop_after_arming(self) -> None:
+        entry_time = pd.Timestamp("2025-01-01T00:00:00Z")
+        bars = [
+            {"time": entry_time, "open": 100.0, "high": 105.5, "low": 99.0, "close": 105.0, "atr": 2.0},
+            {"time": entry_time + pd.Timedelta(minutes=15), "open": 105.0, "high": 106.0, "low": 99.5, "close": 100.0, "atr": 2.0},
+        ]
+        result = evaluate_trade(
+            {"signal": "long", "stop_loss": 95.0},
+            bars,
+            0,
+            2.0,
+            1,
+            0.0,
+            "structure_atr_breakeven_after_1r",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.exit_reason, "protected_stop")
+        self.assertEqual(result.exit_price, 100.0)
+        self.assertTrue(result.protection_activated)
+        self.assertEqual(result.return_pct, 0.0)
+        self.assertEqual(result.outcome, "loss")
+
+    def test_breakeven_after_1r_mode_uses_fee_adjusted_stop(self) -> None:
+        entry_time = pd.Timestamp("2025-01-01T00:00:00Z")
+        bars = [
+            {"time": entry_time, "open": 100.0, "high": 105.5, "low": 99.0, "close": 105.0, "atr": 2.0},
+            {"time": entry_time + pd.Timedelta(minutes=15), "open": 105.0, "high": 106.0, "low": 100.1, "close": 100.2, "atr": 2.0},
+        ]
+        result = evaluate_trade(
+            {"signal": "long", "stop_loss": 95.0},
+            bars,
+            0,
+            2.0,
+            1,
+            0.001,
+            "structure_atr_breakeven_after_1r",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.exit_reason, "protected_stop")
+        self.assertAlmostEqual(result.exit_price, 100.2)
+        self.assertAlmostEqual(result.return_pct, 0.0)
+        self.assertEqual(result.outcome, "loss")
+
+    def test_path_diagnostics_expose_target_truncated_by_one_r_exit(self) -> None:
+        entry_time = pd.Timestamp("2025-01-01T00:00:00Z")
+        bars = [
+            {"time": entry_time, "open": 100.0, "high": 105.0, "low": 99.0, "close": 104.0, "atr": 2.0},
+            {"time": entry_time + pd.Timedelta(minutes=15), "open": 104.0, "high": 111.0, "low": 103.0, "close": 110.0, "atr": 2.0},
+        ]
+        result = evaluate_trade(
+            {"signal": "long", "stop_loss": 95.0}, bars, 0, 2.0, 1, 0.0, "structure_atr"
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.exit_reason, "protection_reached")
+        self.assertEqual(result.first_1r_bar, 0)
+        self.assertEqual(result.first_2r_bar, 1)
+        self.assertTrue(result.hit_2r_before_initial_stop)
+        self.assertGreaterEqual(result.horizon_mfe_r, 2.0)
+        self.assertLess(result.pre_exit_mfe_r, 2.0)
+        self.assertEqual(result.horizon_close_price, 110.0)
+        self.assertAlmostEqual(result.horizon_close_return_pct, 0.10)
+        self.assertEqual(result.horizon_close_r_path, [0.8, 2.0])
+
+    def test_same_bar_stop_has_priority_in_path_diagnostics(self) -> None:
+        entry_time = pd.Timestamp("2025-01-01T00:00:00Z")
+        bars = [
+            {"time": entry_time, "open": 100.0, "high": 111.0, "low": 94.0, "close": 100.0, "atr": 2.0},
+        ]
+        result = evaluate_trade(
+            {"signal": "long", "stop_loss": 95.0}, bars, 0, 2.0, 0, 0.0, "structure_atr"
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.exit_reason, "stop_loss")
+        self.assertFalse(result.hit_1r_before_initial_stop)
+        self.assertFalse(result.hit_2r_before_initial_stop)
+
+    def test_signal_filters_support_exact_bottom_fractal_long(self) -> None:
+        entry_bar = {"trend": "sideways"}
+        exact = {"signal": "long", "structure_text": "底分型确认"}
+        enriched = {"signal": "long", "structure_text": "底分型确认，下跌笔力度衰竭"}
+        short = {"signal": "short", "structure_text": "底分型确认"}
+        self.assertTrue(
+            signal_passes_trade_filters(
+                exact,
+                entry_bar,
+                signal_direction="long",
+                structure_text_exact="底分型确认",
+            )
+        )
+        self.assertFalse(
+            signal_passes_trade_filters(
+                enriched,
+                entry_bar,
+                signal_direction="long",
+                structure_text_exact="底分型确认",
+            )
+        )
+        self.assertFalse(
+            signal_passes_trade_filters(
+                short,
+                entry_bar,
+                signal_direction="long",
+                structure_text_exact="底分型确认",
+            )
+        )
+
     def test_positive_timeout_is_counted_as_win(self) -> None:
         entry_time = pd.Timestamp("2025-01-01T00:00:00Z")
         bars = [{"time": entry_time, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "atr": 2.0}]
@@ -312,7 +457,7 @@ class ValidationWindowTest(unittest.TestCase):
     def test_profit_concentration_enforces_multi_symbol_weight(self) -> None:
         trades = [trade(index, 0.01) for index in range(4)]
         for index, item in enumerate(trades):
-            setattr(item, "symbol", f"S{index}")
+            item.symbol = f"S{index}"
         self.assertAlmostEqual(profit_concentration(trades), 0.25)
 
     def test_symbol_nonworse_ratio_ignores_symbols_with_no_trades(self) -> None:
@@ -349,10 +494,10 @@ class ValidationWindowTest(unittest.TestCase):
 
     def test_double_cost_reuses_trades_and_only_adjusts_roundtrip_return(self) -> None:
         original = trade(0, 0.01)
-        setattr(original, "symbol", "BTCUSDT")
+        original.symbol = "BTCUSDT"
         adjusted = apply_extra_roundtrip_cost([original], 0.001)
         self.assertAlmostEqual(adjusted[0].return_pct, 0.008)
-        self.assertEqual(getattr(adjusted[0], "symbol"), "BTCUSDT")
+        self.assertEqual(adjusted[0].symbol, "BTCUSDT")
         self.assertAlmostEqual(original.return_pct, 0.01)
 
     def test_missing_okx_evidence_can_never_promote_a_candidate(self) -> None:

@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import asyncio
-import json
 import http.client
+import json
 import os
 import smtplib
 import socket
@@ -14,13 +16,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from config import ENV_FILE, config_value, load_config, load_env_file
 from data_client import (
     async_fetch_funding_rate,
-    async_fetch_open_interest_ratio,
     async_fetch_klines,
     async_fetch_tickers,
     close_http_session,
@@ -28,15 +29,22 @@ from data_client import (
     fetch_funding_rate,
     fetch_klines,
     fetch_open_interest_ratio,
-    fetch_tickers,
     market_data_source,
     test_external_dependencies,
-    test_market_api,
 )
 from indicators import calculate_indicators, macd, rolling_average
-from position_manager import calculate_return_pct, calculate_target_levels, evaluate_bar_exit, evaluate_price_exit
-from runtime_utils import append_jsonl, code_fingerprint as build_code_fingerprint, post_discord
+from position_manager import (
+    STRUCTURE_ATR_STOP_MODE,
+    calculate_return_pct,
+    calculate_target_levels,
+    evaluate_lifecycle_bar,
+)
+from runtime_utils import append_jsonl, post_discord
+from runtime_utils import code_fingerprint as build_code_fingerprint
 from strategy import (
+    DEFAULT_CONFIG,
+    HIGHER_TREND_INTERVAL,
+    ProjectSignalEngine,
     build_chan_structure_context,
     check_buy_filter,
     check_sell_filter,
@@ -49,10 +57,7 @@ from strategy import (
     grade_signal,
     latest_ma_direction,
     latest_macd_direction,
-    HIGHER_TREND_INTERVAL,
-    ProjectSignalEngine,
     score_signal,
-    DEFAULT_CONFIG,
 )
 
 try:
@@ -75,7 +80,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = load_config()
 
 
-def config_int(section: str, key: str, default: int, env_name: Optional[str] = None) -> int:
+def config_int(section: str, key: str, default: int, env_name: str | None = None) -> int:
     fallback: Any = os.getenv(env_name, default) if env_name else default
     value = config_value(CONFIG, section, key, fallback)
     try:
@@ -141,6 +146,7 @@ SELL_TREND_BREAKER_LIMIT = int(config_value(CONFIG, "app", "sell_trend_breaker_l
 MAX_WORKERS = int(config_value(CONFIG, "app", "max_workers", 12))
 STRATEGY_REWARD_RISK = float(config_value(CONFIG, "app", "strategy_reward_risk", 2.0))
 STRATEGY_FEE_RATE = float(config_value(CONFIG, "app", "strategy_fee_rate", 0.001))
+STRATEGY_STOP_MODE = str(config_value(CONFIG, "app", "strategy_stop_mode", STRUCTURE_ATR_STOP_MODE))
 STRATEGY_HISTORY_LIMIT = int(config_value(CONFIG, "app", "strategy_history_limit", 200))
 RECORD_STRATEGY_TRADES = bool(config_value(CONFIG, "app", "record_strategy_trades", False))
 REPORT_FILE_SUFFIXES = {".html", ".htm"}
@@ -171,13 +177,13 @@ class MonitorState:
     strategy_stats: dict[str, Any] = field(default_factory=dict)
     pending_buy_divergences: dict[str, dict[str, Any]] = field(default_factory=dict)
     pending_sell_divergences: dict[str, dict[str, Any]] = field(default_factory=dict)
-    last_error: Optional[str] = None
-    signal_error: Optional[str] = None
-    summary_error: Optional[str] = None
-    discord_last_ok_at: Optional[float] = None
-    discord_last_error: Optional[str] = None
-    updated_at: Optional[float] = None
-    last_summary_at: Optional[float] = None
+    last_error: str | None = None
+    signal_error: str | None = None
+    summary_error: str | None = None
+    discord_last_ok_at: float | None = None
+    discord_last_error: str | None = None
+    updated_at: float | None = None
+    last_summary_at: float | None = None
     sent_alerts: set[str] = field(default_factory=set)
     site_monitor: dict[str, Any] = field(default_factory=dict)
 
@@ -186,7 +192,7 @@ state = MonitorState()
 state_lock = threading.Lock()
 okx_bot_status_cache_lock = threading.Lock()
 SIGNAL_ENGINES: dict[tuple[str, str], ProjectSignalEngine] = {}
-_site_monitor_last_run_at: Optional[float] = None
+_site_monitor_last_run_at: float | None = None
 _site_monitor_alert_state: dict[str, dict[str, Any]] = {}
 _okx_bot_status_cache: dict[str, Any] = {
     "expires_at": 0.0,
@@ -286,7 +292,7 @@ def site_monitor_report_max_age_seconds() -> int:
     return max(0, parse_int(os.getenv("SITE_MONITOR_REPORT_MAX_AGE_SECONDS", "0"), 0))
 
 
-def parse_site_monitor_targets(raw_targets: Optional[str] = None) -> list[dict[str, str]]:
+def parse_site_monitor_targets(raw_targets: str | None = None) -> list[dict[str, str]]:
     raw_targets = SITE_MONITOR_DEFAULT_TARGETS if raw_targets is None else raw_targets
     targets = []
     for index, raw_item in enumerate(raw_targets.replace("\n", ",").split(","), start=1):
@@ -309,7 +315,7 @@ def configured_site_monitor_targets() -> list[dict[str, str]]:
     return parse_site_monitor_targets(os.getenv("SITE_MONITOR_TARGETS", SITE_MONITOR_DEFAULT_TARGETS))
 
 
-def tls_days_remaining(url: str, timeout: float) -> Optional[float]:
+def tls_days_remaining(url: str, timeout: float) -> float | None:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
         return None
@@ -324,7 +330,7 @@ def tls_days_remaining(url: str, timeout: float) -> Optional[float]:
     return round((ssl.cert_time_to_seconds(not_after) - time.time()) / 86400, 2)
 
 
-def probe_site_monitor_target(target: dict[str, str], timeout: Optional[float] = None) -> dict[str, Any]:
+def probe_site_monitor_target(target: dict[str, str], timeout: float | None = None) -> dict[str, Any]:
     started_at = time.time()
     timeout = site_monitor_timeout_seconds() if timeout is None else timeout
     request = urllib.request.Request(
@@ -433,7 +439,7 @@ def build_site_monitor_runtime_checks() -> list[dict[str, Any]]:
     return checks
 
 
-def apply_site_monitor_alert_state(results: list[dict[str, Any]], now: Optional[float] = None) -> list[dict[str, Any]]:
+def apply_site_monitor_alert_state(results: list[dict[str, Any]], now: float | None = None) -> list[dict[str, Any]]:
     now = time.time() if now is None else now
     threshold = site_monitor_failure_threshold()
     notifications: list[dict[str, Any]] = []
@@ -543,7 +549,7 @@ def set_pending_buy_divergence(symbol: str, interval: str, candidate: dict[str, 
         state.pending_buy_divergences[pending_signal_key(symbol, interval)] = candidate
 
 
-def get_pending_buy_divergence(symbol: str, interval: str) -> Optional[dict[str, Any]]:
+def get_pending_buy_divergence(symbol: str, interval: str) -> dict[str, Any] | None:
     with state_lock:
         candidate = state.pending_buy_divergences.get(pending_signal_key(symbol, interval))
         return dict(candidate) if candidate else None
@@ -559,7 +565,7 @@ def set_pending_sell_divergence(symbol: str, interval: str, candidate: dict[str,
         state.pending_sell_divergences[pending_signal_key(symbol, interval)] = candidate
 
 
-def get_pending_sell_divergence(symbol: str, interval: str) -> Optional[dict[str, Any]]:
+def get_pending_sell_divergence(symbol: str, interval: str) -> dict[str, Any] | None:
     with state_lock:
         candidate = state.pending_sell_divergences.get(pending_signal_key(symbol, interval))
         return dict(candidate) if candidate else None
@@ -673,7 +679,7 @@ def append_event_to_disk(event: dict[str, Any]) -> None:
             state.signal_error = "事件日志写入失败"
 
 
-def record_event(event: dict[str, Any], event_key: Optional[str] = None) -> None:
+def record_event(event: dict[str, Any], event_key: str | None = None) -> None:
     stored_event = dict(event)
     stored_event.setdefault("created_at", time.time())
     if event_key:
@@ -730,7 +736,7 @@ def normalize_interval(value: Any) -> str:
     return interval if interval in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"} else DEFAULT_SIGNAL_INTERVAL
 
 
-def parse_float(value: Any) -> Optional[float]:
+def parse_float(value: Any) -> float | None:
     if value in ("", None):
         return None
     try:
@@ -751,11 +757,11 @@ def strategy_trade_id(signal: dict[str, Any]) -> str:
     return f"{signal.get('symbol')}:{signal.get('interval', DEFAULT_SIGNAL_INTERVAL)}:{signal.get('signal')}:{divergence_time}"
 
 
-def calculate_strategy_levels(direction: str, entry_price: float, stop_loss: float) -> Optional[dict[str, float]]:
+def calculate_strategy_levels(direction: str, entry_price: float, stop_loss: float) -> dict[str, float] | None:
     return calculate_target_levels(direction, entry_price, stop_loss, STRATEGY_REWARD_RISK)
 
 
-def build_strategy_trade_from_signal(signal: dict[str, Any]) -> Optional[dict[str, Any]]:
+def build_strategy_trade_from_signal(signal: dict[str, Any]) -> dict[str, Any] | None:
     direction = str(signal.get("signal", ""))
     if direction not in {"long", "short"}:
         return None
@@ -782,9 +788,13 @@ def build_strategy_trade_from_signal(signal: dict[str, Any]) -> Optional[dict[st
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "initial_stop_loss": stop_loss,
+        "active_stop": stop_loss,
         "risk": levels["risk"],
         "target_price": levels["target_price"],
         "protection_price": levels["protection_price"],
+        "protection_activated": False,
+        "protected_stop_price": 0.0,
+        "exit_mode": STRATEGY_STOP_MODE,
         "opened_at": opened_at,
         "opened_kline_close_time": signal.get("kline_close_time"),
         "divergence_time": signal.get("divergence_time"),
@@ -805,6 +815,46 @@ def build_strategy_trade_from_signal(signal: dict[str, Any]) -> Optional[dict[st
 
 def strategy_return_pct(direction: str, entry_price: float, exit_price: float) -> float:
     return calculate_return_pct(direction, entry_price, exit_price, STRATEGY_FEE_RATE)
+
+
+def apply_strategy_lifecycle(trade: dict[str, Any], low: float, high: float, close: float, atr_value: float | None = None) -> bool:
+    direction = str(trade.get("direction"))
+    entry_price = parse_float(trade.get("entry_price"))
+    initial_stop = parse_float(trade.get("initial_stop_loss")) or parse_float(trade.get("stop_loss"))
+    active_stop = parse_float(trade.get("active_stop")) or initial_stop
+    target_price = parse_float(trade.get("target_price"))
+    protection_price = parse_float(trade.get("protection_price"))
+    if entry_price is None or initial_stop is None or target_price is None or protection_price is None:
+        return False
+
+    lifecycle = evaluate_lifecycle_bar(
+        direction,
+        low,
+        high,
+        close,
+        entry_price,
+        initial_stop,
+        target_price,
+        protection_price,
+        active_stop=active_stop,
+        highest_price=parse_float(trade.get("highest_price")),
+        lowest_price=parse_float(trade.get("lowest_price")),
+        protection_activated=bool(trade.get("protection_activated")),
+        protected_stop_price=parse_float(trade.get("protected_stop_price")) or 0.0,
+        stop_mode=str(trade.get("exit_mode") or STRATEGY_STOP_MODE),
+        fee_rate=STRATEGY_FEE_RATE,
+        atr_value=atr_value,
+    )
+    trade["active_stop"] = lifecycle.active_stop
+    trade["stop_loss"] = lifecycle.active_stop
+    trade["highest_price"] = lifecycle.highest_price
+    trade["lowest_price"] = lifecycle.lowest_price
+    trade["protection_activated"] = lifecycle.protection_activated
+    trade["protected_stop_price"] = lifecycle.protected_stop_price
+    if not lifecycle.decision:
+        return False
+    close_strategy_trade(trade, lifecycle.decision.exit_price, lifecycle.decision.reason, lifecycle.decision.outcome)
+    return True
 
 
 def refresh_strategy_trade_mark(trade: dict[str, Any], current_price: float) -> None:
@@ -835,34 +885,17 @@ def evaluate_open_strategy_trade(trade: dict[str, Any], current_price: float) ->
         return False
 
     refresh_strategy_trade_mark(trade, current_price)
-    direction = str(trade.get("direction"))
-    stop_loss = parse_float(trade.get("stop_loss"))
-    target_price = parse_float(trade.get("target_price"))
-    protection_price = parse_float(trade.get("protection_price"))
-    if stop_loss is None or target_price is None or protection_price is None:
-        return False
-
-    decision = evaluate_price_exit(direction, current_price, stop_loss, target_price, protection_price)
-    if not decision:
-        return False
-    close_strategy_trade(trade, decision.exit_price, decision.reason, decision.outcome)
-    return True
+    return apply_strategy_lifecycle(trade, current_price, current_price, current_price)
 
 
-def evaluate_open_strategy_trade_with_bars(trade: dict[str, Any], bars: list[dict[str, Any]], current_price: Optional[float]) -> bool:
+def evaluate_open_strategy_trade_with_bars(trade: dict[str, Any], bars: list[dict[str, Any]], current_price: float | None) -> bool:
     if trade.get("status") != "open":
         return False
 
     if current_price is not None:
         refresh_strategy_trade_mark(trade, current_price)
 
-    direction = str(trade.get("direction"))
-    stop_loss = parse_float(trade.get("stop_loss"))
-    target_price = parse_float(trade.get("target_price"))
-    protection_price = parse_float(trade.get("protection_price"))
     opened_close_time = parse_int(trade.get("opened_kline_close_time"), 0)
-    if stop_loss is None or target_price is None or protection_price is None:
-        return False
 
     future_bars = [
         bar
@@ -878,9 +911,7 @@ def evaluate_open_strategy_trade_with_bars(trade: dict[str, Any], bars: list[dic
         if close is not None:
             refresh_strategy_trade_mark(trade, close)
 
-        decision = evaluate_bar_exit(direction, low, high, stop_loss, target_price, protection_price)
-        if decision:
-            close_strategy_trade(trade, decision.exit_price, decision.reason, decision.outcome)
+        if apply_strategy_lifecycle(trade, low, high, close if close is not None else high, parse_float(bar.get("atr"))):
             return True
 
     if current_price is None:
@@ -893,8 +924,13 @@ def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
     open_trades = [trade for trade in trades if trade.get("status") == "open"]
     wins = [trade for trade in closed if trade.get("outcome") == "win"]
     losses = [trade for trade in closed if trade.get("outcome") == "loss"]
+    breakevens = [trade for trade in closed if trade.get("outcome") == "breakeven"]
     returns = [parse_float(trade.get("return_pct")) or 0.0 for trade in closed]
-    protection_wins = [trade for trade in closed if trade.get("exit_reason") == "protection_reached"]
+    protection_wins = [
+        trade
+        for trade in closed
+        if trade.get("exit_reason") in {"protection_reached", "protected_stop", "trailing_stop"}
+    ]
     stop_losses = [trade for trade in closed if trade.get("exit_reason") == "stop_loss"]
     return {
         "total_trades": len(trades),
@@ -902,6 +938,7 @@ def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "closed_trades": len(closed),
         "wins": len(wins),
         "losses": len(losses),
+        "breakevens": len(breakevens),
         "win_rate": len(wins) / len(closed) if closed else 0.0,
         "expectancy": sum(returns) / len(returns) if returns else 0.0,
         "total_return": sum(returns),
@@ -1140,17 +1177,17 @@ def build_indicator_wait_signal(symbol: str, interval: str, reason: str) -> dict
     }
 
 
-def detect_support_level(symbol: str, interval: str, current_price: Optional[float]) -> dict[str, Any]:
+def detect_support_level(symbol: str, interval: str, current_price: float | None) -> dict[str, Any]:
     bars = fetch_klines(symbol, interval, KLINE_LIMIT)
     return build_support_level_from_bars(symbol, interval, current_price, bars)
 
 
-async def detect_support_level_async(symbol: str, interval: str, current_price: Optional[float]) -> dict[str, Any]:
+async def detect_support_level_async(symbol: str, interval: str, current_price: float | None) -> dict[str, Any]:
     bars = await async_fetch_klines(symbol, interval, KLINE_LIMIT)
     return build_support_level_from_bars(symbol, interval, current_price, bars)
 
 
-def build_support_level_from_bars(symbol: str, interval: str, current_price: Optional[float], bars: list[dict[str, Any]]) -> dict[str, Any]:
+def build_support_level_from_bars(symbol: str, interval: str, current_price: float | None, bars: list[dict[str, Any]]) -> dict[str, Any]:
     if len(bars) < 30 or current_price is None:
         return build_support_wait_level(symbol, interval, "K线不足")
 
@@ -1368,7 +1405,7 @@ def detect_chanlun_signal(symbol: str, interval: str) -> dict[str, Any]:
             return 0
         return sum(1 for bar in ready_bars if int(bar.get("close_time", 0)) > created_close_time)
 
-    def build_buy_response(candidate: dict[str, Any], signal: str, signal_name: str, filter_message: str, confirm_bars: int, higher: Optional[dict[str, Any]] = None, signal_grade: str = "weak") -> dict[str, Any]:
+    def build_buy_response(candidate: dict[str, Any], signal: str, signal_name: str, filter_message: str, confirm_bars: int, higher: dict[str, Any] | None = None, signal_grade: str = "weak") -> dict[str, Any]:
         higher_state = higher or {}
         structure = candidate.get("structure")
         score_info = score_signal("long", candidate["strength"], signal == "long", current_bar, higher_state, "熔断" in signal_name, structure)
@@ -1639,7 +1676,7 @@ def run_signal_backtest_summary(
     }
 
 
-async def monitor_loop_async(stop_event: Optional[asyncio.Event] = None) -> None:
+async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
     stop_event = stop_event or asyncio.Event()
     while not stop_event.is_set():
         with state_lock:
@@ -1674,7 +1711,7 @@ async def monitor_loop_async(stop_event: Optional[asyncio.Event] = None) -> None
                 }
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=10)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 
@@ -1690,7 +1727,7 @@ async def evaluate_chanlun_signals_async(watchlist: list[dict[str, Any]]) -> Non
     signal_error = None
     signal_items = [item for item in watchlist if item.get("signal", True)]
 
-    async def load_signal(item: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]], Optional[str]]:
+    async def load_signal(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
         try:
             signal = await asyncio.to_thread(detect_project_signal, item["symbol"], item.get("interval", DEFAULT_SIGNAL_INTERVAL))
             return item, signal, None
@@ -1762,7 +1799,7 @@ async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> N
 
     tasks = [(symbol, interval) for symbol in symbols for interval in INDICATOR_INTERVALS]
 
-    async def load_signal(symbol: str, interval: str) -> tuple[tuple[str, str], Optional[dict[str, Any]], Optional[str]]:
+    async def load_signal(symbol: str, interval: str) -> tuple[tuple[str, str], dict[str, Any] | None, str | None]:
         try:
             return (symbol, interval), await detect_indicator_signal_async(symbol, interval), None
         except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError) as exc:
@@ -1829,7 +1866,7 @@ async def evaluate_support_alerts_async(watchlist: list[dict[str, Any]], prices:
         for interval in SUPPORT_INTERVALS
     ]
 
-    async def load_level(item: dict[str, Any], interval: str, price: Optional[float]) -> tuple[tuple[str, str], Optional[dict[str, Any]], Optional[str]]:
+    async def load_level(item: dict[str, Any], interval: str, price: float | None) -> tuple[tuple[str, str], dict[str, Any] | None, str | None]:
         try:
             return (item["symbol"], interval), await detect_support_level_async(item["symbol"], interval, price), None
         except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError) as exc:
@@ -2183,7 +2220,7 @@ def okx_bot_event_log_path() -> Path:
     return OKX_BOT_EVENT_LOG_FILE
 
 
-def path_signature(path: Path) -> tuple[str, Optional[float], Optional[int]]:
+def path_signature(path: Path) -> tuple[str, float | None, int | None]:
     try:
         stat = path.stat()
         return str(path), stat.st_mtime, stat.st_size
@@ -2191,7 +2228,7 @@ def path_signature(path: Path) -> tuple[str, Optional[float], Optional[int]]:
         return str(path), None, None
 
 
-def load_okx_bot_state_payload() -> tuple[dict[str, Any], Optional[str]]:
+def load_okx_bot_state_payload() -> tuple[dict[str, Any], str | None]:
     state_path = okx_bot_state_path()
     if not state_path.exists():
         return {}, None
@@ -2240,7 +2277,7 @@ def load_binance_bot_positions() -> list[dict[str, Any]]:
     ]
 
 
-def summarize_okx_bot_status(events: list[dict[str, Any]], state_payload: dict[str, Any], state_error: Optional[str] = None) -> dict[str, Any]:
+def summarize_okx_bot_status(events: list[dict[str, Any]], state_payload: dict[str, Any], state_error: str | None = None) -> dict[str, Any]:
     now = time.time()
     state_path = okx_bot_state_path()
     event_log_path = okx_bot_event_log_path()
@@ -2525,7 +2562,7 @@ def create_app():
             monitor_stop_event.set()
             try:
                 await asyncio.wait_for(monitor_task, timeout=25)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 monitor_task.cancel()
                 await asyncio.gather(monitor_task, return_exceptions=True)
             await close_http_session()

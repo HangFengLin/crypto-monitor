@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import threading
 import urllib.request
 from pathlib import Path
 from typing import Any
-
 
 _LOG_LOCKS: dict[str, threading.Lock] = {}
 _LOG_LOCKS_GUARD = threading.Lock()
@@ -89,9 +88,9 @@ def code_fingerprint(root: Path, relative_paths: tuple[str, ...]) -> str:
     for relative_path in relative_paths:
         path = root / relative_path
         if not path.exists():
-            digest.update(f"{relative_path}:missing\n".encode("utf-8"))
+            digest.update(f"{relative_path}:missing\n".encode())
             continue
-        digest.update(f"{relative_path}:".encode("utf-8"))
+        digest.update(f"{relative_path}:".encode())
         digest.update(path.read_bytes())
         digest.update(b"\n")
     return digest.hexdigest()[:16]

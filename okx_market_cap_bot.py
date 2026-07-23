@@ -18,9 +18,9 @@ import sys
 import threading
 import time
 from collections import Counter
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from config import config_value, load_config, load_env_file
 from data_client import (
@@ -32,18 +32,25 @@ from data_client import (
     place_okx_demo_order,
 )
 from indicators import calculate_indicators
-from position_manager import calculate_return_pct, calculate_target_levels as target_levels, evaluate_bar_exit
+from position_manager import (
+    STOP_MODE_CHOICES,
+    STRUCTURE_ATR_STOP_MODE,
+    calculate_return_pct,
+    evaluate_lifecycle_bar,
+)
+from position_manager import (
+    calculate_target_levels as target_levels,
+)
 from project_signal_backtest import fetch_exchange_klines, fetch_higher_timeframe_context
 from runtime_utils import append_jsonl, atomic_write_text, post_discord
 from strategy import ProjectSignalEngine
 from strategy_universe import build_okx_market_cap_universe
 
-
 ROOT = Path(__file__).resolve().parent
 CONFIG = load_config()
 
 
-def config_int(section: str, key: str, default: int, env_name: Optional[str] = None) -> int:
+def config_int(section: str, key: str, default: int, env_name: str | None = None) -> int:
     fallback: Any = os.getenv(env_name, default) if env_name else default
     value = config_value(CONFIG, section, key, fallback)
     try:
@@ -52,7 +59,7 @@ def config_int(section: str, key: str, default: int, env_name: Optional[str] = N
         return default
 
 
-def config_float(section: str, key: str, default: float, env_name: Optional[str] = None) -> float:
+def config_float(section: str, key: str, default: float, env_name: str | None = None) -> float:
     fallback: Any = os.getenv(env_name, default) if env_name else default
     value = config_value(CONFIG, section, key, fallback)
     try:
@@ -61,7 +68,7 @@ def config_float(section: str, key: str, default: float, env_name: Optional[str]
         return default
 
 
-def config_symbol_set(section: str, key: str, default: tuple[str, ...] = (), env_name: Optional[str] = None) -> set[str]:
+def config_symbol_set(section: str, key: str, default: tuple[str, ...] = (), env_name: str | None = None) -> set[str]:
     env_value = os.getenv(env_name, "").strip() if env_name else ""
     value: Any = env_value if env_value else config_value(CONFIG, section, key, list(default))
     if isinstance(value, str):
@@ -140,6 +147,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--okx-instrument-type", choices=["SWAP", "SPOT"], default="SWAP")
     parser.add_argument("--trade-mode", choices=["cross", "isolated", "cash"], default="cross")
     parser.add_argument("--reward-risk", type=float, default=float(config_value(CONFIG, "app", "strategy_reward_risk", 2.0)))
+    parser.add_argument("--fee-rate", type=float, default=config_float("bot", "fee_rate", float(config_value(CONFIG, "app", "strategy_fee_rate", 0.001))))
+    parser.add_argument(
+        "--position-stop-mode",
+        choices=STOP_MODE_CHOICES,
+        default=str(config_value(CONFIG, "bot", "position_stop_mode", STRUCTURE_ATR_STOP_MODE)),
+        help="持仓退出模式；默认沿用结构 ATR 止盈止损",
+    )
+    parser.add_argument("--low-profit-pair-min-trades", type=int, default=config_int("bot", "low_profit_pair_min_trades", 4))
+    parser.add_argument("--low-profit-pair-lookback", type=int, default=config_int("bot", "low_profit_pair_lookback", 8))
+    parser.add_argument("--low-profit-pair-threshold", type=float, default=config_float("bot", "low_profit_pair_threshold", 0.0))
+    parser.add_argument("--low-profit-pair-cooldown-hours", type=float, default=config_float("bot", "low_profit_pair_cooldown_hours", 72.0))
+    parser.add_argument("--stoploss-guard-min-trades", type=int, default=config_int("bot", "stoploss_guard_min_trades", 3))
+    parser.add_argument("--stoploss-guard-lookback", type=int, default=config_int("bot", "stoploss_guard_lookback", 8))
+    parser.add_argument("--stoploss-guard-cooldown-hours", type=float, default=config_float("bot", "stoploss_guard_cooldown_hours", 24.0))
+    parser.add_argument(
+        "--signal-direction",
+        choices=["all", "long", "short"],
+        default=str(config_value(CONFIG, "bot", "signal_direction", "all")),
+        help="开仓过滤：只允许指定方向信号",
+    )
+    parser.add_argument(
+        "--divergence-filter",
+        choices=["all", "macd", "fast_macd"],
+        default=str(config_value(CONFIG, "bot", "divergence_filter", "all")),
+        help="开仓过滤：只允许指定背驰类型",
+    )
+    parser.add_argument("--structure-text-exact", default=config_value(CONFIG, "bot", "structure_text_exact", None))
+    parser.add_argument("--structure-text-contains", default=config_value(CONFIG, "bot", "structure_text_contains", None))
     parser.add_argument("--min-signal-score", type=int, default=int(config_value(CONFIG, "bot", "min_signal_score", 0)))
     parser.add_argument("--min-structure-score", type=int, default=int(config_value(CONFIG, "bot", "min_structure_score", 0)))
     parser.add_argument("--place-order", action="store_true", help="提交 OKX Demo 模拟盘订单；不加则只记录和推送信号")
@@ -280,7 +315,7 @@ def order_side(direction: str, closing: bool = False) -> str:
     return "buy" if closing else "sell"
 
 
-def okx_position_side(args: argparse.Namespace, direction: str) -> Optional[str]:
+def okx_position_side(args: argparse.Namespace, direction: str) -> str | None:
     if args.okx_instrument_type.upper() != "SWAP":
         return None
     mode = str(config_value(CONFIG, "bot", "okx_position_mode", os.getenv("OKX_POSITION_MODE", ""))).strip().lower()
@@ -289,7 +324,7 @@ def okx_position_side(args: argparse.Namespace, direction: str) -> Optional[str]
     return None
 
 
-def okx_order_context(args: argparse.Namespace, symbol: str, direction: str, closing: bool = False, order_symbol: Optional[str] = None) -> dict[str, Any]:
+def okx_order_context(args: argparse.Namespace, symbol: str, direction: str, closing: bool = False, order_symbol: str | None = None) -> dict[str, Any]:
     side = order_side(direction, closing=closing)
     position_side = okx_position_side(args, direction)
     context: dict[str, Any] = {
@@ -538,14 +573,31 @@ def should_skip_signal(signal: dict[str, Any], min_signal_score: int, min_struct
     )
 
 
+def entry_signal_filter_reason(args: argparse.Namespace, signal: dict[str, Any]) -> str | None:
+    signal_direction = str(getattr(args, "signal_direction", "all") or "all")
+    if signal_direction != "all" and str(signal.get("signal")) != signal_direction:
+        return "signal_direction"
+    divergence_filter = str(getattr(args, "divergence_filter", "all") or "all")
+    if divergence_filter != "all" and str(signal.get("divergence_type", "macd")) != divergence_filter:
+        return "divergence_filter"
+    structure_text = str(signal.get("structure_text", ""))
+    structure_exact = str(getattr(args, "structure_text_exact", "") or "")
+    if structure_exact and structure_text != structure_exact:
+        return "structure_text_exact"
+    structure_contains = str(getattr(args, "structure_text_contains", "") or "")
+    if structure_contains and structure_contains not in structure_text:
+        return "structure_text_contains"
+    return None
+
+
 def build_position(
     args: argparse.Namespace,
     symbol: str,
     signal: dict[str, Any],
     order_id: str,
-    size: Optional[str] = None,
-    sizing: Optional[dict[str, Any]] = None,
-) -> Optional[dict[str, Any]]:
+    size: str | None = None,
+    sizing: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     direction = str(signal.get("signal", ""))
     entry_price = parse_float(signal.get("price"))
     stop_loss = parse_float(signal.get("stop_loss"))
@@ -567,9 +619,14 @@ def build_position(
         "status": "open",
         "entry_price": entry_price,
         "stop_loss": stop_loss,
+        "initial_stop_loss": stop_loss,
+        "active_stop": stop_loss,
         "target_price": levels["target_price"],
         "protection_price": levels["protection_price"],
         "risk": levels["risk"],
+        "protection_activated": False,
+        "protected_stop_price": 0.0,
+        "exit_mode": args.position_stop_mode,
         "opened_at": time.time(),
         "opened_kline_close_time": signal.get("kline_close_time"),
         "signal_score": signal.get("signal_score"),
@@ -581,7 +638,7 @@ def build_position(
     }
 
 
-def open_position(args: argparse.Namespace, symbol: str, signal: dict[str, Any], order_symbol: Optional[str] = None) -> Optional[dict[str, Any]]:
+def open_position(args: argparse.Namespace, symbol: str, signal: dict[str, Any], order_symbol: str | None = None) -> dict[str, Any] | None:
     direction = str(signal.get("signal", ""))
     order_id = "signal-only"
     order_symbol = order_symbol or symbol
@@ -657,7 +714,7 @@ def close_position(args: argparse.Namespace, position: dict[str, Any], exit_pric
         close_order_id = str(order.get("ordId", ""))
 
     entry_price = float(position["entry_price"])
-    return_pct = calculate_return_pct(direction, entry_price, exit_price)
+    return_pct = calculate_return_pct(direction, entry_price, exit_price, float(getattr(args, "fee_rate", 0.0)))
     position.update(
         {
             "status": "closed",
@@ -686,23 +743,51 @@ def evaluate_position(args: argparse.Namespace, position: dict[str, Any], bars: 
     if not bars or position.get("status") != "open":
         return False
 
-    latest = bars[-1]
-    high = float(latest["high"])
-    low = float(latest["low"])
-    close = float(latest["close"])
-    position["highest_price"] = max(float(position.get("highest_price") or position["entry_price"]), high, close)
-    position["lowest_price"] = min(float(position.get("lowest_price") or position["entry_price"]), low, close)
-
     direction = str(position["direction"])
-    stop_loss = float(position["stop_loss"])
+    entry_price = float(position["entry_price"])
+    initial_stop = float(position.get("initial_stop_loss") or position["stop_loss"])
+    active_stop = float(position.get("active_stop") or position["stop_loss"])
     target_price = float(position["target_price"])
     protection_price = float(position["protection_price"])
+    opened_close_time = int(position.get("opened_kline_close_time") or 0)
+    future_bars = [bar for bar in bars if int(bar.get("close_time") or 0) > opened_close_time] if opened_close_time else [bars[-1]]
 
-    decision = evaluate_bar_exit(direction, low, high, stop_loss, target_price, protection_price)
-    if not decision:
-        return False
-    close_position(args, position, decision.exit_price, decision.reason)
-    return True
+    for bar in future_bars:
+        high = parse_float(bar.get("high"))
+        low = parse_float(bar.get("low"))
+        close = parse_float(bar.get("close"))
+        if high is None or low is None:
+            continue
+
+        lifecycle = evaluate_lifecycle_bar(
+            direction,
+            low,
+            high,
+            close if close is not None else high,
+            entry_price,
+            initial_stop,
+            target_price,
+            protection_price,
+            active_stop=active_stop,
+            highest_price=float(position.get("highest_price") or entry_price),
+            lowest_price=float(position.get("lowest_price") or entry_price),
+            protection_activated=bool(position.get("protection_activated")),
+            protected_stop_price=float(position.get("protected_stop_price") or 0.0),
+            stop_mode=str(position.get("exit_mode") or getattr(args, "position_stop_mode", STRUCTURE_ATR_STOP_MODE)),
+            fee_rate=float(getattr(args, "fee_rate", 0.0)),
+            atr_value=parse_float(bar.get("atr")),
+        )
+        active_stop = lifecycle.active_stop
+        position["active_stop"] = lifecycle.active_stop
+        position["stop_loss"] = lifecycle.active_stop
+        position["highest_price"] = lifecycle.highest_price
+        position["lowest_price"] = lifecycle.lowest_price
+        position["protection_activated"] = lifecycle.protection_activated
+        position["protected_stop_price"] = lifecycle.protected_stop_price
+        if lifecycle.decision:
+            close_position(args, position, lifecycle.decision.exit_price, lifecycle.decision.reason)
+            return True
+    return False
 
 
 def active_positions(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -760,6 +845,63 @@ def reconcile_startup_positions(args: argparse.Namespace, state: dict[str, Any])
     append_event({"type": "reconcile_ok", "positions": len(local)})
 
 
+def low_profit_pair_blocked(args: argparse.Namespace, state: dict[str, Any], symbol: str) -> tuple[bool, dict[str, Any]]:
+    """Return whether recent closed trades justify cooling down one symbol."""
+    min_trades = max(0, int(getattr(args, "low_profit_pair_min_trades", 0) or 0))
+    if min_trades <= 0:
+        return False, {}
+    lookback = max(min_trades, int(getattr(args, "low_profit_pair_lookback", min_trades) or min_trades))
+    threshold = float(getattr(args, "low_profit_pair_threshold", 0.0) or 0.0)
+    cooldown_seconds = max(0.0, float(getattr(args, "low_profit_pair_cooldown_hours", 0.0) or 0.0) * 3600)
+    closed = [
+        position
+        for position in state.get("positions", [])
+        if str(position.get("symbol", "")).upper() == symbol.upper() and position.get("status") == "closed"
+    ]
+    closed.sort(key=lambda item: float(item.get("closed_at") or item.get("opened_at") or 0), reverse=True)
+    recent = closed[:lookback]
+    returns = [parse_float(item.get("return_pct")) for item in recent]
+    returns = [item for item in returns if item is not None]
+    if len(returns) < min_trades:
+        return False, {"closed_trades": len(returns)}
+    latest_closed_at = float(recent[0].get("closed_at") or 0)
+    if cooldown_seconds and latest_closed_at and time.time() - latest_closed_at > cooldown_seconds:
+        return False, {"closed_trades": len(returns), "cooldown_expired": True}
+    avg_return = sum(returns) / len(returns)
+    blocked = avg_return <= threshold
+    return blocked, {
+        "closed_trades": len(returns),
+        "avg_return": avg_return,
+        "threshold": threshold,
+        "cooldown_hours": cooldown_seconds / 3600 if cooldown_seconds else 0.0,
+    }
+
+
+def stoploss_guard_blocked(args: argparse.Namespace, state: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    """Return whether recent stop-loss exits justify pausing new entries globally."""
+    min_trades = max(0, int(getattr(args, "stoploss_guard_min_trades", 0) or 0))
+    if min_trades <= 0:
+        return False, {}
+    lookback = max(min_trades, int(getattr(args, "stoploss_guard_lookback", min_trades) or min_trades))
+    cooldown_seconds = max(0.0, float(getattr(args, "stoploss_guard_cooldown_hours", 0.0) or 0.0) * 3600)
+    closed = [position for position in state.get("positions", []) if position.get("status") == "closed"]
+    closed.sort(key=lambda item: float(item.get("closed_at") or item.get("opened_at") or 0), reverse=True)
+    recent = closed[:lookback]
+    stop_losses = [item for item in recent if str(item.get("exit_reason") or "") == "stop_loss"]
+    if len(stop_losses) < min_trades:
+        return False, {"closed_trades": len(recent), "stop_losses": len(stop_losses)}
+    latest_stop_at = float(stop_losses[0].get("closed_at") or 0)
+    if cooldown_seconds and latest_stop_at and time.time() - latest_stop_at > cooldown_seconds:
+        return False, {"closed_trades": len(recent), "stop_losses": len(stop_losses), "cooldown_expired": True}
+    return True, {
+        "closed_trades": len(recent),
+        "stop_losses": len(stop_losses),
+        "min_trades": min_trades,
+        "lookback": lookback,
+        "cooldown_hours": cooldown_seconds / 3600 if cooldown_seconds else 0.0,
+    }
+
+
 def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
     universe = build_okx_market_cap_universe(args.top_n, args.quote_asset, args.okx_instrument_type, args.min_quote_volume)
     skipped: Counter[str] = Counter()
@@ -774,7 +916,8 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
     for position in active_positions(state):
         try:
             _signal, bars = latest_signal(str(position["symbol"]), str(position["interval"]), args.limit, args.okx_instrument_type)
-            evaluate_position(args, position, bars)
+            if evaluate_position(args, position, bars):
+                save_state(state)
         except Exception as exc:
             error_count += 1
             message = f"{position.get('symbol')} 持仓检查异常：{type(exc).__name__}: {exc}"
@@ -800,6 +943,28 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
         )
         return
 
+    guarded, guard_details = stoploss_guard_blocked(args, state)
+    if guarded:
+        save_state(state)
+        skipped["stoploss_guard"] = len(universe)
+        append_event(
+            {
+                "type": "scan",
+                "universe_size": len(universe),
+                "open_positions": len(active_positions(state)),
+                "opened": opened_count,
+                "errors": error_count,
+                "skipped": dict(skipped),
+                "signal_reasons": dict(signal_reasons),
+                "signal_states": dict(signal_states),
+                "capacity": capacity,
+                "place_order": args.place_order,
+                "protection": {"name": "stoploss_guard", **guard_details},
+            }
+        )
+        append_event({"type": "global_protection", "name": "stoploss_guard", **guard_details})
+        return
+
     existing_ids = {str(position.get("id")) for position in state.get("positions", [])}
     for item in universe:
         symbol = str(item["symbol"])
@@ -815,6 +980,12 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
             continue
         if args.place_order and order_symbol in disabled_order_symbols(state):
             skipped["order_symbol_disabled"] += 1
+            continue
+        blocked, protection_details = low_profit_pair_blocked(args, state, symbol)
+        if blocked:
+            skipped["low_profit_pair"] += 1
+            append_event({"type": "pair_protection", "symbol": symbol, **protection_details})
+            debug_signal(args, symbol, {"signal": "filtered", "signal_name": "低收益币种保护"}, "low_profit_pair")
             continue
 
         try:
@@ -835,6 +1006,11 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
             skipped["score_filter"] += 1
             debug_signal(args, symbol, signal, "score_filter")
             continue
+        entry_filter_reason = entry_signal_filter_reason(args, signal)
+        if entry_filter_reason:
+            skipped["entry_filter"] += 1
+            debug_signal(args, symbol, signal, entry_filter_reason)
+            continue
 
         probe = build_position(args, symbol, signal, "probe")
         if not probe or probe["id"] in existing_ids:
@@ -850,6 +1026,7 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
             append_event({"type": "error", "symbol": symbol, "error": message, "signal": signal})
             if is_non_retryable_order_error(exc):
                 disable_order_symbol(state, order_symbol, exc)
+                save_state(state)
                 append_event({"type": "order_symbol_disabled", "symbol": symbol, "order_symbol": order_symbol, "error": f"{type(exc).__name__}: {exc}"})
             send_discord(message)
             debug_signal(args, symbol, signal, "open_position_failed")
@@ -859,6 +1036,7 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
             continue
 
         state.setdefault("positions", []).append(position)
+        save_state(state)
         existing_ids.add(position["id"])
         open_symbols.add(symbol)
         opened_count += 1
@@ -946,7 +1124,7 @@ def main() -> None:
             except OSError as save_exc:
                 append_event({"type": "error", "error": f"save_state_failed after scan_error: {type(save_exc).__name__}: {save_exc}"})
             send_discord(message)
-            raise SystemExit(1)
+            raise SystemExit(1) from exc
         finally:
             clear_scan_timeout()
         print(

@@ -9,14 +9,21 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import date, datetime, timedelta, timezone
+from collections.abc import Iterable
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 import pandas as pd
 
-from data_client import OKX_BASE_URL, OKX_HISTORY_CANDLES_PATH, interval_ms, normalize_okx_inst_id, okx_bar, read_json_url
-
+from data_client import (
+    OKX_BASE_URL,
+    OKX_HISTORY_CANDLES_PATH,
+    interval_ms,
+    normalize_okx_inst_id,
+    okx_bar,
+    read_json_url,
+)
 
 BINANCE_DATA_BASE = "https://data.binance.vision/data/futures/um"
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
@@ -52,23 +59,47 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _range_cache_path(cache_dir: Optional[Path], parts: list[str], start_ms: int, end_ms: int) -> Optional[Path]:
+def _range_cache_path(cache_dir: Path | None, parts: list[str], start_ms: int, end_ms: int) -> Path | None:
     if cache_dir is None:
         return None
     return cache_dir.joinpath(*parts, f"{start_ms}_{end_ms}.json")
 
 
-def _load_cached_rows(path: Optional[Path]) -> Optional[list[dict[str, Any]]]:
+def _load_cached_rows(path: Path | None) -> list[dict[str, Any]] | None:
     if path is None or not path.exists():
         return None
     payload = json.loads(path.read_text(encoding="utf-8"))
     return payload if isinstance(payload, list) else None
 
 
+def _load_cached_range_rows(path: Path | None, start_ms: int, end_ms: int, time_key: str = "open_time") -> list[dict[str, Any]] | None:
+    exact = _load_cached_rows(path)
+    if exact is not None:
+        return exact
+    if path is None or not path.parent.exists():
+        return None
+    for candidate in sorted(path.parent.glob("*.json")):
+        try:
+            cached_start, cached_end = (int(part) for part in candidate.stem.split("_", 1))
+        except ValueError:
+            continue
+        if cached_start > start_ms or cached_end < end_ms:
+            continue
+        payload = _load_cached_rows(candidate)
+        if payload is None:
+            continue
+        return [
+            item
+            for item in payload
+            if start_ms <= int(item.get(time_key, item.get("open_time", 0)) or 0) < end_ms
+        ]
+    return None
+
+
 def _post_json_url(url: str, payload: dict[str, Any], *, timeout: int = 30, attempts: int = 8) -> Any:
     """POST JSON to an official public endpoint with bounded 429 backoff."""
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    last_error: Optional[BaseException] = None
+    last_error: BaseException | None = None
     for attempt in range(attempts):
         try:
             request = urllib.request.Request(
@@ -84,7 +115,7 @@ def _post_json_url(url: str, payload: dict[str, Any], *, timeout: int = 30, atte
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             last_error = exc
-            retry_after: Optional[float] = None
+            retry_after: float | None = None
             if exc.code == 429 and exc.headers:
                 try:
                     retry_after = float(exc.headers.get("Retry-After"))
@@ -113,15 +144,15 @@ def _ascii_url(url: str) -> str:
     )
 
 
-def download_cached(url: str, destination: Path, *, checksum_url: Optional[str] = None, attempts: int = 6) -> Optional[Path]:
+def download_cached(url: str, destination: Path, *, checksum_url: str | None = None, attempts: int = 6) -> Path | None:
     """Download an immutable public archive once and verify its published checksum."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() and destination.stat().st_size > 0:
         return destination
     temporary = destination.with_suffix(destination.suffix + ".tmp")
-    last_error: Optional[BaseException] = None
+    last_error: BaseException | None = None
     for attempt in range(attempts):
-        retry_after: Optional[float] = None
+        retry_after: float | None = None
         try:
             request = urllib.request.Request(_ascii_url(url), headers={"User-Agent": "crypto-strategy-validation/1.0"})
             with urllib.request.urlopen(request, timeout=30) as response, temporary.open("wb") as output:
@@ -255,11 +286,11 @@ def fetch_binance_funding_history(
     symbol: str,
     start: date | datetime | str | pd.Timestamp,
     end: date | datetime | str | pd.Timestamp,
-    cache_dir: Optional[Path] = None,
+    cache_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     start_ms, end_ms = utc_millis(start), utc_millis(end)
     cache_path = _range_cache_path(cache_dir, ["binance", "um", "funding", symbol.upper()], start_ms, end_ms)
-    cached = _load_cached_rows(cache_path)
+    cached = _load_cached_range_rows(cache_path, start_ms, end_ms, "timestamp")
     if cached is not None:
         return cached
     cursor = start_ms
@@ -291,19 +322,19 @@ def fetch_okx_klines_range(
     start: date | datetime | str | pd.Timestamp,
     end: date | datetime | str | pd.Timestamp,
     instrument_type: str = "SWAP",
-    cache_dir: Optional[Path] = None,
+    cache_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     start_ms, end_ms = utc_millis(start), utc_millis(end)
     inst_id = normalize_okx_inst_id(symbol, instrument_type)
     cache_path = _range_cache_path(cache_dir, ["okx", instrument_type.lower(), "klines", inst_id, interval], start_ms, end_ms)
-    cached = _load_cached_rows(cache_path)
+    cached = _load_cached_range_rows(cache_path, start_ms, end_ms)
     if cached is not None:
         for bar in cached:
             bar["time"] = pd.Timestamp(bar["time"])
         return cached
     # Start at the requested historical boundary instead of paging backwards
     # from "now" when reproducing an older experiment.
-    after: Optional[int] = end_ms
+    after: int | None = end_ms
     rows: list[list[Any]] = []
     while True:
         query: dict[str, Any] = {"instId": inst_id, "bar": okx_bar(interval), "limit": 100}
@@ -351,7 +382,7 @@ def fetch_okx_funding_history(
     start: date | datetime | str | pd.Timestamp,
     end: date | datetime | str | pd.Timestamp,
     instrument_type: str = "SWAP",
-    cache_dir: Optional[Path] = None,
+    cache_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     start_ms, end_ms = utc_millis(start), utc_millis(end)
     inst_id = normalize_okx_inst_id(symbol, instrument_type)
@@ -364,7 +395,7 @@ def fetch_okx_funding_history(
     # REST endpoint supplies the current tail only; using it as the sole source
     # would truncate a two-year study to roughly three months.
     rest_start_ms = max(start_ms, max((int(row["timestamp"]) for row in rows), default=start_ms - 1) + 1)
-    after: Optional[int] = end_ms
+    after: int | None = end_ms
     while True:
         query: dict[str, Any] = {"instId": inst_id, "limit": 100}
         if after is not None:
@@ -396,7 +427,7 @@ def fetch_okx_funding_archives(
     inst_id: str,
     start: date | datetime | str | pd.Timestamp,
     end: date | datetime | str | pd.Timestamp,
-    cache_dir: Optional[Path],
+    cache_dir: Path | None,
 ) -> list[dict[str, Any]]:
     """Download OKX's official monthly funding-rate archives by calendar year."""
     start_ts = pd.Timestamp(start)
@@ -533,8 +564,8 @@ def enrich_microstructure(
     funding_records = funding.to_dict("records") if not funding.empty else []
     funding_index = -1
     oi_index = -1
-    funding_value: Optional[float] = None
-    oi_value: Optional[float] = None
+    funding_value: float | None = None
+    oi_value: float | None = None
     enriched: list[dict[str, Any]] = []
     funding_count = 0
     oi_count = 0

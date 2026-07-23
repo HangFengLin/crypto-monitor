@@ -3,11 +3,10 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from config import config_value, load_config
 from indicators import rolling_average
-
 
 _CONFIG = load_config()
 MA_FAST_PERIOD = int(config_value(_CONFIG, "strategy", "ma_fast_period", 5))
@@ -136,7 +135,7 @@ NUMERIC_BAR_KEYS = {
 }
 
 
-def _finite_float(value: Any) -> Optional[float]:
+def _finite_float(value: Any) -> float | None:
     if value in ("", None) or isinstance(value, bool):
         return None
     try:
@@ -172,7 +171,7 @@ def trace_strategy_signal(signal: dict[str, Any]) -> dict[str, Any]:
     return signal
 
 
-def find_local_extremes(values: list[Optional[float]], window: int = 3) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+def find_local_extremes(values: list[float | None], window: int = 3) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
     peaks = []
     troughs = []
     for index in range(window, len(values) - window):
@@ -218,7 +217,7 @@ def _divergence_strength(price1: float, price2: float, osc1: float, osc2: float,
     return min(cap, strength)
 
 
-def _safe_sum_abs(values: list[Optional[float]]) -> float:
+def _safe_sum_abs(values: list[float | None]) -> float:
     return sum(abs(value) for value in values if value is not None)
 
 
@@ -264,7 +263,7 @@ def _latest_strokes(peaks: list[tuple[int, float]], troughs: list[tuple[int, flo
     return strokes
 
 
-def _latest_zone(strokes: list[dict[str, Any]], count: int = 3) -> Optional[dict[str, float]]:
+def _latest_zone(strokes: list[dict[str, Any]], count: int = 3) -> dict[str, float] | None:
     if len(strokes) < count:
         return None
     selected = strokes[-count:]
@@ -280,7 +279,7 @@ def build_chan_structure_context(
     window: list[dict[str, Any]],
     price_peaks: list[tuple[int, float]],
     price_troughs: list[tuple[int, float]],
-    macd_values: list[Optional[float]],
+    macd_values: list[float | None],
     divergence_info: dict[str, Any],
 ) -> dict[str, Any]:
     """Approximate CZSC-style structure with local fractals, strokes, and a recent overlap zone."""
@@ -343,10 +342,10 @@ def build_chan_structure_context(
 def detect_bullish_divergence(
     price_troughs: list[tuple[int, float]],
     macd_troughs: list[tuple[int, float]],
-    macd_fast_troughs: Optional[list[tuple[int, float]]] = None,
+    macd_fast_troughs: list[tuple[int, float]] | None = None,
     max_lag_bars: int = MAX_EXTREME_LAG_BARS,
     extreme_window: int = EXTREME_WINDOW,
-) -> tuple[bool, float, Optional[dict[str, Any]]]:
+) -> tuple[bool, float, dict[str, Any] | None]:
     if len(price_troughs) < 2:
         return False, 0, None
 
@@ -385,10 +384,10 @@ def detect_bullish_divergence(
 def detect_bearish_divergence(
     price_peaks: list[tuple[int, float]],
     macd_peaks: list[tuple[int, float]],
-    macd_fast_peaks: Optional[list[tuple[int, float]]] = None,
+    macd_fast_peaks: list[tuple[int, float]] | None = None,
     max_lag_bars: int = MAX_EXTREME_LAG_BARS,
     extreme_window: int = EXTREME_WINDOW,
-) -> tuple[bool, float, Optional[dict[str, Any]]]:
+) -> tuple[bool, float, dict[str, Any] | None]:
     if len(price_peaks) < 2:
         return False, 0, None
 
@@ -456,7 +455,7 @@ def check_sell_filter(bars: list[dict[str, Any]], config: StrategyConfig = DEFAU
     return False, "✗ " + ", ".join(conditions) if conditions else "条件不足"
 
 
-def cross_direction(previous_fast: Optional[float], current_fast: Optional[float], previous_slow: Optional[float], current_slow: Optional[float]) -> str:
+def cross_direction(previous_fast: float | None, current_fast: float | None, previous_slow: float | None, current_slow: float | None) -> str:
     if previous_fast is None or current_fast is None or previous_slow is None or current_slow is None:
         return "none"
     if previous_fast <= previous_slow and current_fast > current_slow:
@@ -636,9 +635,9 @@ def score_signal(
     strength: float,
     filter_passed: bool,
     bar: dict[str, Any],
-    higher: Optional[dict[str, Any]] = None,
+    higher: dict[str, Any] | None = None,
     trend_blocked: bool = False,
-    structure: Optional[dict[str, Any]] = None,
+    structure: dict[str, Any] | None = None,
     config: StrategyConfig = DEFAULT_CONFIG,
 ) -> dict[str, Any]:
     max_score = 20
@@ -755,7 +754,7 @@ def grade_signal(
     strength: float,
     filter_passed: bool,
     bar: dict[str, Any],
-    higher: Optional[dict[str, Any]] = None,
+    higher: dict[str, Any] | None = None,
     trend_blocked: bool = False,
     config: StrategyConfig = DEFAULT_CONFIG,
 ) -> str:
@@ -765,8 +764,8 @@ def grade_signal(
 class ProjectSignalEngine:
     def __init__(self, config: StrategyConfig = DEFAULT_CONFIG) -> None:
         self.config = config
-        self.pending_buy: Optional[dict[str, Any]] = None
-        self.pending_sell: Optional[dict[str, Any]] = None
+        self.pending_buy: dict[str, Any] | None = None
+        self.pending_sell: dict[str, Any] | None = None
 
     @staticmethod
     def bars_waited_since(ready_bars: list[dict[str, Any]], close_time: Any, fallback: int = 0) -> int:
@@ -776,8 +775,9 @@ class ProjectSignalEngine:
             return fallback
         return sum(1 for bar in ready_bars if int(bar.get("close_time", 0) or 0) > created_close_time)
 
-    def detect(self, ready_bars: list[dict[str, Any]]) -> dict[str, Any]:
-        ready_bars = clean_strategy_bars(ready_bars, required=("open", "high", "low", "close", "volume", "macd"))
+    def detect(self, ready_bars: list[dict[str, Any]], clean: bool = True) -> dict[str, Any]:
+        if clean:
+            ready_bars = clean_strategy_bars(ready_bars, required=("open", "high", "low", "close", "volume", "macd"))
         if len(ready_bars) < 100:
             return {"signal": "wait", "signal_name": "K线不足"}
 

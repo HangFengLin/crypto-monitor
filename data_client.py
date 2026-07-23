@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import http.client
 import base64
-import hmac
 import hashlib
+import hmac
+import http.client
 import json
 import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
-from typing import Any, Optional
+from datetime import timezone
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
+from typing import Any
 
 from config import load_env_file
 
@@ -67,7 +68,7 @@ INTERVAL_SECONDS = {
 }
 
 
-def parse_float(value: Any) -> Optional[float]:
+def parse_float(value: Any) -> float | None:
     if value in ("", None):
         return None
     try:
@@ -77,7 +78,7 @@ def parse_float(value: Any) -> Optional[float]:
 
 
 def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             request = urllib.request.Request(
@@ -388,7 +389,7 @@ def fetch_klines(symbol: str, interval: str, limit: int = 300) -> list[dict[str,
 
 def fetch_historical_klines(symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
     rows: list[list[Any]] = []
-    end_time: Optional[int] = None
+    end_time: int | None = None
     while len(rows) < limit:
         batch_limit = min(1000, limit - len(rows))
         query = {"symbol": symbol.upper(), "interval": interval, "limit": batch_limit}
@@ -458,7 +459,7 @@ def _parse_okx_candle(row: list[Any]) -> dict[str, Any]:
 def fetch_okx_historical_klines(symbol: str, interval: str, limit: int, instrument_type: str = "SWAP") -> list[dict[str, Any]]:
     inst_id = normalize_okx_inst_id(symbol, instrument_type)
     rows: list[list[Any]] = []
-    after: Optional[int] = None
+    after: int | None = None
     while len(rows) < limit:
         batch_limit = min(100, limit - len(rows))
         query: dict[str, Any] = {"instId": inst_id, "bar": okx_bar(interval), "limit": batch_limit}
@@ -548,7 +549,7 @@ def fetch_okx_instrument(symbol: str, instrument_type: str = "SWAP") -> dict[str
 
 
 def okx_timestamp() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -562,8 +563,8 @@ def okx_sign(timestamp: str, method: str, request_path: str, body: str, secret_k
 def okx_authenticated_request(
     method: str,
     path: str,
-    params: Optional[dict[str, Any]] = None,
-    body: Optional[dict[str, Any]] = None,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
     simulated: bool = True,
     timeout: int = 20,
 ) -> Any:
@@ -613,7 +614,7 @@ def fetch_okx_demo_balance(ccy: str = "USDT") -> dict[str, Any]:
     return result.get("data", [{}])[0]
 
 
-def fetch_okx_demo_positions(symbol: Optional[str] = None, instrument_type: str = "SWAP") -> list[dict[str, Any]]:
+def fetch_okx_demo_positions(symbol: str | None = None, instrument_type: str = "SWAP") -> list[dict[str, Any]]:
     params: dict[str, Any] = {"instType": instrument_type.upper()}
     if symbol:
         params["instId"] = normalize_okx_inst_id(symbol, instrument_type)
@@ -660,9 +661,9 @@ def prepare_okx_demo_order(
     instrument_type: str = "SWAP",
     trade_mode: str = "cross",
     order_type: str = "market",
-    position_side: Optional[str] = None,
+    position_side: str | None = None,
     reduce_only: bool = False,
-    price: Optional[Any] = None,
+    price: Any | None = None,
     slippage_ticks: int = 0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     instrument = fetch_okx_instrument(symbol, instrument_type)
@@ -719,9 +720,9 @@ def place_okx_demo_order(
     instrument_type: str = "SWAP",
     trade_mode: str = "cross",
     order_type: str = "market",
-    position_side: Optional[str] = None,
+    position_side: str | None = None,
     reduce_only: bool = False,
-    price: Optional[Any] = None,
+    price: Any | None = None,
     slippage_ticks: int = 0,
     debug: bool = False,
 ) -> dict[str, Any]:
@@ -914,7 +915,7 @@ async def async_read_json_url(url: str, timeout: int = 20, attempts: int = 3) ->
     if aiohttp is None:
         raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements.txt")
 
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
     timeout_config = aiohttp.ClientTimeout(total=timeout)
     for _ in range(attempts):
         try:

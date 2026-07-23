@@ -208,7 +208,7 @@ function renderStrategyStats(stats, trades) {
   strategySummaryEl.innerHTML = `
     <div class="metric"><span>累计开仓</span><strong>${formatNumber(stats.total_trades, 0)}</strong></div>
     <div class="metric"><span>实盘胜率</span><strong class="${stats.win_rate >= 0.45 ? "up" : stats.win_rate >= 0.35 ? "warn" : "down"}">${formatPercent(stats.win_rate)}</strong></div>
-    <div class="metric"><span>成功/失败</span><strong>${formatNumber(stats.wins, 0)} / ${formatNumber(stats.losses, 0)}</strong></div>
+    <div class="metric"><span>成功/保本/失败</span><strong>${formatNumber(stats.wins, 0)} / ${formatNumber(stats.breakevens, 0)} / ${formatNumber(stats.losses, 0)}</strong></div>
     <div class="metric"><span>平均结果</span><strong class="${stats.expectancy >= 0 ? "up" : "down"}">${formatPercent(stats.expectancy)}</strong></div>
     <div class="metric"><span>止损失败</span><strong>${formatPercent(stats.stop_loss_rate)}</strong></div>
     <div class="metric"><span>推保护成功</span><strong>${formatPercent(stats.protection_rate)}</strong></div>

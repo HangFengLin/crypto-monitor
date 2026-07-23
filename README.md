@@ -100,6 +100,9 @@ docker compose up -d --build
 
 - `crypto-project`：监控网站，只负责 BTCUSDT、ETHUSDT 面板和提醒。
 
+`okx-strategy-bot` 和 `universe-backtest` 分别放在 `trading`、`backtest`
+profile 中，默认都不会随网站启动。
+
 OKX Demo 市值排名策略机器人被放在 `trading` profile 中，只有显式启用才会运行。这个 profile 默认仍是 signal-only，不会下单：
 
 ```bash
@@ -278,6 +281,85 @@ rsync -av --progress ./*_report.html root@你的服务器公网IP:/opt/chanlun-m
 ```
 
 这里的 `/opt/chanlun-monitor` 换成 VPS 上真实的项目目录。确认 `reports.html` 能看到报告后，再清理本地 HTML 文件。
+
+### Universe 市场全量回测
+
+`universe_signal_backtest.py` 会按流动性筛选 OKX 市场候选，逐币写入结果和
+checkpoint，最后生成聚合 CSV、候选假设和 `report.html`。默认参数是 OKX SWAP、
+Top 200、最低 24 小时报价成交额 500 万 USDT、15m、20,000 根 K 线、30% holdout
+和 96 bars embargo。这里的候选仅供研究，正式晋级仍需运行
+`strategy_validation.py` 的 bootstrap 和 BH-FDR 验证。
+
+本机直接运行：
+
+```bash
+python3 universe_signal_backtest.py
+```
+
+指定固定 UTC 历史窗口：
+
+```bash
+python3 universe_signal_backtest.py \
+  --start 2024-01-01T00:00:00Z \
+  --end 2025-01-01T00:00:00Z \
+  --run-id okx-2024
+```
+
+VPS 上先只构建回测镜像，不会启动或重建网站与交易机器人：
+
+```bash
+docker compose --profile backtest build universe-backtest
+```
+
+五币种、500 bars 冒烟测试可以作为命名的一次性后台容器运行：
+
+```bash
+docker compose --profile backtest run -d \
+  --name universe-backtest-smoke \
+  universe-backtest \
+  --max-symbols 5 --limit 500 --max-hold-bars 24 --embargo-bars 24 --run-id smoke
+docker logs -f universe-backtest-smoke
+```
+
+冒烟通过后启动默认 Top 200 正式任务：
+
+```bash
+docker compose --profile backtest run -d \
+  --name universe-backtest-top200 \
+  universe-backtest \
+  --run-id top200
+docker logs -f universe-backtest-top200
+```
+
+需要测试中断恢复时，用正常停止信号并给进程 30 秒写完 checkpoint，然后再续跑：
+
+```bash
+docker stop --time 30 universe-backtest-smoke
+docker logs universe-backtest-smoke
+docker compose --profile backtest run -d \
+  --name universe-backtest-smoke-resume \
+  universe-backtest \
+  --resume /app/reports/universe_backtest_smoke
+```
+
+运行产物保存在宿主机 `reports/universe_backtest_<run-id>/`，历史数据缓存保存在
+`runtime/backtest-data/`；删除或重建一次性容器不会删除这些文件。报告写完后可在
+`http://你的服务器公网IP/reports.html` 中查看。容器默认限制为 0.75 CPU、700 MiB
+内存和 1200 MiB 内存加 swap，可通过 `.env` 的 `BACKTEST_CPUS`、
+`BACKTEST_MEMORY_LIMIT`、`BACKTEST_MEMORY_SWAP_LIMIT` 覆盖。
+
+Discord 回测通知默认关闭。VPS `.env` 的推荐配置是：
+
+```env
+BACKTEST_DISCORD_ENABLED=true
+BACKTEST_DISCORD_WEBHOOK_URL=
+BACKTEST_DISCORD_MIN_INTERVAL=900
+REPORT_PUBLIC_BASE_URL=http://your-server.example.com
+```
+
+`BACKTEST_DISCORD_WEBHOOK_URL` 留空时回退到现有 `DISCORD_WEBHOOK_URL`。Webhook
+只能放在 `.env`，不要写入代码、报告或命令行。通知发送失败只写入运行日志，不会
+终止回测。
 
 ## 网络代理
 

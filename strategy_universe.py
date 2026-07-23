@@ -12,7 +12,6 @@ from data_client import (
     parse_float,
 )
 
-
 STABLE_BASE_ASSETS = {
     "USDT",
     "USDC",

@@ -8,6 +8,8 @@ __pycache__/
 .pycache-check/
 *.py[cod]
 *.pyo
+.coverage
+htmlcov/
 
 # Virtual environments and local tooling
 venv/

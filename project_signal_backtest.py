@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -28,7 +29,13 @@ from plotly.subplots import make_subplots
 from backtest_statistics import build_exploratory_group_tables, weekly_block_bootstrap_mean, wilson_interval
 from data_client import fetch_historical_klines, fetch_okx_historical_klines, interval_ms, normalize_okx_symbol
 from indicators import calculate_indicators
-from position_manager import calculate_return_pct, calculate_target_levels, evaluate_bar_exit
+from position_manager import (
+    ATR_TRAILING_AFTER_1R_STOP_MODE,
+    STOP_MODE_CHOICES,
+    calculate_return_pct,
+    calculate_target_levels,
+    evaluate_lifecycle_bar,
+)
 from strategy import DEFAULT_CONFIG, HIGHER_TREND_INTERVAL, ProjectSignalEngine, StrategyConfig
 
 
@@ -60,6 +67,25 @@ class SignalTrade:
     structure_text: str
     score_text: str
     filter_text: str
+    initial_stop_loss: float = 0.0
+    initial_risk: float = 0.0
+    protection_price: float = 0.0
+    protection_activated: bool = False
+    protected_stop_price: float = 0.0
+    horizon_close_price: float = 0.0
+    horizon_close_return_pct: float = 0.0
+    horizon_mfe_r: float = 0.0
+    horizon_mae_r: float = 0.0
+    pre_exit_mfe_r: float = 0.0
+    pre_exit_mae_r: float = 0.0
+    first_initial_stop_bar: int | None = None
+    first_1r_bar: int | None = None
+    first_1_5r_bar: int | None = None
+    first_2r_bar: int | None = None
+    hit_1r_before_initial_stop: bool = False
+    hit_1_5r_before_initial_stop: bool = False
+    hit_2r_before_initial_stop: bool = False
+    horizon_close_r_path: list[float] = field(default_factory=list)
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,9 +101,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fee-rate", type=float, default=0.001, help="单边手续费/滑点估计，默认 0.001")
     parser.add_argument(
         "--stop-mode",
-        choices=["structure_atr", "atr_trailing_after_1r", "all"],
+        choices=[*STOP_MODE_CHOICES, "all"],
         default="structure_atr",
-        help="止损模式：结构ATR硬止损、1R后ATR移动止损，或 all 对比两者",
+        help="止损模式：结构ATR硬止损、1R推成本位继续持仓、1R后ATR移动止损，或 all 对比全部",
     )
     parser.add_argument("--min-group-trades", type=int, default=30, help="探索性分组最少样本数，默认 30")
     parser.add_argument("--min-signal-score", type=int, default=0, help="只交易评分不低于该值的信号，默认 0 表示不过滤")
@@ -88,6 +114,14 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="按背驰类型过滤交易信号，默认 all",
     )
+    parser.add_argument(
+        "--signal-direction",
+        choices=["all", "long", "short"],
+        default="all",
+        help="只纳入指定方向的信号，默认 all",
+    )
+    parser.add_argument("--structure-text-exact", help="只纳入结构文本完全匹配的信号")
+    parser.add_argument("--structure-text-contains", help="只纳入结构文本包含该因子的信号")
     parser.add_argument("--block-local-countertrend", action="store_true", help="阻止与本周期 EMA20/EMA60 趋势相反的交易")
     parser.add_argument("--output", default=None, help="输出 HTML 文件名；默认自动生成")
     parser.add_argument("--reports-dir", default=os.getenv("REPORTS_DIR"), help="报告输出目录；也可用 REPORTS_DIR 环境变量")
@@ -165,31 +199,83 @@ def fetch_higher_timeframe_context(symbol: str, bars: list[dict[str, Any]], inte
     return add_higher_timeframe_context(bars, higher_bars)
 
 
-def update_trailing_stop(
+def trade_path_diagnostics(
     direction: str,
-    current_stop: float,
+    bars: list[dict[str, Any]],
+    entry_index: int,
+    last_index: int,
+    exit_index: int,
     entry_price: float,
-    initial_risk: float,
-    favorable_price: float,
-    atr_value: Optional[float],
-    fee_rate: float,
-) -> float:
-    """浮盈达到 1R 后，用 ATR 跟踪止损；止损只朝有利方向移动。"""
-    if atr_value is None or atr_value <= 0:
-        return current_stop
+    initial_stop: float,
+    risk: float,
+) -> dict[str, Any]:
+    """Describe the price path in R units without changing the exit decision.
 
-    if direction == "long":
-        if favorable_price < entry_price + initial_risk:
-            return current_stop
-        trailing_stop = favorable_price - atr_value * 1.2
-        breakeven_stop = entry_price * (1 + fee_rate * 2)
-        return max(current_stop, trailing_stop, breakeven_stop)
+    Threshold/stop touches on the same completed bar are treated conservatively:
+    the stop is considered first, matching the backtest's bar-level ordering.
+    Full-horizon excursions intentionally continue after the actual exit so the
+    report can identify targets that the current 1R protection exit truncates.
+    """
+    horizon = bars[entry_index : last_index + 1]
+    pre_exit = bars[entry_index : exit_index + 1]
 
-    if favorable_price > entry_price - initial_risk:
-        return current_stop
-    trailing_stop = favorable_price + atr_value * 1.2
-    breakeven_stop = entry_price * (1 - fee_rate * 2)
-    return min(current_stop, trailing_stop, breakeven_stop)
+    def excursions(path: list[dict[str, Any]]) -> tuple[float, float]:
+        if not path:
+            return 0.0, 0.0
+        if direction == "long":
+            mfe = (max(float(bar["high"]) for bar in path) - entry_price) / risk
+            mae = (entry_price - min(float(bar["low"]) for bar in path)) / risk
+        else:
+            mfe = (entry_price - min(float(bar["low"]) for bar in path)) / risk
+            mae = (max(float(bar["high"]) for bar in path) - entry_price) / risk
+        return max(0.0, mfe), max(0.0, mae)
+
+    first_stop: int | None = None
+    first_touches: dict[float, int | None] = {1.0: None, 1.5: None, 2.0: None}
+    for relative_index, bar in enumerate(horizon):
+        low, high = float(bar["low"]), float(bar["high"])
+        stop_hit = low <= initial_stop if direction == "long" else high >= initial_stop
+        if stop_hit and first_stop is None:
+            first_stop = relative_index
+        for multiple in first_touches:
+            if first_touches[multiple] is not None:
+                continue
+            threshold = (
+                entry_price + risk * multiple
+                if direction == "long"
+                else entry_price - risk * multiple
+            )
+            threshold_hit = high >= threshold if direction == "long" else low <= threshold
+            if threshold_hit:
+                first_touches[multiple] = relative_index
+
+    def hit_before_stop(multiple: float) -> bool:
+        touch = first_touches[multiple]
+        return touch is not None and (first_stop is None or touch < first_stop)
+
+    horizon_mfe, horizon_mae = excursions(horizon)
+    pre_exit_mfe, pre_exit_mae = excursions(pre_exit)
+    return {
+        "horizon_mfe_r": horizon_mfe,
+        "horizon_mae_r": horizon_mae,
+        "pre_exit_mfe_r": pre_exit_mfe,
+        "pre_exit_mae_r": pre_exit_mae,
+        "first_initial_stop_bar": first_stop,
+        "first_1r_bar": first_touches[1.0],
+        "first_1_5r_bar": first_touches[1.5],
+        "first_2r_bar": first_touches[2.0],
+        "hit_1r_before_initial_stop": hit_before_stop(1.0),
+        "hit_1_5r_before_initial_stop": hit_before_stop(1.5),
+        "hit_2r_before_initial_stop": hit_before_stop(2.0),
+        "horizon_close_r_path": [
+            (
+                (float(bar["close"]) - entry_price) / risk
+                if direction == "long"
+                else (entry_price - float(bar["close"])) / risk
+            )
+            for bar in horizon
+        ],
+    }
 
 
 def evaluate_trade(
@@ -200,7 +286,7 @@ def evaluate_trade(
     max_hold_bars: int,
     fee_rate: float,
     stop_mode: str = "structure_atr",
-) -> Optional[SignalTrade]:
+) -> SignalTrade | None:
     """用后续 K 线验证信号是否有效：先止损则失败，先到目标/推保护则成功。"""
     if entry_index >= len(bars):
         return None
@@ -225,49 +311,60 @@ def evaluate_trade(
     active_stop = stop_loss
     highest_price = entry_price
     lowest_price = entry_price
-    protection_reached = False
+    protection_activated = False
+    protected_stop_price = 0.0
 
     for index in range(entry_index, last_index + 1):
         bar = bars[index]
-        if stop_mode == "structure_atr":
-            decision = evaluate_bar_exit(direction, float(bar["low"]), float(bar["high"]), active_stop, target_price, protection_price)
-            if decision is not None:
-                exit_index = index
-                exit_bar, exit_price, exit_reason = bar, decision.exit_price, decision.reason
-                protection_reached = decision.reason == "protection_reached"
-                break
-            continue
-        if direction == "long":
-            # 单根 K 线内无法知道先后顺序，保守按先止损处理。
-            if bar["low"] <= active_stop:
-                exit_index = index
-                exit_bar, exit_price = bar, active_stop
-                exit_reason = "trailing_stop" if active_stop > stop_loss else "stop_loss"
-                break
-            if bar["high"] >= target_price:
-                exit_index = index
-                exit_bar, exit_price, exit_reason = bar, target_price, "take_profit"
-                break
-            highest_price = max(highest_price, bar["high"])
-            if stop_mode == "atr_trailing_after_1r":
-                active_stop = update_trailing_stop(direction, active_stop, entry_price, risk, highest_price, bar.get("atr"), fee_rate)
-        else:
-            # 单根 K 线内无法知道先后顺序，保守按先止损处理。
-            if bar["high"] >= active_stop:
-                exit_index = index
-                exit_bar, exit_price = bar, active_stop
-                exit_reason = "trailing_stop" if active_stop < stop_loss else "stop_loss"
-                break
-            if bar["low"] <= target_price:
-                exit_index = index
-                exit_bar, exit_price, exit_reason = bar, target_price, "take_profit"
-                break
-            lowest_price = min(lowest_price, bar["low"])
-            if stop_mode == "atr_trailing_after_1r":
-                active_stop = update_trailing_stop(direction, active_stop, entry_price, risk, lowest_price, bar.get("atr"), fee_rate)
+        low = float(bar["low"])
+        high = float(bar["high"])
+        lifecycle = evaluate_lifecycle_bar(
+            direction,
+            low,
+            high,
+            float(bar["close"]),
+            entry_price,
+            stop_loss,
+            target_price,
+            protection_price,
+            active_stop=active_stop,
+            highest_price=highest_price,
+            lowest_price=lowest_price,
+            protection_activated=protection_activated,
+            protected_stop_price=protected_stop_price,
+            stop_mode=stop_mode,
+            fee_rate=fee_rate,
+            atr_value=bar.get("atr"),
+        )
+        active_stop = lifecycle.active_stop
+        highest_price = lifecycle.highest_price
+        lowest_price = lifecycle.lowest_price
+        protection_activated = lifecycle.protection_activated
+        protected_stop_price = lifecycle.protected_stop_price
+        if lifecycle.decision is not None:
+            exit_index = index
+            exit_bar = bar
+            exit_price = lifecycle.decision.exit_price
+            exit_reason = lifecycle.decision.reason
+            if stop_mode == ATR_TRAILING_AFTER_1R_STOP_MODE and exit_reason == "protected_stop":
+                exit_reason = "trailing_stop"
+            break
 
     net_return = calculate_return_pct(direction, entry_price, exit_price, fee_rate)
+    if abs(net_return) < 1e-12:
+        net_return = 0.0
     outcome = "win" if net_return > 0 else "loss"
+    path = trade_path_diagnostics(
+        direction,
+        bars,
+        entry_index,
+        last_index,
+        exit_index,
+        entry_price,
+        stop_loss,
+        risk,
+    )
+    horizon_close_price = float(bars[last_index]["close"])
 
     return SignalTrade(
         signal=direction,
@@ -294,6 +391,16 @@ def evaluate_trade(
         structure_text=str(signal.get("structure_text", "结构因子不足")),
         score_text=str(signal.get("score_text", "")),
         filter_text=str(signal.get("filter", "")),
+        initial_stop_loss=stop_loss,
+        initial_risk=risk,
+        protection_price=protection_price,
+        protection_activated=protection_activated,
+        protected_stop_price=protected_stop_price,
+        horizon_close_price=horizon_close_price,
+        horizon_close_return_pct=calculate_return_pct(
+            direction, entry_price, horizon_close_price, fee_rate
+        ),
+        **path,
     )
 
 
@@ -304,6 +411,9 @@ def signal_passes_trade_filters(
     min_structure_score: int = 0,
     divergence_filter: str = "all",
     block_local_countertrend: bool = False,
+    signal_direction: str = "all",
+    structure_text_exact: str | None = None,
+    structure_text_contains: str | None = None,
 ) -> bool:
     """优化过滤器：只决定是否实际纳入回测交易，不改变信号检测。"""
     if int(signal.get("signal_score", 0) or 0) < min_signal_score:
@@ -311,6 +421,13 @@ def signal_passes_trade_filters(
     if int(signal.get("structure_score", 0) or 0) < min_structure_score:
         return False
     if divergence_filter != "all" and str(signal.get("divergence_type", "macd")) != divergence_filter:
+        return False
+    if signal_direction != "all" and str(signal.get("signal")) != signal_direction:
+        return False
+    structure_text = str(signal.get("structure_text", ""))
+    if structure_text_exact is not None and structure_text != structure_text_exact:
+        return False
+    if structure_text_contains is not None and structure_text_contains not in structure_text:
         return False
     if block_local_countertrend:
         trend = str(entry_bar.get("trend", "sideways"))
@@ -331,9 +448,13 @@ def run_backtest(
     min_structure_score: int = 0,
     divergence_filter: str = "all",
     block_local_countertrend: bool = False,
-    strategy_config: Optional[StrategyConfig] = None,
-    entry_start_time: Optional[Any] = None,
-    entry_end_time: Optional[Any] = None,
+    strategy_config: StrategyConfig | None = None,
+    entry_start_time: Any | None = None,
+    entry_end_time: Any | None = None,
+    signal_direction: str = "all",
+    structure_text_exact: str | None = None,
+    structure_text_contains: str | None = None,
+    entry_filter: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], bool] | None = None,
 ) -> tuple[list[SignalTrade], pd.Series]:
     """逐根 K 线滚动生成信号并验证结果，同时生成累计收益曲线。"""
     engine = ProjectSignalEngine(strategy_config or DEFAULT_CONFIG)
@@ -348,7 +469,11 @@ def run_backtest(
         # The strategy only reads the latest 200 bars. Keep 250 bars so pending
         # confirmations retain their full history without repeatedly copying an
         # ever-growing list on long (30k+) research runs.
-        signal = engine.detect(ready_bars[-250:])
+        detect_fn = engine.detect
+        if "clean" in getattr(getattr(detect_fn, "__code__", None), "co_varnames", ()):
+            signal = detect_fn(ready_bars[-250:], clean=False)
+        else:
+            signal = detect_fn(ready_bars[-250:])
         if signal.get("signal") not in {"long", "short"}:
             continue
 
@@ -370,7 +495,19 @@ def run_backtest(
         if index <= used_exit_until:
             continue
 
-        if not signal_passes_trade_filters(signal, bars[index], min_signal_score, min_structure_score, divergence_filter, block_local_countertrend):
+        if not signal_passes_trade_filters(
+            signal,
+            bars[index],
+            min_signal_score,
+            min_structure_score,
+            divergence_filter,
+            block_local_countertrend,
+            signal_direction,
+            structure_text_exact,
+            structure_text_contains,
+        ):
+            continue
+        if entry_filter is not None and not entry_filter(signal, bars[index], bars[next_index]):
             continue
 
         trade = evaluate_trade(signal, bars, index + 1, reward_risk, max_hold_bars, fee_rate, stop_mode)
@@ -415,7 +552,10 @@ def calculate_metrics(
     successful_trades = [trade for trade in trades if trade.return_pct > 0]
     failed_trades = [trade for trade in trades if trade.return_pct <= 0]
     stop_trades = [trade for trade in trades if trade.exit_reason == "stop_loss"]
+    protected_stop_trades = [trade for trade in trades if trade.exit_reason == "protected_stop"]
+    protection_armed_trades = [trade for trade in trades if trade.protection_activated]
     protected_trades = [trade for trade in trades if trade.exit_reason in {"protection_reached", "trailing_stop"}]
+    take_profit_trades = [trade for trade in trades if trade.exit_reason == "take_profit"]
     bars_held = [trade.bars_held for trade in trades]
     confirm_bars = [trade.confirm_bars for trade in trades]
     running_peak = equity_curve.cummax()
@@ -444,7 +584,13 @@ def calculate_metrics(
         "avg_bars_held": sum(bars_held) / len(bars_held) if bars_held else 0.0,
         "avg_confirm_bars": sum(confirm_bars) / len(confirm_bars) if confirm_bars else 0.0,
         "stop_trigger_rate": len(stop_trades) / len(trades) if trades else 0.0,
+        "protected_stop_rate": len(protected_stop_trades) / len(trades) if trades else 0.0,
+        "protection_armed_rate": len(protection_armed_trades) / len(trades) if trades else 0.0,
         "protection_rate": len(protected_trades) / len(trades) if trades else 0.0,
+        "take_profit_rate": len(take_profit_trades) / len(trades) if trades else 0.0,
+        "hit_1r_before_initial_stop_rate": sum(trade.hit_1r_before_initial_stop for trade in trades) / len(trades) if trades else 0.0,
+        "hit_1_5r_before_initial_stop_rate": sum(trade.hit_1_5r_before_initial_stop for trade in trades) / len(trades) if trades else 0.0,
+        "hit_2r_before_initial_stop_rate": sum(trade.hit_2r_before_initial_stop for trade in trades) / len(trades) if trades else 0.0,
     }
 
 
@@ -531,6 +677,9 @@ def build_report(
         f"预期收益/笔: {metrics['expectancy']:.2%}（95% {metrics['expectancy_ci_low']:.2%}–{metrics['expectancy_ci_high']:.2%}）<br>"
         f"累计收益: {metrics['total_return']:.2%}<br>"
         f"止损触发占比: {metrics['stop_trigger_rate']:.2%}<br>"
+        f"保护后成本止损占比: {metrics['protected_stop_rate']:.2%}<br>"
+        f"1R保护触发占比: {metrics['protection_armed_rate']:.2%}<br>"
+        f"TP触达占比: {metrics['take_profit_rate']:.2%}<br>"
         f"推保护成功占比: {metrics['protection_rate']:.2%}<br>"
         f"平均持有K数: {metrics['avg_bars_held']:.1f}<br>"
         f"平均确认K数: {metrics['avg_confirm_bars']:.1f}"
@@ -556,6 +705,9 @@ def print_report(symbol: str, interval: str, trades: list[SignalTrade], metrics:
     print(f"最大回撤: {metrics['max_drawdown']:.2%}")
     print(f"累计收益: {metrics['total_return']:.2%}")
     print(f"止损触发占比: {metrics['stop_trigger_rate']:.2%}")
+    print(f"保护后成本止损占比: {metrics['protected_stop_rate']:.2%}")
+    print(f"1R保护触发占比: {metrics['protection_armed_rate']:.2%}")
+    print(f"TP触达占比: {metrics['take_profit_rate']:.2%}")
     print(f"推保护成功占比: {metrics['protection_rate']:.2%}")
     print(f"平均持有K数: {metrics['avg_bars_held']:.1f}")
     print(f"平均确认K数: {metrics['avg_confirm_bars']:.1f}")
@@ -585,7 +737,10 @@ def build_stop_mode_result(
     divergence_filter: str = "all",
     block_local_countertrend: bool = False,
     min_group_trades: int = 30,
-    strategy_config: Optional[StrategyConfig] = None,
+    strategy_config: StrategyConfig | None = None,
+    signal_direction: str = "all",
+    structure_text_exact: str | None = None,
+    structure_text_contains: str | None = None,
 ) -> dict[str, Any]:
     """运行单个止损模式并返回报告构建所需数据。"""
     trades, equity_curve = run_backtest(
@@ -599,6 +754,9 @@ def build_stop_mode_result(
         divergence_filter,
         block_local_countertrend,
         strategy_config,
+        signal_direction=signal_direction,
+        structure_text_exact=structure_text_exact,
+        structure_text_contains=structure_text_contains,
     )
     metrics = calculate_metrics(trades, equity_curve)
     group_stats = build_group_stats(trades, min_group_trades)
@@ -627,7 +785,10 @@ def print_stop_mode_comparison(results: list[dict[str, Any]]) -> None:
                 "total_return": metrics["total_return"],
                 "max_drawdown": metrics["max_drawdown"],
                 "stop_trigger_rate": metrics["stop_trigger_rate"],
+                "protected_stop_rate": metrics["protected_stop_rate"],
+                "protection_armed_rate": metrics["protection_armed_rate"],
                 "protection_rate": metrics["protection_rate"],
+                "take_profit_rate": metrics["take_profit_rate"],
                 "avg_bars_held": metrics["avg_bars_held"],
                 "avg_confirm_bars": metrics["avg_confirm_bars"],
             }
@@ -643,7 +804,10 @@ def print_stop_mode_comparison(results: list[dict[str, Any]]) -> None:
                 "total_return": "{:.2%}".format,
                 "max_drawdown": "{:.2%}".format,
                 "stop_trigger_rate": "{:.2%}".format,
+                "protected_stop_rate": "{:.2%}".format,
+                "protection_armed_rate": "{:.2%}".format,
                 "protection_rate": "{:.2%}".format,
+                "take_profit_rate": "{:.2%}".format,
                 "avg_bars_held": "{:.1f}".format,
                 "avg_confirm_bars": "{:.1f}".format,
             },
@@ -658,7 +822,7 @@ def main() -> None:
     output_path = resolve_output_path(args, f"{report_symbol}_{args.interval}_{args.exchange}_project_signal_report.html")
     raw_bars = fetch_exchange_klines(args.exchange, args.symbol, args.interval, args.limit, args.okx_instrument_type)
     bars = fetch_higher_timeframe_context(args.symbol, calculate_indicators(raw_bars), args.interval, args.exchange, args.okx_instrument_type)
-    stop_modes = ["structure_atr", "atr_trailing_after_1r"] if args.stop_mode == "all" else [args.stop_mode]
+    stop_modes = STOP_MODE_CHOICES if args.stop_mode == "all" else [args.stop_mode]
     filter_label_parts = []
     if args.min_signal_score > 0:
         filter_label_parts.append(f"score>={args.min_signal_score}")
@@ -668,6 +832,12 @@ def main() -> None:
         filter_label_parts.append(f"div={args.divergence_filter}")
     if args.block_local_countertrend:
         filter_label_parts.append("block_local_countertrend")
+    if args.signal_direction != "all":
+        filter_label_parts.append(f"direction={args.signal_direction}")
+    if args.structure_text_exact:
+        filter_label_parts.append(f"structure_exact={args.structure_text_exact}")
+    if args.structure_text_contains:
+        filter_label_parts.append(f"structure_contains={args.structure_text_contains}")
     filter_label = f"; {', '.join(filter_label_parts)}" if filter_label_parts else ""
     results = [
         build_stop_mode_result(
@@ -681,6 +851,9 @@ def main() -> None:
             args.divergence_filter,
             args.block_local_countertrend,
             args.min_group_trades,
+            signal_direction=args.signal_direction,
+            structure_text_exact=args.structure_text_exact,
+            structure_text_contains=args.structure_text_contains,
         )
         for stop_mode in stop_modes
     ]

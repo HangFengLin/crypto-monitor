@@ -17,17 +17,23 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from config import load_env_file
 from data_client import fetch_okx_demo_positions, normalize_okx_inst_id, parse_float, place_okx_demo_order
 from indicators import calculate_indicators
-from position_manager import calculate_target_levels as target_levels
-from position_manager import evaluate_bar_exit
+from position_manager import (
+    STOP_MODE_CHOICES,
+    STRUCTURE_ATR_STOP_MODE,
+    calculate_return_pct,
+    evaluate_lifecycle_bar,
+)
+from position_manager import (
+    calculate_target_levels as target_levels,
+)
 from project_signal_backtest import fetch_exchange_klines, fetch_higher_timeframe_context
 from runtime_utils import atomic_write_text, post_discord
 from strategy import ProjectSignalEngine
-
 
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "okx_demo_bot_state.json"
@@ -52,6 +58,11 @@ class OpenPosition:
     order_id: str
     highest_price: float
     lowest_price: float
+    initial_stop_loss: float = 0.0
+    active_stop: float = 0.0
+    protection_activated: bool = False
+    protected_stop_price: float = 0.0
+    exit_mode: str = STRUCTURE_ATR_STOP_MODE
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,6 +74,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--okx-instrument-type", choices=["SWAP", "SPOT"], default="SWAP")
     parser.add_argument("--trade-mode", choices=["cross", "isolated", "cash"], default="cross")
     parser.add_argument("--reward-risk", type=float, default=2.0, help="止盈目标倍数，默认 2R")
+    parser.add_argument("--fee-rate", type=float, default=0.001, help="单边手续费/滑点估计，默认 0.001")
+    parser.add_argument(
+        "--position-stop-mode",
+        choices=STOP_MODE_CHOICES,
+        default=STRUCTURE_ATR_STOP_MODE,
+        help="持仓退出模式；默认沿用结构 ATR 止盈止损",
+    )
     parser.add_argument("--poll-seconds", type=int, default=60, help="轮询间隔，默认 60 秒")
     parser.add_argument("--min-signal-score", type=int, default=0, help="最低信号评分")
     parser.add_argument("--min-structure-score", type=int, default=0, help="最低结构评分")
@@ -85,7 +103,7 @@ def send_discord(content: str) -> None:
     post_discord(webhook_url, content)
 
 
-def load_position() -> Optional[OpenPosition]:
+def load_position() -> OpenPosition | None:
     if not STATE_FILE.exists():
         return None
     try:
@@ -97,14 +115,14 @@ def load_position() -> Optional[OpenPosition]:
     return OpenPosition(**payload)
 
 
-def save_position(position: Optional[OpenPosition]) -> None:
+def save_position(position: OpenPosition | None) -> None:
     if position is None:
         atomic_write_text(STATE_FILE, "null\n")
         return
     atomic_write_text(STATE_FILE, json.dumps(asdict(position), ensure_ascii=False, indent=2))
 
 
-def exchange_position_size(position: dict[str, Any]) -> Optional[float]:
+def exchange_position_size(position: dict[str, Any]) -> float | None:
     for key in ("pos", "availPos"):
         value = parse_float(position.get(key))
         if value is not None:
@@ -112,7 +130,7 @@ def exchange_position_size(position: dict[str, Any]) -> Optional[float]:
     return None
 
 
-def exchange_position_direction(position: dict[str, Any]) -> Optional[str]:
+def exchange_position_direction(position: dict[str, Any]) -> str | None:
     pos_side = str(position.get("posSide", "")).lower()
     if pos_side in {"long", "short"}:
         return pos_side
@@ -135,7 +153,7 @@ def active_exchange_positions(symbol: str, instrument_type: str) -> list[dict[st
     return active
 
 
-def reconcile_startup_position(args: argparse.Namespace, local_position: Optional[OpenPosition], no_order: bool) -> tuple[Optional[OpenPosition], bool]:
+def reconcile_startup_position(args: argparse.Namespace, local_position: OpenPosition | None, no_order: bool) -> tuple[OpenPosition | None, bool]:
     if no_order or args.okx_instrument_type.upper() == "SPOT":
         return local_position, False
 
@@ -226,7 +244,7 @@ def debug_signal(args: argparse.Namespace, signal: dict[str, Any], reason: str =
     print(" | ".join(str(part) for part in parts), flush=True)
 
 
-def open_position_from_signal(args: argparse.Namespace, signal: dict[str, Any], no_order: bool) -> Optional[OpenPosition]:
+def open_position_from_signal(args: argparse.Namespace, signal: dict[str, Any], no_order: bool) -> OpenPosition | None:
     direction = str(signal.get("signal"))
     price = float(signal.get("price"))
     stop_loss = float(signal.get("stop_loss"))
@@ -271,6 +289,11 @@ def open_position_from_signal(args: argparse.Namespace, signal: dict[str, Any], 
         order_id=str(order.get("ordId", "")),
         highest_price=price,
         lowest_price=price,
+        initial_stop_loss=stop_loss,
+        active_stop=stop_loss,
+        protection_activated=False,
+        protected_stop_price=0.0,
+        exit_mode=args.position_stop_mode,
     )
     save_position(position)
     mode = "DRY-RUN" if no_order else "已下模拟单"
@@ -308,10 +331,12 @@ def close_position(args: argparse.Namespace, position: OpenPosition, exit_price:
             print(message, flush=True)
             send_discord(message)
             raise
-    if position.direction == "long":
-        return_pct = exit_price / position.entry_price - 1
-    else:
-        return_pct = position.entry_price / exit_price - 1
+    return_pct = calculate_return_pct(
+        position.direction,
+        position.entry_price,
+        exit_price,
+        float(getattr(args, "fee_rate", 0.0)),
+    )
     save_position(None)
     mode = "DRY-RUN" if no_order else "已平模拟单"
     send_discord(
@@ -326,7 +351,7 @@ def close_position(args: argparse.Namespace, position: OpenPosition, exit_price:
     )
 
 
-def evaluate_position(args: argparse.Namespace, position: OpenPosition, bars: list[dict[str, Any]], no_order: bool) -> Optional[OpenPosition]:
+def evaluate_position(args: argparse.Namespace, position: OpenPosition, bars: list[dict[str, Any]], no_order: bool) -> OpenPosition | None:
     latest = bars[-1]
     high = float(latest["high"])
     low = float(latest["low"])
@@ -335,16 +360,35 @@ def evaluate_position(args: argparse.Namespace, position: OpenPosition, bars: li
     position.lowest_price = min(position.lowest_price, low, close)
     save_position(position)
 
-    decision = evaluate_bar_exit(
+    initial_stop = position.initial_stop_loss or position.stop_loss
+    active_stop = position.active_stop or position.stop_loss
+    lifecycle = evaluate_lifecycle_bar(
         position.direction,
         low,
         high,
-        position.stop_loss,
+        close,
+        position.entry_price,
+        initial_stop,
         position.target_price,
         position.protection_price,
+        active_stop=active_stop,
+        highest_price=position.highest_price,
+        lowest_price=position.lowest_price,
+        protection_activated=position.protection_activated,
+        protected_stop_price=position.protected_stop_price,
+        stop_mode=position.exit_mode or getattr(args, "position_stop_mode", STRUCTURE_ATR_STOP_MODE),
+        fee_rate=float(getattr(args, "fee_rate", 0.0)),
+        atr_value=parse_float(latest.get("atr")),
     )
-    if decision:
-        close_position(args, position, decision.exit_price, decision.reason, no_order)
+    position.active_stop = lifecycle.active_stop
+    position.stop_loss = lifecycle.active_stop
+    position.highest_price = lifecycle.highest_price
+    position.lowest_price = lifecycle.lowest_price
+    position.protection_activated = lifecycle.protection_activated
+    position.protected_stop_price = lifecycle.protected_stop_price
+    save_position(position)
+    if lifecycle.decision:
+        close_position(args, position, lifecycle.decision.exit_price, lifecycle.decision.reason, no_order)
         return None
     return position
 
