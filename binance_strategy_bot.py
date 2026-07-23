@@ -177,6 +177,7 @@ def open_position(symbol: str, interval: str, signal: dict[str, Any], reward_ris
         "exit_mode": POSITION_STOP_MODE,
         "opened_at": time.time(),
         "opened_kline_close_time": signal.get("kline_close_time"),
+        "last_evaluated_close_time": signal.get("kline_close_time"),
         "signal_score": signal.get("signal_score"),
         "structure_score": signal.get("structure_score"),
         "signal_grade": signal.get("signal_grade"),
@@ -191,16 +192,30 @@ def evaluate_position(position: dict[str, Any], bars: list[dict[str, Any]]) -> b
     target_price = parse_float(position.get("target_price"))
     protection_price = parse_float(position.get("protection_price"))
     opened_close_time = int(position.get("opened_kline_close_time") or 0)
+    last_evaluated_close_time = int(position.get("last_evaluated_close_time") or opened_close_time)
     if initial_stop is None or target_price is None or protection_price is None:
         return False
+    now_ms = int(time.time() * 1000)
+    completed_bars = [
+        bar
+        for bar in bars
+        if int(bar.get("close_time") or 0) <= now_ms and bar.get("confirmed") is not False
+    ]
+    future_bars = (
+        [bar for bar in completed_bars if int(bar.get("close_time") or 0) > last_evaluated_close_time]
+        if last_evaluated_close_time
+        else completed_bars[-1:]
+    )
     if entry_price is None:
-        future_bars = [bar for bar in bars if int(bar.get("close_time") or 0) > opened_close_time]
         for bar in future_bars:
+            close_time = int(bar.get("close_time") or 0)
             high = parse_float(bar.get("high"))
             low = parse_float(bar.get("low"))
             if high is None or low is None:
                 continue
             decision = evaluate_bar_exit(direction, low, high, initial_stop, target_price, protection_price)
+            if close_time:
+                position["last_evaluated_close_time"] = close_time
             if decision:
                 position["status"] = "closed"
                 position["exit_reason"] = decision.reason
@@ -209,8 +224,8 @@ def evaluate_position(position: dict[str, Any], bars: list[dict[str, Any]]) -> b
                 return True
         return False
 
-    future_bars = [bar for bar in bars if int(bar.get("close_time") or 0) > opened_close_time]
     for bar in future_bars:
+        close_time = int(bar.get("close_time") or 0)
         high = parse_float(bar.get("high"))
         low = parse_float(bar.get("low"))
         close = parse_float(bar.get("close"))
@@ -242,6 +257,8 @@ def evaluate_position(position: dict[str, Any], bars: list[dict[str, Any]]) -> b
         position["lowest_price"] = lifecycle.lowest_price
         position["protection_activated"] = lifecycle.protection_activated
         position["protected_stop_price"] = lifecycle.protected_stop_price
+        if close_time:
+            position["last_evaluated_close_time"] = close_time
         if lifecycle.decision:
             position["status"] = "closed"
             position["exit_reason"] = lifecycle.decision.reason

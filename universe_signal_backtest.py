@@ -624,6 +624,7 @@ def initial_checkpoint(
         "skipped_symbols": [],
         "failures": {},
         "total_trades": 0,
+        "symbol_trade_counts": {},
         "next_index": 0,
         "notification_state": {},
     }
@@ -634,6 +635,7 @@ def reconcile_checkpoint(run_dir: Path, checkpoint: dict[str, Any]) -> dict[str,
     skipped: list[str] = []
     failures: dict[str, Any] = {}
     total_trades = 0
+    symbol_trade_counts: dict[str, int] = {}
     for path in sorted((run_dir / "symbols").glob("*.json")):
         try:
             result = json.loads(path.read_text(encoding="utf-8"))
@@ -645,7 +647,9 @@ def reconcile_checkpoint(run_dir: Path, checkpoint: dict[str, Any]) -> dict[str,
             continue
         if status == "completed":
             completed.append(symbol)
-            total_trades += len(result.get("trades") or [])
+            trade_count = len(result.get("trades") or [])
+            symbol_trade_counts[symbol] = trade_count
+            total_trades += trade_count
         elif status == "skipped":
             skipped.append(symbol)
         elif status == "failed":
@@ -658,6 +662,49 @@ def reconcile_checkpoint(run_dir: Path, checkpoint: dict[str, Any]) -> dict[str,
     checkpoint["skipped_symbols"] = sorted(set(skipped))
     checkpoint["failures"] = failures
     checkpoint["total_trades"] = total_trades
+    checkpoint["symbol_trade_counts"] = symbol_trade_counts
+    return checkpoint
+
+
+def update_checkpoint_with_result(checkpoint: dict[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
+    """Incrementally apply one durable symbol result to the in-memory checkpoint."""
+    symbol = str(result.get("symbol") or "")
+    if not symbol:
+        return checkpoint
+
+    completed = set(checkpoint.get("completed_symbols") or [])
+    skipped = set(checkpoint.get("skipped_symbols") or [])
+    failures = dict(checkpoint.get("failures") or {})
+    trade_counts = {
+        str(key): int(value or 0)
+        for key, value in (checkpoint.get("symbol_trade_counts") or {}).items()
+    }
+    total_trades = int(checkpoint.get("total_trades") or 0) - trade_counts.pop(symbol, 0)
+
+    completed.discard(symbol)
+    skipped.discard(symbol)
+    failures.pop(symbol, None)
+
+    status = str(result.get("status") or "")
+    if status == "completed":
+        completed.add(symbol)
+        trade_count = len(result.get("trades") or [])
+        trade_counts[symbol] = trade_count
+        total_trades += trade_count
+    elif status == "skipped":
+        skipped.add(symbol)
+    elif status == "failed":
+        failures[symbol] = {
+            "attempts": int(result.get("attempts") or 0),
+            "error": str(result.get("error") or "unknown"),
+            "last_at": result.get("finished_at"),
+        }
+
+    checkpoint["completed_symbols"] = sorted(completed)
+    checkpoint["skipped_symbols"] = sorted(skipped)
+    checkpoint["failures"] = failures
+    checkpoint["total_trades"] = max(0, total_trades)
+    checkpoint["symbol_trade_counts"] = trade_counts
     return checkpoint
 
 
@@ -709,7 +756,7 @@ def load_resume_args(parsed: argparse.Namespace) -> tuple[argparse.Namespace, Pa
         raise ValueError("checkpoint/manifest strategy hash mismatch")
     if checkpoint.get("universe_sha256") != manifest.get("universe_sha256"):
         raise ValueError("checkpoint/manifest universe hash mismatch")
-    if checkpoint.get("status") == "completed":
+    if checkpoint.get("status") in {"completed", "no_data"}:
         raise ValueError("run is already completed")
     return args, run_dir, reconcile_checkpoint(run_dir, checkpoint), universe
 
@@ -901,7 +948,12 @@ def write_final_artifacts(
     for name, frame in stable_files.items():
         atomic_csv(run_dir / name, frame)
 
-    final_status = "completed" if checkpoint["completed_symbols"] else "failed"
+    if checkpoint["completed_symbols"]:
+        final_status = "completed"
+    elif checkpoint["failures"]:
+        final_status = "failed"
+    else:
+        final_status = "no_data"
     summary = {
         "run_id": checkpoint["run_id"],
         "status": final_status,
@@ -1104,7 +1156,7 @@ def execute(args: argparse.Namespace) -> int:
                 result["attempts"] = attempts
                 result["finished_at"] = finished_at
             atomic_json(symbol_path(run_dir, symbol), result)
-            checkpoint = reconcile_checkpoint(run_dir, checkpoint)
+            checkpoint = update_checkpoint_with_result(checkpoint, result)
             checkpoint["next_index"] = index + 1
             write_checkpoint(run_dir, checkpoint, notifier)
 
@@ -1171,6 +1223,17 @@ def execute(args: argparse.Namespace) -> int:
         write_checkpoint(run_dir, checkpoint, notifier)
         _event(run_dir, "failed", summary=summary, report_url=report_url)
         return 1
+    if summary["status"] == "no_data":
+        notifier.send(
+            "NO_DATA",
+            f"All {summary['universe_size']} symbols were skipped; no usable data was available.\n"
+            f"Report: {report_url or report_path}",
+            force=True,
+        )
+        write_checkpoint(run_dir, checkpoint, notifier)
+        _event(run_dir, "no_data", summary=summary, report_url=report_url)
+        print(f"No usable data: {report_path}", flush=True)
+        return 0
     if candidate_count:
         notifier.send(
             "VALIDATION",

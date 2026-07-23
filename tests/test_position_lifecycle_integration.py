@@ -75,6 +75,39 @@ class PositionLifecycleIntegrationTest(unittest.TestCase):
         self.assertTrue(binance_bot.evaluate_position(position, bars))
         self.assertEqual((position["exit_reason"], position["exit_price"]), ("stop_loss", 95))
 
+    def test_binance_trailing_stop_does_not_replay_old_bars_across_scans(self) -> None:
+        position = {
+            "status": "open",
+            "direction": "long",
+            "entry_price": 100,
+            "initial_stop_loss": 95,
+            "active_stop": 95,
+            "stop_loss": 95,
+            "target_price": 110,
+            "protection_price": 105,
+            "opened_kline_close_time": 1,
+            "last_evaluated_close_time": 1,
+            "exit_mode": "atr_trailing_after_1r",
+        }
+        first_bar = {"close_time": 2, "low": 99, "high": 106, "close": 106, "atr": 1}
+        second_bar = {"close_time": 3, "low": 105.2, "high": 107, "close": 106.5, "atr": 1}
+
+        self.assertFalse(binance_bot.evaluate_position(position, [first_bar]))
+        self.assertAlmostEqual(position["active_stop"], 104.8)
+        self.assertEqual(position["last_evaluated_close_time"], 2)
+
+        self.assertFalse(binance_bot.evaluate_position(position, [first_bar, second_bar]))
+        self.assertEqual(position["status"], "open")
+        self.assertAlmostEqual(position["active_stop"], 105.8)
+        self.assertEqual(position["last_evaluated_close_time"], 3)
+
+        forming_bar = {"close_time": 4, "low": 105, "high": 108, "close": 106, "atr": 1, "confirmed": False}
+        self.assertFalse(binance_bot.evaluate_position(position, [first_bar, second_bar, forming_bar]))
+        self.assertEqual(position["last_evaluated_close_time"], 3)
+        forming_bar["confirmed"] = True
+        self.assertTrue(binance_bot.evaluate_position(position, [first_bar, second_bar, forming_bar]))
+        self.assertEqual((position["exit_reason"], position["exit_price"]), ("trailing_stop", 105.8))
+
     def test_okx_multi_bot_delegates_shared_exit_decision_to_executor(self) -> None:
         args = argparse.Namespace(position_stop_mode="structure_atr", fee_rate=0.001)
         position = {
@@ -112,6 +145,45 @@ class PositionLifecycleIntegrationTest(unittest.TestCase):
             self.assertTrue(okx_bot.evaluate_position(args, position, bars))
 
         close.assert_called_once_with(args, position, 95, "stop_loss")
+
+    def test_okx_trailing_stop_does_not_replay_old_bars_across_scans(self) -> None:
+        args = argparse.Namespace(position_stop_mode="atr_trailing_after_1r", fee_rate=0.0)
+        position = {
+            "status": "open",
+            "direction": "long",
+            "entry_price": 100,
+            "initial_stop_loss": 95,
+            "active_stop": 95,
+            "stop_loss": 95,
+            "target_price": 110,
+            "protection_price": 105,
+            "opened_kline_close_time": 1,
+            "last_evaluated_close_time": 1,
+            "exit_mode": "atr_trailing_after_1r",
+        }
+        first_bar = {"close_time": 2, "low": 99, "high": 106, "close": 106, "atr": 1}
+        second_bar = {"close_time": 3, "low": 105.2, "high": 107, "close": 106.5, "atr": 1}
+
+        with patch.object(okx_bot, "close_position") as close:
+            self.assertFalse(okx_bot.evaluate_position(args, position, [first_bar]))
+            self.assertAlmostEqual(position["active_stop"], 104.8)
+            self.assertEqual(position["last_evaluated_close_time"], 2)
+
+            self.assertFalse(okx_bot.evaluate_position(args, position, [first_bar, second_bar]))
+
+            close.assert_not_called()
+            self.assertEqual(position["status"], "open")
+            self.assertAlmostEqual(position["active_stop"], 105.8)
+            self.assertEqual(position["last_evaluated_close_time"], 3)
+
+            forming_bar = {"close_time": 4, "low": 105, "high": 108, "close": 106, "atr": 1, "confirmed": False}
+            self.assertFalse(okx_bot.evaluate_position(args, position, [first_bar, second_bar, forming_bar]))
+            self.assertEqual(position["last_evaluated_close_time"], 3)
+            forming_bar["confirmed"] = True
+            self.assertTrue(okx_bot.evaluate_position(args, position, [first_bar, second_bar, forming_bar]))
+
+        close.assert_called_once_with(args, position, 105.8, "trailing_stop")
+        self.assertEqual(position["last_evaluated_close_time"], 4)
 
     def test_okx_close_position_records_fee_adjusted_return(self) -> None:
         args = argparse.Namespace(

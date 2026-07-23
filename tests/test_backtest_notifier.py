@@ -53,6 +53,11 @@ class BacktestNotifierTest(unittest.TestCase):
                 self.assertTrue(notifier.progress(30, 100, "30%"))
             self.assertEqual(post.call_count, 2)
             self.assertEqual(notifier.last_progress_bucket, 3)
+            deliveries = [
+                json.loads(line)["delivery"]
+                for line in notifier.log_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(deliveries, ["sent", "throttled", "sent"])
 
             with patch("backtest_notifier.post_discord") as post:
                 self.assertFalse(notifier.progress(100, 100, "100%"))
@@ -142,6 +147,20 @@ class BacktestNotifierTest(unittest.TestCase):
                 "backtest_notifier.post_discord", side_effect=OSError("network")
             ):
                 self.assertFalse(notifier.send("STARTED", "hello", force=True))
+
+    def test_network_failure_is_logged_as_failed_without_pending_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            notifier = BacktestNotifier(
+                "run", Path(tmpdir), enabled=True, webhook_url="https://example.test"
+            )
+            with patch("backtest_notifier.post_discord", side_effect=OSError("network")):
+                self.assertFalse(notifier.send("STARTED", "hello", force=True))
+            rows = [
+                json.loads(line)
+                for line in notifier.log_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([row["delivery"] for row in rows], ["failed"])
+            self.assertNotIn("pending", notifier.log_path.read_text(encoding="utf-8"))
 
     def test_events_log_is_valid_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

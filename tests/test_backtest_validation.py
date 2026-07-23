@@ -196,8 +196,9 @@ class BacktestConsistencyTest(unittest.TestCase):
                 pass
 
             def detect(self, bars: list[dict[str, object]]) -> dict[str, str]:
+                clean = bool(bars)
                 observed_lengths.append(len(bars))
-                return {"signal": "wait"}
+                return {"signal": "wait" if clean else "wait"}
 
         bars = [
             {

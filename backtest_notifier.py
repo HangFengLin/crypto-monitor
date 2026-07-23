@@ -17,7 +17,7 @@ from urllib.parse import quote
 from runtime_utils import append_jsonl, post_discord
 
 DISCORD_CONTENT_LIMIT = 2_000
-ONE_OFF_EVENTS = frozenset({"STARTED", "VALIDATION", "COMPLETED", "FAILED"})
+ONE_OFF_EVENTS = frozenset({"STARTED", "VALIDATION", "COMPLETED", "FAILED", "NO_DATA"})
 SENSITIVE_KEY_PARTS = (
     "webhook",
     "token",
@@ -132,28 +132,38 @@ class BacktestNotifier:
             )
             return False
 
-        self._log(
-            now,
-            event_name,
-            message,
-            metadata,
-            delivery="disabled" if not self.enabled else "pending",
-            dedupe_key=key,
-        )
         if not self.enabled:
+            self._log(
+                now,
+                event_name,
+                message,
+                metadata,
+                delivery="disabled",
+                dedupe_key=key,
+            )
             return False
         if not force and now - self.last_sent_at < self.min_interval:
+            self._log(
+                now,
+                event_name,
+                message,
+                metadata,
+                delivery="throttled",
+                dedupe_key=key,
+            )
             return False
 
         content = self._discord_content(event_name, message)
         try:
             post_discord(self.webhook_url, content)
         except Exception as exc:  # notifications must never stop a backtest
+            failure_metadata = dict(metadata or {})
+            failure_metadata["delivery_error"] = f"{type(exc).__name__}: {exc}"
             self._log(
-                time.time(),
-                "DISCORD_ERROR",
-                f"{type(exc).__name__}: {exc}",
-                {"source_event": event_name},
+                now,
+                event_name,
+                message,
+                failure_metadata,
                 delivery="failed",
                 dedupe_key=key,
             )
@@ -162,6 +172,14 @@ class BacktestNotifier:
         self.last_sent_at = now
         if key:
             self.sent_events.add(key)
+        self._log(
+            now,
+            event_name,
+            message,
+            metadata,
+            delivery="sent",
+            dedupe_key=key,
+        )
         return True
 
     def progress(

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -470,7 +471,7 @@ def run_backtest(
         # confirmations retain their full history without repeatedly copying an
         # ever-growing list on long (30k+) research runs.
         detect_fn = engine.detect
-        if "clean" in getattr(getattr(detect_fn, "__code__", None), "co_varnames", ()):
+        if "clean" in inspect.signature(detect_fn).parameters:
             signal = detect_fn(ready_bars[-250:], clean=False)
         else:
             signal = detect_fn(ready_bars[-250:])

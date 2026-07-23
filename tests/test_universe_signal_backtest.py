@@ -223,6 +223,26 @@ class UniverseSignalBacktestTest(unittest.TestCase):
             self.assertEqual(reconciled["total_trades"], 1)
             self.assertEqual(reconciled["failures"]["ETHUSDT"]["attempts"], 3)
 
+    def test_incremental_checkpoint_update_replaces_one_symbol_without_rescan(self) -> None:
+        checkpoint = {
+            "completed_symbols": [],
+            "skipped_symbols": [],
+            "failures": {},
+            "total_trades": 0,
+            "symbol_trade_counts": {},
+        }
+        universe.update_checkpoint_with_result(checkpoint, completed_result("BTCUSDT"))
+        self.assertEqual(checkpoint["completed_symbols"], ["BTCUSDT"])
+        self.assertEqual(checkpoint["total_trades"], 1)
+
+        universe.update_checkpoint_with_result(
+            checkpoint,
+            {"status": "skipped", "symbol": "BTCUSDT", "reason": "no data", "trades": []},
+        )
+        self.assertEqual(checkpoint["completed_symbols"], [])
+        self.assertEqual(checkpoint["skipped_symbols"], ["BTCUSDT"])
+        self.assertEqual(checkpoint["total_trades"], 0)
+
     def test_final_status_is_failed_when_no_symbol_completed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir)
@@ -248,6 +268,34 @@ class UniverseSignalBacktestTest(unittest.TestCase):
                 run_dir, args, checkpoint, 0.0
             )
             self.assertEqual(summary["status"], "failed")
+            self.assertTrue(report.exists())
+            self.assertEqual(candidates, 0)
+
+    def test_final_status_is_no_data_when_all_symbols_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            (run_dir / "symbols").mkdir()
+            universe.atomic_json(
+                run_dir / "symbols" / "BTCUSDT.json",
+                {"status": "skipped", "symbol": "BTCUSDT", "reason": "insufficient bars", "trades": []},
+            )
+            args = universe.parse_args(
+                ["--start", "2024-01-01T00:00:00Z", "--end", "2024-02-01T00:00:00Z"]
+            )
+            checkpoint = universe.reconcile_checkpoint(
+                run_dir,
+                {
+                    "run_id": "no-data-run",
+                    "total_symbols": 1,
+                    "completed_symbols": [],
+                    "skipped_symbols": [],
+                    "failures": {},
+                },
+            )
+            summary, report, candidates = universe.write_final_artifacts(
+                run_dir, args, checkpoint, 0.0
+            )
+            self.assertEqual(summary["status"], "no_data")
             self.assertTrue(report.exists())
             self.assertEqual(candidates, 0)
 
