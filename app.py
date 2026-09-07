@@ -11,8 +11,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections import deque
-from contextlib import asynccontextmanager
+from concurrent.futures import Future
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
@@ -78,6 +79,56 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = load_config()
+
+_monitor_klines_cache: ContextVar[Any] = ContextVar("monitor_klines_cache", default=None)
+
+
+@contextmanager
+def monitor_kline_cache():
+    # to_thread inherits this context; each monitor round owns a fresh cache.
+    token = _monitor_klines_cache.set(({}, threading.Lock()))
+    try:
+        yield
+    finally:
+        _monitor_klines_cache.reset(token)
+
+
+def _monitor_kline_entry(symbol: str, interval: str, limit: int):
+    cache, lock = _monitor_klines_cache.get()
+    key = (symbol.upper(), normalize_interval(interval), int(limit))
+    with lock:
+        if key in cache:
+            return cache[key], False
+        future = Future()
+        cache[key] = future
+        return future, True
+
+
+def monitor_klines(symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
+    if _monitor_klines_cache.get() is None:
+        return fetch_klines(symbol, interval, limit)
+    future, owner = _monitor_kline_entry(symbol, interval, limit)
+    if owner:
+        try:
+            future.set_result(fetch_klines(symbol, interval, limit))
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+    return [dict(row) for row in future.result()]
+
+
+async def monitor_klines_async(symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
+    if _monitor_klines_cache.get() is None:
+        return await async_fetch_klines(symbol, interval, limit)
+    future, owner = _monitor_kline_entry(symbol, interval, limit)
+    if owner:
+        try:
+            future.set_result(await async_fetch_klines(symbol, interval, limit))
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+    rows = await asyncio.shield(asyncio.wrap_future(future))
+    return [dict(row) for row in rows]
 
 
 def config_int(section: str, key: str, default: int, env_name: str | None = None) -> int:
@@ -979,7 +1030,7 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
 
     async def load_bars(symbol: str, interval: str) -> tuple[tuple[str, str], list[dict[str, Any]]]:
         try:
-            return (symbol, interval), await async_fetch_klines(symbol, interval, KLINE_LIMIT)
+            return (symbol, interval), await monitor_klines_async(symbol, interval, KLINE_LIMIT)
         except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError):
             return (symbol, interval), []
 
@@ -1020,7 +1071,7 @@ def seed_strategy_trades_from_events(events: list[dict[str, Any]], existing_trad
 
 
 def fetch_higher_trend_state(symbol: str) -> dict[str, Any]:
-    bars = calculate_indicators(fetch_klines(symbol, SELL_TREND_BREAKER_INTERVAL, SELL_TREND_BREAKER_LIMIT))
+    bars = calculate_indicators(monitor_klines(symbol, SELL_TREND_BREAKER_INTERVAL, SELL_TREND_BREAKER_LIMIT))
     ready_bars = [
         bar
         for bar in bars
@@ -1111,7 +1162,7 @@ def direction_label(direction: str) -> str:
 
 
 async def detect_indicator_signal_async(symbol: str, interval: str) -> dict[str, Any]:
-    bars = await async_fetch_klines(symbol, interval, KLINE_LIMIT)
+    bars = await monitor_klines_async(symbol, interval, KLINE_LIMIT)
     return build_indicator_signal_from_bars(symbol, interval, bars)
 
 
@@ -1178,12 +1229,12 @@ def build_indicator_wait_signal(symbol: str, interval: str, reason: str) -> dict
 
 
 def detect_support_level(symbol: str, interval: str, current_price: float | None) -> dict[str, Any]:
-    bars = fetch_klines(symbol, interval, KLINE_LIMIT)
+    bars = monitor_klines(symbol, interval, KLINE_LIMIT)
     return build_support_level_from_bars(symbol, interval, current_price, bars)
 
 
 async def detect_support_level_async(symbol: str, interval: str, current_price: float | None) -> dict[str, Any]:
-    bars = await async_fetch_klines(symbol, interval, KLINE_LIMIT)
+    bars = await monitor_klines_async(symbol, interval, KLINE_LIMIT)
     return build_support_level_from_bars(symbol, interval, current_price, bars)
 
 
@@ -1264,7 +1315,7 @@ def get_td_signals(symbol: str, timestamp_ms: int) -> dict[str, int]:
     signals = {}
     for interval in ("1m", "3m", "5m", "15m", "30m"):
         try:
-            bars = fetch_klines(symbol, interval, TD_KLINE_LIMIT)
+            bars = monitor_klines(symbol, interval, TD_KLINE_LIMIT)
         except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError):
             signals[interval] = 0
             continue
@@ -1317,14 +1368,14 @@ def add_higher_timeframe_context(bars: list[dict[str, Any]], higher_bars: list[d
 
 
 def build_project_signal_bars(symbol: str, interval: str) -> list[dict[str, Any]]:
-    bars = calculate_indicators(fetch_klines(symbol, interval, KLINE_LIMIT))
+    bars = calculate_indicators(monitor_klines(symbol, interval, KLINE_LIMIT))
     if not bars:
         return []
     if interval in {HIGHER_TREND_INTERVAL, "1d"}:
         enriched_bars = add_higher_timeframe_context(bars, bars)
     else:
         higher_limit = max(120, min(1000, len(bars) // 8 + 120))
-        higher_bars = calculate_indicators(fetch_klines(symbol, HIGHER_TREND_INTERVAL, higher_limit))
+        higher_bars = calculate_indicators(monitor_klines(symbol, HIGHER_TREND_INTERVAL, higher_limit))
         enriched_bars = add_higher_timeframe_context(bars, higher_bars)
 
     ready_bars = [bar for bar in enriched_bars if bar.get("close") is not None and bar.get("macd") is not None]
@@ -1360,7 +1411,7 @@ def detect_project_signal(symbol: str, interval: str) -> dict[str, Any]:
 
 
 def detect_chanlun_signal(symbol: str, interval: str) -> dict[str, Any]:
-    bars = calculate_indicators(fetch_klines(symbol, interval, KLINE_LIMIT))
+    bars = calculate_indicators(monitor_klines(symbol, interval, KLINE_LIMIT))
     ready_bars = [
         bar
         for bar in bars
@@ -1689,10 +1740,11 @@ async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
                 state.prices = prices
                 state.updated_at = time.time()
                 state.last_error = None
-            await update_strategy_trades_with_prices_async(prices)
-            await evaluate_support_alerts_async(watchlist, prices)
-            await evaluate_chanlun_signals_async(watchlist)
-            await evaluate_indicator_signals_async(watchlist)
+            with monitor_kline_cache():
+                await update_strategy_trades_with_prices_async(prices)
+                await evaluate_support_alerts_async(watchlist, prices)
+                await evaluate_chanlun_signals_async(watchlist)
+                await evaluate_indicator_signals_async(watchlist)
             await send_hourly_market_summary_async(prices)
         except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, OSError, RuntimeError) as exc:
             with state_lock:
@@ -2183,10 +2235,24 @@ def record_discord_error(alert: dict[str, Any], error: str) -> None:
 
 
 def read_recent_jsonl(path: Path, limit: int = 200) -> list[dict[str, Any]]:
-    if not path.exists():
+    if limit <= 0:
         return []
     try:
-        raw_lines = deque(path.read_text(encoding="utf-8").splitlines(), maxlen=max(1, limit * 3))
+        with path.open("rb") as stream:
+            position = stream.seek(0, os.SEEK_END)
+            chunks = []
+            newline_count = 0
+            while position > 0 and newline_count <= limit * 3:
+                size = min(position, 65536)
+                position -= size
+                stream.seek(position)
+                chunk = stream.read(size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+        data = b"".join(reversed(chunks))
+        if position:
+            data = data.partition(b"\n")[2]
+        raw_lines = data.decode("utf-8").splitlines()[-limit * 3:]
     except OSError:
         return []
 
@@ -2427,7 +2493,7 @@ def load_okx_bot_health_detail() -> dict[str, Any]:
     return {
         **status,
         "code_fingerprint": code_fingerprint(),
-        "recent_errors": load_okx_bot_errors(10),
+        "recent_errors": [event for event in reversed(events[-100:]) if event.get("type") in OKX_BOT_ERROR_EVENT_TYPES][:10],
         "recent_events": list(reversed(events[-20:])),
     }
 

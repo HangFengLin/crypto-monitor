@@ -77,9 +77,15 @@ def parse_float(value: Any) -> float | None:
         return None
 
 
-def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
+def read_json_url(url: str, timeout: int = 20, attempts: int = 3, max_elapsed: float = 60.0) -> Any:
+    if timeout <= 0 or attempts < 1 or max_elapsed <= 0:
+        raise ValueError("timeout, attempts and max_elapsed must be positive")
+    deadline = time.monotonic() + max_elapsed
     last_error: Exception | None = None
     for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             request = urllib.request.Request(
                 url,
@@ -89,18 +95,20 @@ def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
                     "Connection": "close",
                 },
             )
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=min(timeout, remaining)) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             last_error = exc
-            if exc.code != 429:
-                time.sleep(0.3)
-                continue
             retry_after = parse_float(exc.headers.get("Retry-After")) if exc.headers else None
-            time.sleep(retry_after if retry_after is not None else min(30.0, 0.75 * (2**attempt)))
+            delay = max(0.0, retry_after) if retry_after is not None else min(30.0, 0.75 * (2**attempt))
+            if exc.code != 429:
+                delay = 0.3
         except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
-            time.sleep(0.3)
+            delay = 0.3
+        if attempt + 1 >= attempts or delay >= deadline - time.monotonic():
+            break
+        time.sleep(delay)
     if last_error:
         raise last_error
     raise TimeoutError("request failed")
