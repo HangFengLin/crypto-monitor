@@ -16,10 +16,7 @@ WORKDIR /app
 RUN useradd -r -u 1000 appuser
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir \
-    -i https://mirrors.cloud.tencent.com/pypi/simple \
-    --trusted-host mirrors.cloud.tencent.com \
-    -r requirements.txt
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple -r requirements.txt
 
 COPY . .
 COPY --from=website /src/public/site /app/public/site
