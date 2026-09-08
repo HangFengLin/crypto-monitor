@@ -12,7 +12,6 @@ import argparse
 import getpass
 import json
 import os
-import signal as os_signal
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -394,73 +393,8 @@ def evaluate_position(args: argparse.Namespace, position: OpenPosition, bars: li
 
 
 def main() -> None:
-    args = parse_args()
-    SHUTDOWN_EVENT.clear()
-    os_signal.signal(os_signal.SIGTERM, lambda signum, frame: SHUTDOWN_EVENT.set())
-    os_signal.signal(os_signal.SIGINT, lambda signum, frame: SHUTDOWN_EVENT.set())
-    load_env_file()
-    if args.place_order:
-        ensure_secret_env("OKX_API_KEY", "OKX_API_KEY: ")
-        ensure_secret_env("OKX_SECRET_KEY", "OKX_SECRET_KEY: ")
-        ensure_secret_env("OKX_PASSPHRASE", "OKX_PASSPHRASE: ")
-
-    no_order = not args.place_order
-    position = load_position()
-    position, trading_paused = reconcile_startup_position(args, position, no_order)
-    send_discord(
-        f"OKX Demo 策略已启动：{args.symbol} {args.interval} size={args.size} poll={args.poll_seconds}s "
-        f"{'(dry-run)' if no_order else '(模拟盘下单)'}"
-    )
-
-    while not SHUTDOWN_EVENT.is_set():
-        try:
-            signal, bars = latest_signal(args.symbol, args.interval, args.limit, args.okx_instrument_type)
-            if not bars:
-                raise RuntimeError("no OKX candles returned")
-            debug_signal(args, signal)
-            if signal_debug_enabled(args) and signal.get("signal") in {"long", "short"}:
-                print(f"3. 机器人已收到指令准备发车: {signal}", flush=True)
-
-            if trading_paused:
-                debug_signal(args, signal, "trading_paused")
-                pass
-            elif position:
-                position = evaluate_position(args, position, bars, no_order)
-            elif signal.get("signal") in {"long", "short"}:
-                if should_skip_signal(signal, args.min_signal_score, args.min_structure_score):
-                    debug_signal(args, signal, "score_filter")
-                    send_discord(
-                        f"OKX Demo 信号已过滤：{args.symbol} {args.interval} {signal.get('signal')} "
-                        f"score={signal.get('signal_score')} structure={signal.get('structure_score')}"
-                    )
-                else:
-                    position = open_position_from_signal(args, signal, no_order)
-            else:
-                debug_signal(args, signal, "not_trade_signal")
-
-            latest = bars[-1]
-            print(
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-                args.symbol,
-                args.interval,
-                "close",
-                latest.get("close"),
-                "signal",
-                signal.get("signal"),
-                "position",
-                position.direction if position else "none",
-                flush=True,
-            )
-        except Exception as exc:
-            message = f"OKX Demo 策略异常：{type(exc).__name__}: {repr(exc)}"
-            print(message, flush=True)
-            try:
-                send_discord(message)
-            except Exception as discord_exc:
-                print(f"Discord 推送失败：{discord_exc}", flush=True)
-        SHUTDOWN_EVENT.wait(max(10, args.poll_seconds))
-
-    save_position(position)
+    print("This OKX robot entrypoint is retired. Run app.py for research and paper signal tracking.")
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":

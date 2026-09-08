@@ -28,3 +28,10 @@ okx_market_cap_bot_state.json
 okx_market_cap_bot_events.jsonl
 *.log
 *.tmp
+
+output/
+tmp/
+public/site/
+**/dist/
+**/.next/
+**/.wrangler/

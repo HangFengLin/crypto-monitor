@@ -15,6 +15,7 @@
             <a class="navItem active" href="#overview">监控</a>
             <a class="navItem" href="#markets">行情</a>
             <a class="navItem" href="reports.html">报告</a>
+            <a class="navItem" href="http://localhost:3000">打开原网站（本机）</a>
             <a class="navItem" href="#toolsPanel">工具</a>
           </nav>
         </aside>
@@ -46,9 +47,9 @@
 
           <section id="overview" class="actionSummary" aria-label="需要关注的监控摘要">
             <article class="summaryItem primarySummary">
-              <span>真实持仓</span>
+              <span>模拟跟踪</span>
               <strong id="livePositionCount">--</strong>
-              <small>OKX / Binance 当前仓位</small>
+              <small>信号模拟记录，不提交订单</small>
             </article>
             <article class="summaryItem">
               <span>活跃信号</span>
@@ -65,14 +66,14 @@
           <section id="strategyPanel" class="panel focusPanel">
             <div class="panelHead compact">
               <div>
-                <span class="sectionKicker">需要行动</span>
-                <h2>当前真实持仓</h2>
+                <span class="sectionKicker">信号研究</span>
+                <h2>当前模拟跟踪</h2>
               </div>
-              <p id="botPositionHint">正在读取机器人状态</p>
+              <p id="botPositionHint">正在读取信号跟踪</p>
             </div>
             <div id="botPositions" class="tradeList botPositions"></div>
             <details class="inlineDisclosure">
-              <summary>查看策略累计与最近交易 <span id="strategyStatus"></span></summary>
+              <summary>查看模拟统计与最近退出 <span id="strategyStatus"></span></summary>
               <div id="strategySummary" class="metricGrid"></div>
               <div id="strategyTrades" class="tradeList"></div>
             </details>
@@ -130,7 +131,7 @@
           <section id="toolsPanel" class="toolShelf" aria-label="低频工具">
             <details class="toolDisclosure">
               <summary>
-                <span><b>系统详情</b><small>连接、机器人、通知与数据源</small></span>
+                <span><b>系统详情</b><small>连接、信号跟踪、通知与数据源</small></span>
                 <span class="summaryAction">展开</span>
               </summary>
               <div class="systemDetailGrid">

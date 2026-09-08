@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from data_client import fetch_okx_demo_balance, place_okx_demo_order
 from indicators import calculate_indicators
 from project_signal_backtest import fetch_exchange_klines, fetch_higher_timeframe_context
 from strategy import ProjectSignalEngine
@@ -47,50 +46,8 @@ def order_side_for_signal(signal: str) -> str:
 
 
 def main() -> None:
-    args = parse_args()
-    balance = fetch_okx_demo_balance(args.balance_ccy)
-    signal = latest_project_signal(args.symbol, args.interval, args.limit, args.okx_instrument_type)
-
-    print(f"\nOKX Demo balance ccy: {args.balance_ccy}")
-    details = balance.get("details", [])
-    if details:
-        detail = details[0]
-        print(f"可用余额: {detail.get('availBal', detail.get('availEq', 'unknown'))}")
-        print(f"权益: {detail.get('eq', 'unknown')}")
-    else:
-        print("余额详情: 暂无")
-
-    print(f"\n{args.symbol} {args.interval} 最新策略状态")
-    print(f"信号: {signal.get('signal')} - {signal.get('signal_name')}")
-    print(f"价格: {signal.get('price', 'n/a')}")
-    print(f"止损: {signal.get('stop_loss', 'n/a')}")
-    print(f"评分: {signal.get('signal_score', 0)}/{signal.get('signal_score_max', 20)} {signal.get('signal_grade', '')}")
-    print(f"过滤: {signal.get('filter', '')}")
-
-    if signal.get("signal") not in {"long", "short"}:
-        print("\n没有 long/short 实盘信号，不下单。")
-        return
-
-    if not args.place_order:
-        print("\n检测到可交易信号，但当前是 dry-run。添加 --place-order --size 数量 才会提交模拟盘订单。")
-        return
-
-    if not args.size:
-        raise SystemExit("--place-order 需要同时提供 --size")
-
-    try:
-        order = place_okx_demo_order(
-            args.symbol,
-            order_side_for_signal(str(signal["signal"])),
-            args.size,
-            args.okx_instrument_type,
-            args.trade_mode,
-            debug=args.debug_orders,
-        )
-        print(f"\n已提交 OKX 模拟盘订单: {order}")
-    except Exception as exc:
-        print("\nOKX 模拟盘下单失败:", repr(exc))
-        raise
+    print("This OKX robot entrypoint is retired. Run app.py for research and paper signal tracking.")
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":

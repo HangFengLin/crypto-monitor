@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import http.client
 import io
 import json
 import time
@@ -180,7 +181,7 @@ def download_cached(url: str, destination: Path, *, checksum_url: str | None = N
                     retry_after = float(exc.headers.get("Retry-After"))
                 except (TypeError, ValueError):
                     retry_after = None
-        except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+        except (OSError, urllib.error.URLError, http.client.IncompleteRead, TimeoutError, ValueError) as exc:
             temporary.unlink(missing_ok=True)
             last_error = exc
         time.sleep(retry_after if retry_after is not None else min(30.0, 0.5 * (2**attempt)))
@@ -259,16 +260,27 @@ def fetch_binance_um_klines(
         # Going straight to immutable daily packages makes a fully populated
         # cache genuinely reusable without a network probe for a known 404.
         path = None
+        use_daily_fallback = month_period == current_month
         if month_period < current_month:
-            path = download_cached(url, archive_root / "monthly" / filename, checksum_url=f"{url}.CHECKSUM")
+            try:
+                path = download_cached(url, archive_root / "monthly" / filename, checksum_url=f"{url}.CHECKSUM")
+            except RuntimeError:
+                use_daily_fallback = True
         if path is not None:
-            bars.extend(_parse_binance_kline_rows(_read_zip_rows(path), start_ms, end_ms))
-            continue
+            try:
+                rows = _read_zip_rows(path)
+            except (OSError, zipfile.BadZipFile):
+                use_daily_fallback = True
+            else:
+                if rows:
+                    bars.extend(_parse_binance_kline_rows(rows, start_ms, end_ms))
+                    continue
+                use_daily_fallback = True
         # A completed month with any listed-contract data has an immutable
-        # monthly package. A 404 therefore means the contract did not yet
-        # exist; probing every daily URL only creates hundreds of avoidable
-        # requests. Daily fallback is reserved for the still-open UTC month.
-        if month_period < current_month:
+        # monthly package. A 404 therefore still means the contract did not
+        # yet exist. Daily fallback is reserved for the open UTC month or a
+        # listed monthly package that failed integrity/ZIP validation.
+        if not use_daily_fallback:
             continue
         month_end = min(end_ts, month + pd.offsets.MonthBegin(1))
         for day in _days(max(start_ts, month), month_end - pd.Timedelta(milliseconds=1)):

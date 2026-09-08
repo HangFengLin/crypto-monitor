@@ -335,6 +335,11 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    print("retired: 请运行 scripts/dev_product.py，模拟记录统一由原网站管理")
+    return
+
+
+def _archived_main() -> None:
     args = parse_args()
     SHUTDOWN_EVENT.clear()
     os_signal.signal(os_signal.SIGTERM, shutdown_signal_handler)

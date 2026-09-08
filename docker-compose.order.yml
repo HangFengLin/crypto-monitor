@@ -1,5 +1,0 @@
-# Explicit opt-in override for OKX Demo order placement.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.order.yml --profile trading up -d --build okx-strategy-bot
-services:
-  okx-strategy-bot:
-    command: ["python", "okx_market_cap_bot.py", "--place-order"]

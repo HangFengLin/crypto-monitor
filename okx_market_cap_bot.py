@@ -88,6 +88,7 @@ EVENT_LOG_FILE = Path(os.getenv("OKX_BOT_EVENT_LOG_FILE", str(DEFAULT_EVENT_LOG_
 SIGNAL_ENGINES: dict[tuple[str, str], ProjectSignalEngine] = {}
 NON_RETRYABLE_ORDER_ERROR_CODES = {"51001", "51087"}
 ORDER_SYMBOL_DISABLE_SECONDS = 24 * 60 * 60
+SUPPRESSED_ENTRY_ID_LIMIT = 2000
 SHUTDOWN_EVENT = threading.Event()
 
 
@@ -177,6 +178,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--structure-text-contains", default=config_value(CONFIG, "bot", "structure_text_contains", None))
     parser.add_argument("--min-signal-score", type=int, default=int(config_value(CONFIG, "bot", "min_signal_score", 0)))
     parser.add_argument("--min-structure-score", type=int, default=int(config_value(CONFIG, "bot", "min_structure_score", 0)))
+    parser.add_argument(
+        "--entry-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=bool(config_value(CONFIG, "bot", "entry_enabled", True)),
+        help="策略新开仓总开关；关闭后仍扫描信号并管理已有持仓",
+    )
     parser.add_argument("--place-order", action="store_true", help="提交 OKX Demo 模拟盘订单；不加则只记录和推送信号")
     parser.add_argument("--prompt-secrets", action="store_true", help="本地交互式输入 OKX API；云服务器请使用 .env")
     parser.add_argument("--debug-signals", action="store_true", help="打印每个标的的策略状态、过滤和跳过原因")
@@ -609,7 +616,7 @@ def build_position(
         return None
 
     return {
-        "id": f"{symbol}:{args.interval}:{direction}:{signal.get('divergence_time') or signal.get('kline_close_time')}",
+        "id": entry_signal_id(args, symbol, signal),
         "symbol": symbol,
         "inst_id": signal.get("inst_id"),
         "interval": args.interval,
@@ -637,6 +644,12 @@ def build_position(
         "highest_price": entry_price,
         "lowest_price": entry_price,
     }
+
+
+def entry_signal_id(args: argparse.Namespace, symbol: str, signal: dict[str, Any]) -> str:
+    direction = str(signal.get("signal", ""))
+    signal_time = signal.get("divergence_time") or signal.get("kline_close_time")
+    return f"{symbol}:{args.interval}:{direction}:{signal_time}"
 
 
 def open_position(args: argparse.Namespace, symbol: str, signal: dict[str, Any], order_symbol: str | None = None) -> dict[str, Any] | None:
@@ -956,6 +969,7 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
                 "signal_states": dict(signal_states),
                 "capacity": 0,
                 "place_order": args.place_order,
+                "entry_enabled": bool(getattr(args, "entry_enabled", True)),
             }
         )
         return
@@ -976,6 +990,7 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
                 "signal_states": dict(signal_states),
                 "capacity": capacity,
                 "place_order": args.place_order,
+                "entry_enabled": bool(getattr(args, "entry_enabled", True)),
                 "protection": {"name": "stoploss_guard", **guard_details},
             }
         )
@@ -1028,11 +1043,48 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
             skipped["entry_filter"] += 1
             debug_signal(args, symbol, signal, entry_filter_reason)
             continue
-
         probe = build_position(args, symbol, signal, "probe")
         if not probe or probe["id"] in existing_ids:
             skipped["duplicate_or_invalid_position"] += 1
             debug_signal(args, symbol, signal, "duplicate_or_invalid_position")
+            continue
+
+        if not bool(getattr(args, "entry_enabled", True)):
+            skipped["strategy_entry_disabled"] += 1
+            suppressed_entry_id = str(probe["id"])
+            stored_suppressed_ids = state.get("suppressed_entry_ids", [])
+            suppressed_entry_ids = (
+                [str(item) for item in stored_suppressed_ids]
+                if isinstance(stored_suppressed_ids, list)
+                else []
+            )
+            if suppressed_entry_id not in suppressed_entry_ids:
+                append_event(
+                    {
+                        "type": "strategy_entry_suppressed",
+                        "reason": "strategy_entry_disabled",
+                        "signal_id": suppressed_entry_id,
+                        "symbol": symbol,
+                        "order_symbol": order_symbol,
+                        "interval": args.interval,
+                        "direction": signal.get("signal"),
+                        "signal_score": signal.get("signal_score"),
+                        "structure_score": signal.get("structure_score"),
+                        "divergence_type": signal.get("divergence_type"),
+                        "structure_text": signal.get("structure_text"),
+                        "signal_price": parse_float(signal.get("price")),
+                        "stop_loss": parse_float(signal.get("stop_loss")),
+                        "divergence_time": (
+                            str(signal.get("divergence_time"))
+                            if signal.get("divergence_time") is not None
+                            else None
+                        ),
+                        "kline_close_time": signal.get("kline_close_time"),
+                    }
+                )
+                suppressed_entry_ids.append(suppressed_entry_id)
+                state["suppressed_entry_ids"] = suppressed_entry_ids[-SUPPRESSED_ENTRY_ID_LIMIT:]
+            debug_signal(args, symbol, signal, "strategy_entry_disabled")
             continue
 
         try:
@@ -1074,92 +1126,14 @@ def scan_once(args: argparse.Namespace, state: dict[str, Any]) -> None:
             "signal_states": dict(signal_states),
             "capacity": max(0, args.max_open_positions - len(active_positions(state))),
             "place_order": args.place_order,
+            "entry_enabled": bool(getattr(args, "entry_enabled", True)),
         }
     )
 
 
 def main() -> None:
-    args = parse_args()
-    SHUTDOWN_EVENT.clear()
-    install_shutdown_handlers()
-    if args.place_order:
-        ensure_order_environment(args)
-    state = load_state()
-    reconcile_startup_positions(args, state)
-
-    mode = "OKX Demo 下单" if args.place_order else "只记录信号"
-    append_event(
-        {
-            "type": "startup",
-            "top_n": args.top_n,
-            "min_quote_volume": args.min_quote_volume,
-            "interval": args.interval,
-            "max_open_positions": args.max_open_positions,
-            "scan_timeout_seconds": args.scan_timeout_seconds,
-            "okx_instrument_type": args.okx_instrument_type,
-            "trade_mode": args.trade_mode,
-            "position_sizing": args.position_sizing,
-            "risk_per_trade_pct": args.risk_per_trade_pct,
-            "max_position_notional_usdt": args.max_position_notional_usdt,
-            "place_order": args.place_order,
-            "mode": mode,
-            "order_symbol_blocklist": sorted(configured_order_symbol_blocklist()) if args.place_order else [],
-            "scan_symbol_blocklist": sorted(configured_scan_symbol_blocklist()),
-        }
-    )
-    send_discord(
-        f"市值排名 OKX 策略机器人启动：top={args.top_n} interval={args.interval} "
-        f"max_positions={args.max_open_positions} sizing={args.position_sizing} mode={mode}"
-    )
-
-    while not SHUTDOWN_EVENT.is_set():
-        started_at = time.time()
-        append_event({"type": "scan_started", "timeout_seconds": args.scan_timeout_seconds, "place_order": args.place_order})
-        try:
-            install_scan_timeout(args.scan_timeout_seconds)
-            scan_once(args, state)
-        except ScanTimeout as exc:
-            elapsed = time.time() - started_at
-            message = f"市值排名 OKX 策略机器人扫描超时：elapsed={elapsed:.1f}s timeout={args.scan_timeout_seconds}s，进程将退出并由 Docker 重启。"
-            append_event({"type": "scan_timeout", "elapsed_seconds": round(elapsed, 3), "timeout_seconds": args.scan_timeout_seconds, "error": f"{type(exc).__name__}: {exc}"})
-            send_discord(message)
-            raise SystemExit(124) from exc
-        except Exception as exc:
-            elapsed = time.time() - started_at
-            message = f"市值排名 OKX 策略机器人扫描异常：elapsed={elapsed:.1f}s error={type(exc).__name__}: {exc}，进程将退出并由 Docker 重启。"
-            append_event(
-                {
-                    "type": "scan_error",
-                    "elapsed_seconds": round(elapsed, 3),
-                    "timeout_seconds": args.scan_timeout_seconds,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "place_order": args.place_order,
-                }
-            )
-            try:
-                save_state(state)
-            except OSError as save_exc:
-                append_event({"type": "error", "error": f"save_state_failed after scan_error: {type(save_exc).__name__}: {save_exc}"})
-            send_discord(message)
-            raise SystemExit(1) from exc
-        finally:
-            clear_scan_timeout()
-        print(
-            time.strftime("%Y-%m-%d %H:%M:%S"),
-            "scan_done",
-            "open_positions",
-            len(active_positions(state)),
-            "mode",
-            mode,
-            flush=True,
-        )
-        if args.once or SHUTDOWN_EVENT.is_set():
-            break
-        elapsed = time.time() - started_at
-        SHUTDOWN_EVENT.wait(max(10, args.poll_seconds - int(elapsed)))
-
-    save_state(state)
-    append_event({"type": "shutdown", "place_order": args.place_order, "open_positions": len(active_positions(state))})
+    print("This OKX robot entrypoint is retired. Run app.py for research and paper signal tracking.")
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":

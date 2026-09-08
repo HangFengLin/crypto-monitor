@@ -27,7 +27,6 @@ def code_fingerprint() -> str:
             "app.py",
             "config.py",
             "docker-compose.yml",
-            "okx_market_cap_bot.py",
             "binance_strategy_bot.py",
             "position_manager.py",
             "runtime_utils.py",

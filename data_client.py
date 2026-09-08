@@ -26,6 +26,8 @@ load_env_file()
 
 
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/24hr"
+BINANCE_USDM_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+BINANCE_USDM_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
 BINANCE_FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
@@ -123,8 +125,8 @@ def normalize_ticker(ticker: dict[str, Any]) -> dict[str, Any]:
 
 
 def market_data_source() -> str:
-    source = os.getenv("MARKET_DATA_SOURCE", "binance").strip().lower()
-    return source if source in {"binance", "gate"} else "binance"
+    source = os.getenv("MARKET_DATA_SOURCE", "binance_usdm").strip().lower()
+    return source if source in {"binance", "gate", "binance_usdm"} else "binance_usdm"
 
 
 def secondary_market_data_source() -> str:
@@ -133,6 +135,8 @@ def secondary_market_data_source() -> str:
 
 def market_source_order() -> list[str]:
     primary = market_data_source()
+    if primary == "binance_usdm":
+        return [primary]
     secondary = secondary_market_data_source()
     return [primary, secondary] if primary != secondary else [primary]
 
@@ -308,6 +312,9 @@ def fetch_tickers(symbols: list[str]) -> dict[str, dict[str, Any]]:
         try:
             if source == "gate":
                 return fetch_gate_tickers(symbols)
+            if source == "binance_usdm":
+                payload = read_json_url(BINANCE_USDM_TICKER_URL, timeout=12)
+                return {t["symbol"]: normalize_ticker(t) for t in payload if t["symbol"] in symbols}
             return fetch_binance_tickers(symbols)
         except recoverable_http_errors() as exc:
             errors.append(f"{source}: {exc}")
@@ -320,8 +327,8 @@ def fetch_all_tickers() -> dict[str, dict[str, Any]]:
     return {ticker["symbol"]: normalize_ticker(ticker) for ticker in tickers if ticker.get("symbol")}
 
 
-def fetch_binance_spot_symbols(quote_asset: str = "USDT") -> set[str]:
-    payload = read_json_url(BINANCE_EXCHANGE_INFO_URL, timeout=20)
+def fetch_binance_spot_symbols(quote_asset: str = "USDT", *, timeout: float = 20, attempts: int = 8) -> set[str]:
+    payload = read_json_url(BINANCE_EXCHANGE_INFO_URL, timeout=timeout, attempts=attempts)
     symbols = payload.get("symbols", []) if isinstance(payload, dict) else []
     quote = quote_asset.upper()
     return {
@@ -365,7 +372,8 @@ def fetch_klines(symbol: str, interval: str, limit: int = 300) -> list[dict[str,
         try:
             if source == "gate":
                 return fetch_gate_klines(symbol, interval, limit)
-            payload = read_json_url(f"{BINANCE_KLINES_URL}?{params}")
+            url = BINANCE_USDM_KLINES_URL if source == "binance_usdm" else BINANCE_KLINES_URL
+            payload = read_json_url(f"{url}?{params}")
             break
         except recoverable_http_errors() as exc:
             errors.append(f"{source}: {exc}")
@@ -387,7 +395,10 @@ def fetch_klines(symbol: str, interval: str, limit: int = 300) -> list[dict[str,
     return klines
 
 
-def fetch_historical_klines(symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
+def fetch_historical_klines(symbol: str, interval: str, limit: int, market: str = "binance") -> list[dict[str, Any]]:
+    if market not in {"binance", "binance_usdm"}:
+        raise ValueError("Unsupported historical market")
+    endpoint = BINANCE_USDM_KLINES_URL if market == "binance_usdm" else BINANCE_KLINES_URL
     rows: list[list[Any]] = []
     end_time: int | None = None
     while len(rows) < limit:
@@ -396,7 +407,7 @@ def fetch_historical_klines(symbol: str, interval: str, limit: int) -> list[dict
         if end_time is not None:
             query["endTime"] = end_time
         params = urllib.parse.urlencode(query)
-        batch = read_json_url(f"{BINANCE_KLINES_URL}?{params}")
+        batch = read_json_url(f"{endpoint}?{params}")
         if not batch:
             break
         rows = batch + rows
@@ -405,6 +416,8 @@ def fetch_historical_klines(symbol: str, interval: str, limit: int) -> list[dict
 
     bars = []
     for row in rows[-limit:]:
+        if market == "binance_usdm" and int(row[6]) >= time.time() * 1000:
+            continue
         bars.append(
             {
                 "open_time": int(row[0]),
@@ -568,45 +581,7 @@ def okx_authenticated_request(
     simulated: bool = True,
     timeout: int = 20,
 ) -> Any:
-    api_key = os.getenv("OKX_API_KEY", "")
-    secret_key = os.getenv("OKX_SECRET_KEY", "")
-    passphrase = os.getenv("OKX_PASSPHRASE", "")
-    if not api_key or not secret_key or not passphrase:
-        raise RuntimeError("Missing OKX_API_KEY, OKX_SECRET_KEY, or OKX_PASSPHRASE environment variables")
-
-    query = f"?{urllib.parse.urlencode(params)}" if params else ""
-    request_path = f"{path}{query}"
-    payload = json.dumps(body or {}, separators=(",", ":")) if body is not None else ""
-    timestamp = okx_timestamp()
-    headers = {
-        "OK-ACCESS-KEY": api_key,
-        "OK-ACCESS-SIGN": okx_sign(timestamp, method, request_path, payload, secret_key),
-        "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": passphrase,
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0",
-    }
-    if simulated:
-        headers["x-simulated-trading"] = "1"
-    request = urllib.request.Request(
-        f"{OKX_BASE_URL}{request_path}",
-        data=payload.encode("utf-8") if payload else None,
-        headers=headers,
-        method=method.upper(),
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace")
-        try:
-            error_payload = json.loads(error_body)
-        except json.JSONDecodeError:
-            error_payload = error_body
-        raise RuntimeError(f"OKX HTTP {exc.code}: {error_payload}") from exc
-    if str(result.get("code")) != "0":
-        raise RuntimeError(f"OKX request failed: {result}")
-    return result
+    raise RuntimeError("OKX account access and order execution have been removed; use app.py for paper signal tracking.")
 
 
 def fetch_okx_demo_balance(ccy: str = "USDT") -> dict[str, Any]:
@@ -859,7 +834,6 @@ def test_external_dependencies(symbol: str, discord_url: str = "") -> dict[str, 
     gate_pair = gate_currency_pair(normalized_symbol)
     binance_params = urllib.parse.urlencode({"symbols": json.dumps([normalized_symbol], separators=(",", ":"))})
     gate_params = urllib.parse.urlencode({"currency_pair": gate_pair})
-    okx_params = urllib.parse.urlencode({"instType": "SWAP"})
     coingecko_params = urllib.parse.urlencode(
         {
             "vs_currency": "usd",
@@ -878,10 +852,6 @@ def test_external_dependencies(symbol: str, discord_url: str = "") -> dict[str, 
         {
             **test_json_dependency("Gate.io Spot Ticker", f"{GATE_SPOT_TICKERS_URL}?{gate_params}", timeout=8, attempts=3),
             "source": "gate",
-        },
-        {
-            **test_json_dependency("OKX Public Instruments", f"{OKX_BASE_URL}{OKX_PUBLIC_INSTRUMENTS_PATH}?{okx_params}", timeout=12, attempts=2),
-            "source": "okx",
         },
         {
             **test_json_dependency("CoinGecko Markets", f"{COINGECKO_MARKETS_URL}?{coingecko_params}", timeout=12, attempts=2),
@@ -943,6 +913,9 @@ async def async_fetch_tickers(symbols: list[str]) -> dict[str, dict[str, Any]]:
         try:
             if source == "gate":
                 return await async_fetch_gate_tickers(symbols)
+            if source == "binance_usdm":
+                payload = await async_read_json_url(BINANCE_USDM_TICKER_URL, timeout=12)
+                return {t["symbol"]: normalize_ticker(t) for t in payload if t["symbol"] in symbols}
             params = urllib.parse.urlencode({"symbols": json.dumps(symbols, separators=(",", ":"))})
             payload = await async_read_json_url(f"{BINANCE_TICKER_URL}?{params}", timeout=12)
             tickers = payload if isinstance(payload, list) else [payload]
@@ -963,7 +936,8 @@ async def async_fetch_klines(symbol: str, interval: str, limit: int = 300) -> li
         try:
             if source == "gate":
                 return await asyncio_to_thread(fetch_gate_klines, symbol, interval, limit)
-            payload = await async_read_json_url(f"{BINANCE_KLINES_URL}?{params}")
+            url = BINANCE_USDM_KLINES_URL if source == "binance_usdm" else BINANCE_KLINES_URL
+            payload = await async_read_json_url(f"{url}?{params}")
             break
         except recoverable_http_errors() as exc:
             errors.append(f"{source}: {exc}")

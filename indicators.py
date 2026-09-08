@@ -185,9 +185,11 @@ def calculate_indicators(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
     data["obv_slope"] = data["obv"] - data["obv"].shift(5)
     data["volume_ma20"] = volume.rolling(20, min_periods=20).mean()
     data["volume_ratio"] = volume / data["volume_ma20"]
+    ema20 = pd.to_numeric(data["ema20"], errors="coerce")
+    ema60 = pd.to_numeric(data["ema60"], errors="coerce")
     data["trend"] = "sideways"
-    data.loc[data["ema20"] > data["ema60"], "trend"] = "up"
-    data.loc[data["ema20"] < data["ema60"], "trend"] = "down"
+    data.loc[ema20 > ema60, "trend"] = "up"
+    data.loc[ema20 < ema60, "trend"] = "down"
 
     records = data.to_dict("records")
     return [

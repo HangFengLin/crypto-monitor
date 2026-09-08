@@ -151,6 +151,9 @@ def fetch_binance_klines(symbol: str, interval: str, limit: int) -> list[dict[st
 
 def fetch_exchange_klines(exchange: str, symbol: str, interval: str, limit: int, okx_instrument_type: str = "SWAP") -> list[dict[str, Any]]:
     """按数据源获取 K 线，并补充回测报告需要的时间字段。"""
+    if exchange == "binance_usdm":
+        return [{**bar, "time": pd.to_datetime(int(bar["open_time"]), unit="ms")}
+                for bar in fetch_historical_klines(symbol, interval, limit, market="binance_usdm")]
     if exchange == "okx":
         return [
             {**bar, "time": pd.to_datetime(int(bar["open_time"]), unit="ms")}

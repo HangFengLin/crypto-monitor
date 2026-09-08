@@ -12,7 +12,7 @@ import argparse
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from data_client import fetch_okx_historical_klines, fetch_okx_instrument, place_okx_demo_order, prepare_okx_demo_order
+from data_client import fetch_okx_historical_klines, fetch_okx_instrument
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,43 +72,8 @@ def print_order_plan(body: dict[str, Any], instrument: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    args = parse_args()
-    try:
-        size = args.size
-        estimated_instrument = None
-        if args.quote_usdt:
-            size, latest_price, estimated_instrument = estimate_size_from_quote(args.symbol, args.okx_instrument_type, args.quote_usdt)
-            print(f"按 {args.quote_usdt} USDT 估算 size={size}，参考最新价={format_decimal(latest_price)}")
-        body, instrument = prepare_okx_demo_order(
-            args.symbol,
-            args.side,
-            size,
-            args.okx_instrument_type,
-            args.trade_mode,
-            args.order_type,
-            price=args.price,
-            slippage_ticks=args.slippage_ticks,
-        )
-        print_order_plan(body, instrument or estimated_instrument or {})
-        if not args.place_order:
-            print("当前是 dry-run，没有提交订单。添加 --place-order 才会提交 OKX 模拟盘订单。")
-            return
-
-        order = place_okx_demo_order(
-            args.symbol,
-            args.side,
-            size,
-            args.okx_instrument_type,
-            args.trade_mode,
-            args.order_type,
-            price=args.price,
-            slippage_ticks=args.slippage_ticks,
-            debug=args.debug_orders,
-        )
-        print("API返回结果:", order)
-    except Exception as exc:
-        print("下单/参数烟测遭遇报错:", repr(exc))
-        raise
+    print("This OKX robot entrypoint is retired. Run app.py for research and paper signal tracking.")
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":

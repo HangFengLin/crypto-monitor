@@ -9,27 +9,25 @@ flowchart LR
     Web --> Runtime[(runtime files)]
     Web --> Discord[Discord webhook]
 
-    OKX[okx_market_cap_bot.py] --> Engine[ProjectSignalEngine]
+    Web --> Engine[ProjectSignalEngine]
     Binance[binance_strategy_bot.py] --> Engine
-    Demo[okx_demo_bot.py] --> Engine
+    Research[Historical backtests] --> Engine
+    Research --> PublicData[Binance / OKX public history]
     Engine --> Lifecycle[position_manager.py]
-    OKX --> OKXAPI[OKX Demo API]
-    OKX --> Runtime
+    Web --> Paper[Local paper signal ledger]
+    Paper --> Lifecycle
     Binance --> Runtime
 ```
 
-`ProjectSignalEngine` remains the strategy source of truth. `position_manager.py` is the exchange-independent source of truth for target levels and exit priority. Exchange adapters retain only market access, order execution, persistence, and notification responsibilities.
+`ProjectSignalEngine` remains the strategy source of truth. `position_manager.py` is the exchange-independent source of truth for target levels and exit priority. The web monitor records and updates paper observations without exchange execution. Public OKX data remains available for historical research, including the existing cross-market candidate gate.
 
 ## Which script should I run?
 
 | Entry point | Purpose | Places orders by default? |
 | --- | --- | --- |
 | `app.py` | FastAPI monitoring site, SSE, alerts, reports, and paper strategy history | No |
-| `okx_market_cap_bot.py` | Primary multi-symbol OKX Demo strategy bot | No; requires `--place-order` |
 | `binance_strategy_bot.py` | Multi-symbol Binance signal scanner and paper positions | No; no exchange executor |
-| `okx_demo_bot.py` | Legacy single-symbol OKX Demo bot with startup reconciliation | No; requires `--place-order`; prefer the multi-symbol bot for normal operation |
-| `okx_demo_signal.py` | Inspect one signal and optionally submit one Demo order | No; requires `--place-order --size` |
-| `okx_order_smoke.py` | Manual OKX Demo order-path smoke test | No; requires `--place-order` |
+| `okx_market_cap_bot.py`, `okx_demo_bot.py`, `okx_demo_signal.py`, `okx_order_smoke.py` | Retired entrypoints; print migration guidance and exit 2 | No |
 | `discord_diagnose.py` | Configuration/fingerprint and Discord delivery diagnostic | Sends only unless `--no-send` |
 
 ## State and concurrency boundary
@@ -43,5 +41,18 @@ Runtime JSON state is atomically replaced. JSONL event logs rotate according to 
 - `config.yaml`: strategy, monitoring intervals, symbols, tolerances, and bot defaults.
 - `.env`: secrets, host-specific paths, proxies, and operational overrides.
 - `public/config.js`: local-browser bootstrap ports only, because it is needed before an HTTP backend can be reached.
-- `docker-compose.yml`: safe signal-only service topology and resource limits.
-- `docker-compose.order.yml`: explicit OKX Demo order-mode override.
+- `docker-compose.yml`: monitoring and historical backtest services only.
+- No order override is provided. Legacy deployment switches are rejected before contacting a remote host.
+
+## Signal tracking
+
+The website owns its paper ledger. It deduplicates by symbol, interval, direction,
+and signal time, preserves all active observations, and caps completed history.
+It persists mark prices and the last processed bar on updates, and restores that
+ledger on startup without synthesizing tracks from historical alerts. Removing a
+symbol from the watchlist does not remove an already active observation.
+
+Both website frontends consume `signal_tracking.positions`; SSE and polling keep
+the displayed reference prices and simulated returns current. Closed observations
+stay in recent history with their exit cause and price. These are signal-based
+observations, not fills or account positions.

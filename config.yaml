@@ -27,7 +27,12 @@ app:
   strategy_fee_rate: 0.001
   strategy_stop_mode: structure_atr
   strategy_history_limit: 200
-  record_strategy_trades: false
+  record_strategy_trades: true
+
+binance_demo:
+  # Dormant future execution adapter; current product uses local paper records.
+  entry_enabled: false
+  max_price_deviation_bps: 100
 
 bot:
   universe_top_n: 200
@@ -38,6 +43,7 @@ bot:
   scan_timeout_seconds: 300
   min_quote_volume: 5000000
   max_open_positions: 5
+  entry_enabled: false
   position_size: 1
   position_sizing: risk
   risk_per_trade_pct: 0.005

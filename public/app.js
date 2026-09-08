@@ -147,18 +147,19 @@ function renderState(state) {
   updatedAtEl.textContent = formatTime(state.updated_at);
   marketDataSourceEl.textContent = formatMarketDataSource(state.market_data_source);
   renderDiscordStatus(state);
-  renderBotStatus(state.okx_bot_status || {});
+  renderBotStatus(state.signal_tracking || {});
   errorTextEl.textContent = state.last_error ? `行情拉取失败：${state.last_error}` : "";
   renderSystemHealth(state);
   updateOverview(state);
   renderBacktestSymbolOptions(state.watchlist || []);
-  renderBotPositions(state.okx_bot_status || {});
+  renderBotPositions(state.signal_tracking || {});
   renderStrategyStats(state.strategy_stats || {}, state.strategy_trades || []);
   renderPrices();
   renderEvents(state.events || []);
 }
 
 function formatMarketDataSource(source) {
+  if (source === "binance_usdm") return "Binance USDT 合约";
   if (source === "gate") return "Gate.io Spot";
   return "Binance 24h Ticker";
 }
@@ -182,7 +183,7 @@ function updateOverview(state) {
     const ticker = prices[item.symbol] || {};
     return total + Number(ticker.quoteVolume || ticker.volume || 0);
   }, 0);
-  const botStatus = state.okx_bot_status || {};
+  const botStatus = state.signal_tracking || {};
   const positionCount = Number(botStatus.positions?.length || botStatus.open_positions || 0);
 
   if (livePositionCountEl) livePositionCountEl.textContent = formatNumber(positionCount, 0);
@@ -204,10 +205,10 @@ function renderBacktestSymbolOptions(watchlist) {
 function renderStrategyStats(stats, trades) {
   const openCount = Number(stats.open_trades || 0);
   const closedCount = Number(stats.closed_trades || 0);
-  strategyStatusEl.textContent = `${closedCount} 笔已平仓 · ${openCount} 笔持仓中`;
+  strategyStatusEl.textContent = `${closedCount} 笔已结束 · ${openCount} 笔跟踪中`;
   strategySummaryEl.innerHTML = `
-    <div class="metric"><span>累计开仓</span><strong>${formatNumber(stats.total_trades, 0)}</strong></div>
-    <div class="metric"><span>实盘胜率</span><strong class="${stats.win_rate >= 0.45 ? "up" : stats.win_rate >= 0.35 ? "warn" : "down"}">${formatPercent(stats.win_rate)}</strong></div>
+    <div class="metric"><span>累计信号</span><strong>${formatNumber(stats.total_trades, 0)}</strong></div>
+    <div class="metric"><span>模拟胜率</span><strong class="${stats.win_rate >= 0.45 ? "up" : stats.win_rate >= 0.35 ? "warn" : "down"}">${formatPercent(stats.win_rate)}</strong></div>
     <div class="metric"><span>成功/保本/失败</span><strong>${formatNumber(stats.wins, 0)} / ${formatNumber(stats.breakevens, 0)} / ${formatNumber(stats.losses, 0)}</strong></div>
     <div class="metric"><span>平均结果</span><strong class="${stats.expectancy >= 0 ? "up" : "down"}">${formatPercent(stats.expectancy)}</strong></div>
     <div class="metric"><span>止损失败</span><strong>${formatPercent(stats.stop_loss_rate)}</strong></div>
@@ -220,16 +221,15 @@ function renderStrategyStats(stats, trades) {
   }
 
   strategyTradesEl.innerHTML = trades
-    .slice(0, 8)
     .map((trade) => {
-      const statusText = trade.status === "open" ? "持仓中" : trade.outcome === "win" ? "成功" : "失败";
-      const statusClass = trade.status === "open" ? "warn" : trade.outcome === "win" ? "up" : "down";
+      const statusText = trade.status === "open" ? "跟踪中" : trade.outcome === "win" ? "模拟盈利" : trade.outcome === "breakeven" ? "保本" : "模拟亏损";
+      const statusClass = trade.status === "open" ? "warn" : trade.outcome === "win" ? "up" : trade.outcome === "breakeven" ? "" : "down";
       const resultValue = trade.status === "open" ? trade.unrealized_pct : trade.return_pct;
       return `
         <div class="tradeItem">
           <span>
             <b class="${trade.direction === "long" ? "up" : "down"}">${escapeHtml(trade.symbol)} ${escapeHtml(trade.direction)}</b>
-            <small>${escapeHtml(trade.interval || "15m")} · 入场 ${formatNumber(trade.entry_price)} · 止损 ${formatNumber(trade.stop_loss)} · 保护 ${formatNumber(trade.protection_price)}</small>
+            <small>${escapeHtml(trade.interval || "15m")} · 入场 ${formatNumber(trade.entry_price)} · 止损 ${formatNumber(trade.stop_loss)} · 目标 ${formatNumber(trade.target_price)}${trade.status === "closed" ? ` · 退出 ${formatNumber(trade.exit_price)} · ${escapeHtml(trade.exit_reason || "")}` : ""}</small>
           </span>
           <em class="${statusClass}">${statusText}</em>
           <strong class="${Number(resultValue || 0) >= 0 ? "up" : "down"}">${formatPercent(resultValue)}</strong>
@@ -240,31 +240,29 @@ function renderStrategyStats(stats, trades) {
 }
 
 function renderBotStatus(status) {
-  const health = status.health || (status.ok ? "running" : "unknown");
+  const health = status.enabled ? "running" : "unknown";
   const running = health === "running";
   const warning = ["stale", "stalled", "error"].includes(health);
   botDot.className = `dot ${running ? "online" : warning ? "" : "offline"}`;
-  botStateText.textContent = status.health_label || (running ? "运行中" : "未知");
+  botStateText.textContent = running ? "模拟信号跟踪" : "新信号记录未开启";
   const positionCount = Number(status.positions?.length || status.open_positions || 0);
-  const scanText = status.last_scan_at ? `最近扫描 ${formatTime(status.last_scan_at)}` : "暂无扫描记录";
-  botDetail.textContent = `${positionCount} 个真实持仓 · ${scanText}`;
+  const scanText = status.updated_at ? `最近更新 ${formatTime(status.updated_at)}` : "等待行情更新";
+  botDetail.textContent = `${positionCount} 个模拟跟踪 · ${scanText}`;
   if (botPositionHintEl) {
-    botPositionHintEl.textContent = running ? `${positionCount} 个持仓 · ${scanText}` : `${status.health_label || "状态未知"} · ${scanText}`;
+    botPositionHintEl.textContent = running ? `${positionCount} 个跟踪 · ${scanText}` : `新信号记录未开启 · ${scanText}`;
   }
 }
 
 function renderSystemHealth(state = {}) {
   if (!headerConnectionDot || !headerConnectionText) return;
-  const botHealth = state.okx_bot_status?.health || (state.okx_bot_status?.ok ? "running" : "unknown");
-  const botNeedsAttention = ["stale", "stalled", "error"].includes(botHealth);
-  const hasError = Boolean(state.last_error || state.okx_bot_status?.last_error);
+  const hasError = Boolean(state.last_error);
   let dotClass = "";
   let label = "连接中";
 
   if (connectionStatus === "offline") {
     dotClass = "offline";
     label = "连接异常";
-  } else if (botNeedsAttention || hasError) {
+  } else if (hasError) {
     label = "需要关注";
   } else if (connectionStatus === "online") {
     dotClass = "online";
@@ -296,7 +294,7 @@ function renderBotPositions(status) {
   const positions = status.positions || [];
   if (!botPositionsEl) return;
   if (!positions.length) {
-    botPositionsEl.innerHTML = '<div class="tradeItem botPosition"><span>真实机器人暂无持仓</span><em>--</em><strong>--</strong></div>';
+    botPositionsEl.innerHTML = '<div class="tradeItem botPosition"><span>暂无进行中的信号跟踪</span><em>--</em><strong>--</strong></div>';
     return;
   }
 
@@ -305,15 +303,15 @@ function renderBotPositions(status) {
     .map((position) => {
       const direction = String(position.direction || "").toLowerCase();
       const directionClass = direction === "long" ? "up" : direction === "short" ? "down" : "";
-      const bot = position.bot === "binance" ? "Binance" : "OKX";
+      const result = position.unrealized_pct;
       return `
         <div class="tradeItem botPosition">
           <span>
             <b class="${directionClass}">${escapeHtml(position.symbol || "--")} ${escapeHtml(direction || "--")}</b>
-            <small>${bot} · ${escapeHtml(position.interval || "15m")} · 入场 ${formatNumber(position.entry_price)} · 止损 ${formatNumber(position.stop_loss)} · 目标 ${formatNumber(position.target_price)}</small>
+            <small>模拟 · ${escapeHtml(position.interval || "15m")} · 入场 ${formatNumber(position.entry_price)} · 现价 ${formatNumber(position.current_price)} · 止损 ${formatNumber(position.stop_loss)} · 目标 ${formatNumber(position.target_price)}</small>
           </span>
           <em>${position.opened_at ? formatTime(position.opened_at) : "--"}</em>
-          <strong>${formatNumber(position.notional_usdt, 2)}</strong>
+          <strong class="${Number(result || 0) >= 0 ? "up" : "down"}">${formatPercent(result)}</strong>
         </div>
       `;
     })
@@ -362,7 +360,7 @@ function renderBacktestResult(result) {
     <div class="metric"><span>胜率</span><strong class="${metrics.win_rate >= 0.45 ? "up" : metrics.win_rate >= 0.35 ? "warn" : "down"}">${formatPercent(metrics.win_rate)}</strong></div>
     <div class="metric"><span>预期/笔</span><strong class="${metrics.expectancy >= 0 ? "up" : "down"}">${formatPercent(metrics.expectancy)}</strong></div>
     <div class="metric"><span>最大回撤</span><strong class="down">${formatPercent(metrics.max_drawdown)}</strong></div>
-    <div class="metric"><span>累计收益</span><strong class="${metrics.total_return >= 0 ? "up" : "down"}">${formatPercent(metrics.total_return)}</strong></div>
+    <div class="metric"><span>逐笔收益合计</span><strong class="${metrics.total_return >= 0 ? "up" : "down"}">${formatPercent(metrics.total_return)}</strong></div>
     <div class="metric"><span>止损触发</span><strong>${formatPercent(metrics.stop_trigger_rate)}</strong></div>
     <div class="metric"><span>推保护成功</span><strong>${formatPercent(metrics.protection_rate)}</strong></div>
   `;
@@ -654,7 +652,7 @@ function renderFileModeNotice() {
     smtp_configured: false,
     discord_configured: false,
     discord_status: { configured: false, running: false, label: "需 HTTP 服务" },
-    okx_bot_status: { health: "unknown", health_label: "需 HTTP 服务", positions: [] },
+    signal_tracking: { enabled: false, positions: [] },
     notification_configured: false,
     strategy_stats: {},
     strategy_trades: [],
@@ -663,8 +661,8 @@ function renderFileModeNotice() {
   fallbackWatchlist.forEach(addRow);
   updatedAtEl.textContent = "--";
   renderDiscordStatus(latestState);
-  renderBotStatus(latestState.okx_bot_status);
-  renderBotPositions(latestState.okx_bot_status);
+  renderBotStatus(latestState.signal_tracking);
+  renderBotPositions(latestState.signal_tracking);
   setConnection("offline", "文件模式");
   errorTextEl.innerHTML =
     '当前是 file:// 打开，无法连接实时行情接口。请运行 <code>python3 app.py</code> 后打开终端打印的 HTTP 地址，默认是 <a class="textLink" href="http://127.0.0.1:8080/">http://127.0.0.1:8080/</a>。';

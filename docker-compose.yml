@@ -13,13 +13,16 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8080
-      MARKET_DATA_SOURCE: ${MARKET_DATA_SOURCE:-gate}
+      MARKET_DATA_SOURCE: binance_usdm
+      FEISHU_CONFIG_FILE: /app/runtime/feishu-config.json
+      FEISHU_OUTBOX_FILE: /app/runtime/feishu-outbox.json
+      RUNTIME_SETTINGS_FILE: /app/runtime/runtime-settings.json
+      ADMIN_LOCAL_ONLY: "true"
+      DISCORD_ENABLED: "false"
       REPORTS_DIR: /app/reports
       WATCHLIST_FILE: /app/runtime/watchlist.json
       EVENT_LOG_FILE: /app/runtime/signal_events.jsonl
       STRATEGY_TRADES_FILE: /app/runtime/strategy_trades.json
-      OKX_BOT_STATE_FILE: /app/runtime/okx_market_cap_bot_state.json
-      OKX_BOT_EVENT_LOG_FILE: /app/runtime/okx_market_cap_bot_events.jsonl
     volumes:
       - ./.env:/app/.env:ro
       - ./runtime:/app/runtime
@@ -28,42 +31,6 @@ services:
       test: ["CMD", "python", "-c", "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=5)); raise SystemExit(0 if data.get('ok') else 1)"]
       interval: 30s
       timeout: 8s
-      retries: 3
-      start_period: 20s
-    logging:
-      driver: json-file
-      options:
-        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
-        max-file: ${DOCKER_LOG_MAX_FILES:-3}
-
-  okx-strategy-bot:
-    build: .
-    container_name: okx-strategy-bot
-    profiles:
-      - trading
-    restart: unless-stopped
-    env_file:
-      - .env
-    command: ["python", "okx_market_cap_bot.py"]
-    cpus: ${BOT_CPUS:-1.5}
-    mem_limit: ${BOT_MEMORY_LIMIT:-768m}
-    stop_grace_period: 330s
-    environment:
-      PYTHONUNBUFFERED: "1"
-      OKX_BOT_STATE_FILE: /app/runtime/okx_market_cap_bot_state.json
-      OKX_BOT_EVENT_LOG_FILE: /app/runtime/okx_market_cap_bot_events.jsonl
-      OKX_ORDER_SYMBOL_BLOCKLIST: TAO-USDT-SWAP,UNI-USDT-SWAP
-      OKX_SCAN_SYMBOL_BLOCKLIST: GRAMUSDT,VVVUSDT
-    volumes:
-      - ./.env:/app/.env:ro
-      - ./runtime:/app/runtime
-    depends_on:
-      crypto-project:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
       retries: 3
       start_period: 20s
     logging:

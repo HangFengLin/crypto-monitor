@@ -45,6 +45,46 @@ python3 strategy_validation.py --bootstrap-iterations 2000
 候选回放默认按品种使用最多 8 个进程（`--evaluation-workers 8`，实际默认不超过
 机器 CPU 数）；每个 fold 和候选的结果仍按快照顺序聚合。
 
+## VectorBT 高速研究 PoC
+
+`vectorbt_research.py` 是正式验证之前的离线筛选层。它从一份既有 prepared 缓存读取
+K 线，不访问交易接口；生产 `ProjectSignalEngine` 和 `position_manager.py` 先生成一次
+不可变信号事件及逐笔退出结果，VectorBT 再同时计算下列研究过滤组合：
+
+- `min_signal_score`
+- `min_structure_score`
+- `divergence_filter`
+- `signal_direction`
+- `block_local_countertrend`
+
+这些字段不改变背驰检测和确认状态机。`confirmation_mode`、背驰强度阈值、RSI、ADX、
+微观结构等会改变信号生成的参数仍必须走 `strategy_validation.py`，不能放进这个 PoC
+假装获得同等验证。
+
+安装研究依赖后，显式传入一份缓存：
+
+```bash
+python3 -m pip install -r requirements-validation.txt
+python3 vectorbt_research.py \
+  --prepared-cache runtime/backtest-data/prepared/okx/BTCUSDT/15m/<cache>.json.gz
+```
+
+默认组合为 162 组。程序会先执行一次原始 `run_backtest`，再校验缓存路径的交易数量、
+方向、入场、初始止损、目标、退出和净收益完全一致；一致性失败时退出码为 2。研究区间
+只允许在前 80% 时间开仓，并在永久留出集前再预留完整 `max_hold_bars`，不会读取最后
+20% 的交易结果。
+
+每次运行写入新的 `reports/vectorbt_poc_<symbol>_<UTC时间>/`，包含：
+
+- `manifest.json`：输入 SHA-256、数据覆盖、研究/留出边界、一致性和实测耗时；
+- `candidate_results.csv`：全部候选的交易数、胜率、期望、复利收益和回撤；
+- `candidate_trades.csv`：候选逐笔交易；
+- `report.md`：只列达到最低交易数的研究摘要。
+
+所有产物固定标记 `RESEARCH_ONLY`。预计提速按“原始单次回放耗时 × 候选数”计算，属于
+投影，不是全部候选逐个重跑的实测；任何候选仍需回到本文件的 walk-forward、永久留出
+集、FDR、成本压力和 OKX 跨市场门槛。
+
 首次运行会下载并缓存官方归档，耗时和磁盘占用取决于品种上市时间。建议在正式运行时
 显式指定 UTC 区间，以便日后完全复现：
 

@@ -43,3 +43,9 @@ project_signal_report_*.html
 *.log
 *.tmp
 *.swp
+
+# Local experiments and generated website
+backups/
+output/
+tmp/
+public/site/

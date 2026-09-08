@@ -83,19 +83,17 @@ strategy:
         with self.assertRaisesRegex(ValueError, "must not be empty"):
             app.nearest_index_by_close_time([], 1234567890)
 
-    def test_okx_order_bot_requires_explicit_trading_profile(self) -> None:
+    def test_research_compose_only_contains_monitor_and_backtest(self) -> None:
         compose_path = Path(__file__).resolve().parents[1] / "docker-compose.yml"
         compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
 
         services = compose["services"]
         self.assertNotIn("profiles", services["crypto-project"])
-        self.assertEqual(services["okx-strategy-bot"]["profiles"], ["trading"])
-        self.assertNotIn("--place-order", services["okx-strategy-bot"]["command"])
+        self.assertNotIn("okx-strategy-bot", services)
         self.assertIn("healthcheck", services["crypto-project"])
         self.assertIn("mem_limit", services["crypto-project"])
 
-        order_override = yaml.safe_load((compose_path.parent / "docker-compose.order.yml").read_text(encoding="utf-8"))
-        self.assertIn("--place-order", order_override["services"]["okx-strategy-bot"]["command"])
+
 
     def test_frequency_tuning_preserves_portfolio_risk_guards(self) -> None:
         project_config = config.load_config()

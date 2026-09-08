@@ -4,13 +4,13 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-crypto-vps}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/crypto-project}"
 SERVICE="${SERVICE:-crypto-project}"
-CONFIRM_RESTART_OKX_BOT="${CONFIRM_RESTART_OKX_BOT:-}"
 BUILD_ONLY="${BUILD_ONLY:-}"
 ENABLE_OKX_ORDER_MODE="${ENABLE_OKX_ORDER_MODE:-}"
 COMPOSE_FILES="-f docker-compose.yml"
 
-if [[ "${ENABLE_OKX_ORDER_MODE}" == "yes" ]]; then
-  COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.order.yml"
+if [[ -n "${ENABLE_OKX_ORDER_MODE}" || " ${SERVICE} " == *" okx-strategy-bot "* ]]; then
+  echo "OKX robot deployment is retired; deploy crypto-project for paper signal tracking." >&2
+  exit 2
 fi
 
 EXCLUDES=(
@@ -27,6 +27,12 @@ EXCLUDES=(
   "--exclude=.venv/"
   "--exclude=venv/"
   "--exclude=node_modules/"
+  "--exclude=output/"
+  "--exclude=tmp/"
+  "--exclude=dist/"
+  "--exclude=.next/"
+  "--exclude=.wrangler/"
+  "--exclude=public/site/"
   "--exclude=reports/"
   "--exclude=backups/"
   "--exclude=*_report.html"
@@ -43,23 +49,6 @@ EXCLUDES=(
   "--exclude=*.tmp"
   "--exclude=*.swp"
 )
-
-if [[ "${BUILD_ONLY}" != "yes" && " ${SERVICE} " == *" okx-strategy-bot "* && "${CONFIRM_RESTART_OKX_BOT}" != "yes" ]]; then
-  cat >&2 <<'EOF'
-Refusing to restart okx-strategy-bot without explicit confirmation.
-
-The bot may be managing open OKX Demo positions. Re-run with:
-
-  CONFIRM_RESTART_OKX_BOT=yes SERVICE='crypto-project okx-strategy-bot' ./deploy_vps.sh
-
-EOF
-  exit 2
-fi
-
-if [[ "${ENABLE_OKX_ORDER_MODE}" == "yes" && " ${SERVICE} " != *" okx-strategy-bot "* ]]; then
-  echo "ENABLE_OKX_ORDER_MODE=yes requires SERVICE to include okx-strategy-bot." >&2
-  exit 2
-fi
 
 echo "Deploying local code to ${REMOTE_HOST}:${REMOTE_DIR}"
 rsync -az --delete "${EXCLUDES[@]}" ./ "${REMOTE_HOST}:${REMOTE_DIR}/"

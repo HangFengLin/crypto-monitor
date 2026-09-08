@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import unittest
 import zipfile
+from http.client import IncompleteRead
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -20,7 +22,13 @@ from backtest_statistics import (
     weekly_block_bootstrap_summary,
     wilson_interval,
 )
-from historical_market_data import _ascii_url, _parse_okx_funding_archive, enrich_microstructure
+from historical_market_data import (
+    _ascii_url,
+    _parse_okx_funding_archive,
+    download_cached,
+    enrich_microstructure,
+    fetch_binance_um_klines,
+)
 from project_signal_backtest import (
     SignalTrade,
     add_higher_timeframe_context,
@@ -125,6 +133,93 @@ class HistoricalAlignmentTest(unittest.TestCase):
         encoded = _ascii_url("https://data.binance.vision/path/币安人生USDT/file.zip?x=1")
         self.assertIn("%E5%B8%81%E5%AE%89%E4%BA%BA%E7%94%9FUSDT", encoded)
         self.assertTrue(encoded.endswith("?x=1"))
+
+    def test_download_retries_truncated_checksum_response(self) -> None:
+        payload = b"verified archive"
+        checksum = hashlib.sha256(payload).hexdigest().encode()
+
+        class Response:
+            def __init__(self, body: bytes = b"", error: BaseException | None = None) -> None:
+                self.body = io.BytesIO(body)
+                self.error = error
+
+            def __enter__(self) -> Response:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self, size: int = -1) -> bytes:
+                if self.error is not None:
+                    raise self.error
+                return self.body.read(size)
+
+        responses = [
+            Response(payload),
+            Response(error=IncompleteRead(b"", 89)),
+            Response(payload),
+            Response(checksum),
+        ]
+        with TemporaryDirectory() as directory, patch(
+            "historical_market_data.urllib.request.urlopen",
+            side_effect=responses,
+        ):
+            destination = Path(directory) / "archive.zip"
+            result = download_cached(
+                "https://example.test/archive.zip",
+                destination,
+                checksum_url="https://example.test/archive.zip.CHECKSUM",
+                attempts=2,
+            )
+
+            self.assertEqual(result, destination)
+            self.assertEqual(destination.read_bytes(), payload)
+
+    def test_completed_month_unusable_archive_falls_back_to_daily_packages(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            unusable_month = root / "empty-month.zip"
+            unusable_month.write_bytes(b"")
+            daily_paths: dict[str, Path] = {}
+            expected_times = []
+            for day in ("2025-06-01", "2025-06-02"):
+                timestamp = pd.Timestamp(day, tz="UTC")
+                expected_times.append(int(timestamp.timestamp() * 1000))
+                path = root / f"BTCUSDT-5m-{day}.zip"
+                with zipfile.ZipFile(path, "w") as archive:
+                    archive.writestr(
+                        f"BTCUSDT-5m-{day}.csv",
+                        f"{expected_times[-1]},100,101,99,100,1,{expected_times[-1] + 299999}\n",
+                    )
+                daily_paths[day] = path
+
+            for failure_mode in ("download_error", "invalid_zip"):
+                with self.subTest(failure_mode=failure_mode):
+                    def archive_result(
+                        url: str,
+                        *_args: object,
+                        failure_mode: str = failure_mode,
+                        **_kwargs: object,
+                    ) -> Path:
+                        if "/monthly/" in url:
+                            if failure_mode == "download_error":
+                                raise RuntimeError("checksum mismatch")
+                            return unusable_month
+                        for day, path in daily_paths.items():
+                            if day in url:
+                                return path
+                        raise AssertionError(f"unexpected archive URL: {url}")
+
+                    with patch("historical_market_data.download_cached", side_effect=archive_result):
+                        bars = fetch_binance_um_klines(
+                            "BTCUSDT",
+                            "5m",
+                            "2025-06-01T00:00:00Z",
+                            "2025-06-03T00:00:00Z",
+                            root,
+                        )
+
+                    self.assertEqual([bar["open_time"] for bar in bars], expected_times)
 
     def test_okx_funding_archive_parser_filters_range(self) -> None:
         with TemporaryDirectory() as directory:

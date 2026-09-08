@@ -263,6 +263,131 @@ class PositionSizingTest(unittest.TestCase):
         latest_signal.assert_not_called()
         self.assertEqual(scan_event["skipped"], {"scan_symbol_blocklisted": 1})
 
+    def test_disabled_strategy_entries_still_close_existing_positions_and_scan_signals(self) -> None:
+        args = argparse.Namespace(
+            top_n=200,
+            quote_asset="USDT",
+            min_quote_volume=10_000_000,
+            okx_instrument_type="SWAP",
+            trade_mode="cross",
+            reward_risk=2.0,
+            size="1",
+            place_order=False,
+            entry_enabled=False,
+            interval="15m",
+            limit=300,
+            max_open_positions=5,
+            min_signal_score=0,
+            min_structure_score=0,
+            signal_direction="all",
+            divergence_filter="all",
+            structure_text_exact=None,
+            structure_text_contains=None,
+            low_profit_pair_min_trades=0,
+            stoploss_guard_min_trades=0,
+            position_stop_mode="structure_atr",
+            fee_rate=0.001,
+            debug_signals=False,
+        )
+        state = {
+            "positions": [
+                {
+                    "id": "existing-eth",
+                    "symbol": "ETHUSDT",
+                    "inst_id": "ETH-USDT-SWAP",
+                    "interval": "15m",
+                    "direction": "long",
+                    "size": "1",
+                    "position_sizing": {"mode": "fixed"},
+                    "status": "open",
+                    "entry_price": 100.0,
+                    "stop_loss": 95.0,
+                    "initial_stop_loss": 95.0,
+                    "active_stop": 95.0,
+                    "target_price": 110.0,
+                    "protection_price": 105.0,
+                    "opened_kline_close_time": 1,
+                    "last_evaluated_close_time": 1,
+                }
+            ]
+        }
+        qualified_signal = {
+            "signal": "long",
+            "signal_name": "fixture long",
+            "signal_score": 12,
+            "structure_score": 2,
+            "divergence_type": "macd",
+            "structure_text": "fixture",
+            "price": 100.0,
+            "stop_loss": 95.0,
+            "divergence_time": "fixture-divergence",
+        }
+
+        def latest_signal(symbol: str, *_args: object) -> tuple[dict[str, object], list[dict[str, object]]]:
+            if symbol == "ETHUSDT":
+                return {"signal": "wait"}, [
+                    {"close_time": 2, "low": 94.0, "high": 100.0, "close": 95.0, "confirmed": True}
+                ]
+            return qualified_signal, []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_log = Path(tmpdir) / "events.jsonl"
+            state_file = Path(tmpdir) / "state.json"
+            with patch.object(bot, "EVENT_LOG_FILE", event_log), patch.object(bot, "STATE_FILE", state_file), patch.object(
+                bot,
+                "build_okx_market_cap_universe",
+                return_value=[
+                    {"symbol": "ETHUSDT", "inst_id": "ETH-USDT-SWAP"},
+                    {"symbol": "BTCUSDT", "inst_id": "BTC-USDT-SWAP"},
+                ],
+            ), patch.object(bot, "configured_scan_symbol_blocklist", return_value=set()), patch.object(
+                bot, "latest_signal", side_effect=latest_signal
+            ), patch.object(bot, "open_position", side_effect=AssertionError("new entry must stay disabled")), patch.object(
+                bot, "send_discord"
+            ):
+                bot.scan_once(args, state)
+                bot.scan_once(args, state)
+                events = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
+                scan_event = events[-1]
+
+        self.assertEqual(state["positions"][0]["status"], "closed")
+        self.assertEqual(state["positions"][0]["exit_reason"], "stop_loss")
+        self.assertEqual(len(state["positions"]), 1)
+        self.assertEqual(scan_event["opened"], 0)
+        self.assertEqual(scan_event["errors"], 0)
+        self.assertIs(scan_event.get("entry_enabled"), False)
+        scan_events = [event for event in events if event.get("type") == "scan"]
+        self.assertEqual(scan_events[0]["skipped"], {"already_open": 1, "strategy_entry_disabled": 1})
+        self.assertEqual(scan_event["skipped"], {"not_trade_signal": 1, "strategy_entry_disabled": 1})
+        suppressed = [event for event in events if event.get("type") == "strategy_entry_suppressed"]
+        self.assertEqual(len(suppressed), 1)
+        self.assertEqual(
+            state.get("suppressed_entry_ids"),
+            ["BTCUSDT:15m:long:fixture-divergence"],
+        )
+        self.assertEqual(
+            {
+                "symbol": suppressed[0]["symbol"],
+                "order_symbol": suppressed[0]["order_symbol"],
+                "direction": suppressed[0]["direction"],
+                "signal_score": suppressed[0]["signal_score"],
+                "structure_score": suppressed[0]["structure_score"],
+                "divergence_type": suppressed[0]["divergence_type"],
+                "signal_price": suppressed[0]["signal_price"],
+                "stop_loss": suppressed[0]["stop_loss"],
+            },
+            {
+                "symbol": "BTCUSDT",
+                "order_symbol": "BTC-USDT-SWAP",
+                "direction": "long",
+                "signal_score": 12,
+                "structure_score": 2,
+                "divergence_type": "macd",
+                "signal_price": 100.0,
+                "stop_loss": 95.0,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
