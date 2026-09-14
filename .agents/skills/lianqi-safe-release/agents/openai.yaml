@@ -1,0 +1,4 @@
+interface:
+  display_name: "炼气安全发布"
+  short_description: "按最小重启原则验证并发布炼气服务，保护机器人仓位与运行状态"
+  default_prompt: "Use $lianqi-safe-release to validate and safely deploy the requested 炼气 change with explicit bot restart gates."

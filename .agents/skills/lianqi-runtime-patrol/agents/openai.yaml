@@ -1,0 +1,4 @@
+interface:
+  display_name: "炼气线上巡检"
+  short_description: "只读核验 VPS、Docker、接口、日志与机器人实时状态"
+  default_prompt: "Use $lianqi-runtime-patrol to inspect the live 炼气 VPS in read-only mode and report current evidence in concise Chinese."
