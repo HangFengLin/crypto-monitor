@@ -29,6 +29,14 @@ app:
   strategy_history_limit: 200
   record_strategy_trades: true
 
+paper_universe:
+  enabled: true
+  top_n: 100
+  selection: exchange_top_n
+  interval: 15m
+  refresh_seconds: 21600
+  workers: 2
+
 binance_demo:
   # Dormant future execution adapter; current product uses local paper records.
   entry_enabled: false

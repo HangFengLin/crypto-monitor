@@ -34,10 +34,12 @@ from historical_market_data import (
     write_json,
 )
 from indicators import calculate_indicators
+from position_manager import LEGACY_RATIO_V1, LINEAR_USDM_V1, RETURN_MODEL_CHOICES, calculate_return_pct
 from project_signal_backtest import (
     SignalTrade,
     add_higher_timeframe_context,
     calculate_metrics,
+    execution_metadata,
     run_backtest,
 )
 from strategy import DEFAULT_CONFIG, HIGHER_TREND_INTERVAL, ProjectSignalEngine, StrategyConfig
@@ -53,6 +55,7 @@ CANDIDATE_FAMILY_FIELDS = {
     "rsi": {"buy_rsi_threshold", "sell_rsi_threshold"},
     "adx": {"adx_long_max", "adx_short_max"},
     "microstructure": {"microstructure_enabled", "require_microstructure"},
+    "volume_sequence": {"volume_sequence_enabled"},
 }
 
 
@@ -67,6 +70,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-risk", type=float, default=2.0)
     parser.add_argument("--max-hold-bars", type=int, default=96)
     parser.add_argument("--fee-rate", type=float, default=0.001)
+    parser.add_argument("--return-model", choices=RETURN_MODEL_CHOICES, default=LINEAR_USDM_V1)
+    parser.add_argument("--holding-limit-convention", choices=["entry_bar_is_first", "legacy_inclusive_end"],
+                        default="entry_bar_is_first")
     parser.add_argument("--min-group-trades", type=int, default=30)
     parser.add_argument("--bootstrap-iterations", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="bootstrap固定随机种子")
@@ -80,6 +86,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-okx", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="仅运行BTC最近7天网络/产物冒烟验证")
     return parser.parse_args()
+
+
+def validation_execution_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    """Pin the diagnostic accounting without claiming portfolio execution."""
+    convention = getattr(args, "holding_limit_convention", "entry_bar_is_first")
+    if convention not in {"entry_bar_is_first", "legacy_inclusive_end"}:
+        raise ValueError("unsupported holding-limit convention")
+    metadata = execution_metadata(
+        getattr(args, "return_model", LINEAR_USDM_V1),
+        getattr(args, "max_hold_bars", 96),
+        convention == "legacy_inclusive_end",
+    )
+    return {**metadata, "execution_scope": "multi_symbol_signal_validation",
+            "stop_mode": "structure_atr",
+            "cost_pressure_boundary": "fixed_full_exit_trades_extra_notional_fees_only"}
 
 
 def utc_timestamp(value: Any) -> pd.Timestamp:
@@ -482,6 +503,7 @@ def run_window(
     fee_rate: float | None = None,
     executor: concurrent.futures.Executor | None = None,
 ) -> tuple[list[SignalTrade], pd.DataFrame, dict[str, float]]:
+    metadata = validation_execution_metadata(args)
     interval_delta = pd.Timedelta(milliseconds=interval_ms(args.interval))
     warmup = 250 * interval_delta
     # Reserve a full holding horizon at the right edge. This prevents the last
@@ -504,6 +526,8 @@ def run_window(
                 args.reward_risk,
                 args.max_hold_bars,
                 fee_rate if fee_rate is not None else args.fee_rate,
+                metadata["return_model"],
+                metadata["holding_limit_convention"] == "legacy_inclusive_end",
             )
         )
     if executor is not None:
@@ -529,7 +553,8 @@ def run_window(
 
 def score_symbol_window(task: tuple[Any, ...]) -> tuple[str, list[SignalTrade], dict[str, float]]:
     """Process-safe scoring unit for one symbol and one fixed time window."""
-    symbol, sliced, config, score_start, score_end, entry_end, reward_risk, max_hold_bars, fee_rate = task
+    (symbol, sliced, config, score_start, score_end, entry_end, reward_risk,
+     max_hold_bars, fee_rate, return_model, legacy_holding_limit) = task
     trades, _curve = run_backtest(
         sliced,
         reward_risk,
@@ -538,6 +563,8 @@ def score_symbol_window(task: tuple[Any, ...]) -> tuple[str, list[SignalTrade], 
         strategy_config=config,
         entry_start_time=score_start,
         entry_end_time=entry_end,
+        return_model=return_model,
+        legacy_holding_limit=legacy_holding_limit,
     )
     retained = [trade for trade in trades if score_start <= utc_timestamp(trade.entry_time) and utc_timestamp(trade.exit_time) < score_end]
     for trade in retained:
@@ -689,10 +716,26 @@ def profit_concentration(trades: Iterable[SignalTrade]) -> float:
 
 
 def apply_extra_roundtrip_cost(trades: Iterable[SignalTrade], extra_fee_rate: float) -> list[SignalTrade]:
+    """Stress fixed full exits; partial exits need a separate execution replay."""
     adjusted = []
     for trade in trades:
-        next_return = trade.return_pct - extra_fee_rate * 2
-        next_trade = dataclasses.replace(trade, return_pct=next_return, outcome="win" if next_return > 0 else "loss")
+        if trade.stop_mode != "structure_atr":
+            raise ValueError("formal cost pressure requires full structure_atr exits")
+        extra_cost = extra_fee_rate * 2
+        if trade.return_model == LINEAR_USDM_V1:
+            # Formal validation always uses a single full structure_atr exit.
+            # CSV restoration need not interpret research-only partial legs.
+            extra_cost = (
+                calculate_return_pct(trade.signal, trade.entry_price, trade.exit_price, 0,
+                                     return_model=LINEAR_USDM_V1)
+                - calculate_return_pct(trade.signal, trade.entry_price, trade.exit_price, extra_fee_rate,
+                                       return_model=LINEAR_USDM_V1)
+            )
+        next_return = trade.return_pct - extra_cost
+        if trade.return_model != LEGACY_RATIO_V1 and abs(next_return) < 1e-12:
+            next_return = 0.0
+        outcome = "win" if next_return > 0 else "breakeven" if next_return == 0 and trade.return_model != LEGACY_RATIO_V1 else "loss"
+        next_trade = dataclasses.replace(trade, return_pct=next_return, outcome=outcome)
         if hasattr(trade, "symbol"):
             next_trade.symbol = trade.symbol
         adjusted.append(next_trade)
@@ -948,10 +991,10 @@ main{{max-width:1120px;margin:0 auto;padding:48px 28px 80px}} h1{{font-size:32px
 code{{background:#F4F5F7;padding:2px 5px;border-radius:4px}}
 </style></head><body><main>
 <header data-contract-section="title"><h1>抗过拟合策略验证报告</h1></header>
-<section data-contract-section="technical-summary"><h2>技术摘要</h2><div class="summary"><strong>{html.escape(summary_text)}</strong><p>验证期候选 <code>{html.escape(str(selected))}</code> 通过联合筛选，但最终结论只由永久测试集及全部稳健性门槛决定。</p>
+<section data-contract-section="technical-summary"><h2>技术摘要</h2><div class="summary"><strong>{html.escape(summary_text)}</strong><p>验证期入选候选：<code>{html.escape(selected_display)}</code>。最终结论由永久测试集及全部稳健性门槛决定。</p>
 <div class="kpis"><div class="kpi"><strong>{'保留基线' if status == 'baseline_retained' else '候选通过' if status == 'candidate_passed' else '仅冒烟'}</strong><span>最终决策</span></div><div class="kpi"><strong>{html.escape(selected_display)}</strong><span>验证期入选候选</span></div><div class="kpi"><strong>{manifest.get('binance_symbols',0)}</strong><span>Binance研究品种</span></div><div class="kpi"><strong>{validation_trades}</strong><span>基线验证交易</span></div><div class="kpi"><strong>{validation_win_rate:.2%}</strong><span>基线验证胜率</span></div><div class="kpi"><strong>{validation_expectancy:.3%}</strong><span>基线验证期望</span></div><div class="kpi"><strong>{validation_max_drawdown:.2%}</strong><span>最差fold回撤</span></div><div class="kpi"><strong>{manifest.get('okx_symbols_evaluated',0)}</strong><span>OKX已复核品种</span></div></div></div></section>
 <section data-contract-section="key-findings"><h2>{'最终测试否决候选，继续使用基线' if status == 'baseline_retained' else '候选通过全部最终门槛' if status == 'candidate_passed' else '网络与产物链路完成冒烟'}</h2><p>门槛必须同时成立；任何一项失败都会保留基线。下表直接列出最终测试、成本压力、跨交易所方向和盈利集中度证据。</p><div class="scroll">{gate_evidence}</div><h3>最终测试与跨交易所指标</h3><div class="scroll">{test_evidence}</div><h3>验证期候选收益增量</h3><p>图中横轴是候选相对基线的每笔净收益增量；蓝色只表示通过验证期联合门槛，不表示已经通过永久测试集。</p>{chart_html}<div class="scroll">{html_table(comparison,['candidate','family','delta','ci_low','ci_high','p_value','q_value','fold_positive_ratio','symbol_nonworse_ratio','max_drawdown_ratio','validation_gate'],{'delta','ci_low','ci_high','fold_positive_ratio','symbol_nonworse_ratio'})}</div></section>
-<section data-contract-section="scope-data-and-metric-definitions"><h2>研究范围与指标定义</h2><p>研究区间为 {html.escape(str(manifest.get('start')))} 至 {html.escape(str(manifest.get('end')))}，使用 {html.escape(str(manifest.get('interval','15m')))} K线；冻结池含 {manifest.get('binance_symbols',0)} 个 Binance USD-M 永续，OKX复核含 {manifest.get('okx_symbols_evaluated',0)} 个 SWAP。期望收益是每笔交易扣除往返成本后的算术均值；最大回撤由退出时记账的组合权益曲线计算；胜率区间使用 Wilson 95% 区间。</p><p>资金费率和OI只取信号K线实际收盘前已发布的最后值。OI比率是最新15分钟值除以前19个值的均值；OKX的OI明确使用 Binance USD-M 对应合约作为代理。</p></section>
+<section data-contract-section="scope-data-and-metric-definitions"><h2>研究范围与指标定义</h2><p>研究区间为 {html.escape(str(manifest.get('start')))} 至 {html.escape(str(manifest.get('end')))}，使用 {html.escape(str(manifest.get('interval','15m')))} K线；冻结池含 {manifest.get('binance_symbols',0)} 个 Binance USD-M 永续，OKX复核含 {manifest.get('okx_symbols_evaluated',0)} 个 SWAP。期望收益是每笔交易扣除往返成本后的算术均值；回撤由逐笔退出时复合记账的曲线计算，不含持仓盯市、资金分配与并发持仓约束，不代表账户回撤；胜率区间使用 Wilson 95% 区间。</p><p>资金费率和OI只取信号K线实际收盘前已发布的最后值。OI比率是最新15分钟值除以前19个值的均值；OKX的OI明确使用 Binance USD-M 对应合约作为代理。</p></section>
 <section data-contract-section="methodology"><h2>固定候选与时间样本外设计</h2><p>最后20%时间永久保留为一次性测试集；前80%采用240天训练、60天验证、每60天滚动一次，并在分段间隔离96根15分钟K线。候选只改变一个参数族，不在训练窗内连续拟合。验证期增量使用UTC周分块的 {manifest.get('bootstrap_iterations',2000)} 次bootstrap和固定种子 {manifest.get('bootstrap_seed',20260620)}，随后执行BH-FDR 0.10校正。</p><div class="scroll">{html_table(fold_metrics,['candidate','fold','validation_start','validation_end','total_trades','win_rate','expectancy','max_drawdown'],{'win_rate','expectancy','max_drawdown'},50)}</div><h3>探索性分组只用于提出假设</h3><p>下表仅包含至少 {manifest.get('min_group_trades',30)} 笔的单维或预声明二维分组；完整8维联合表仅作为原始诊断，不参与候选生成或晋级。</p><div class="scroll">{html_table(group_stats,['group_dimensions','group_value','trades','win_rate','win_rate_ci_low','win_rate_ci_high','avg_return'],{'win_rate','win_rate_ci_low','win_rate_ci_high','avg_return'},40)}</div></section>
 <section data-contract-section="limitations-uncertainty-and-robustness-checks"><h2>稳健性与仍然存在的限制</h2><ul><li>候选验证增量经过周分块bootstrap与FDR校正，但最终候选只有 {int(candidate_test.get('total_trades',0)) if candidate_test else 0} 笔；低于100笔门槛时不作晋级解释。</li><li>OKX使用自身K线与官方历史资金费率；OI使用 Binance USD-M 代理，不能视为OKX原生持仓结构。</li><li>品种池按研究日快照冻结，因此仍存在幸存者、上市时间与当前市值选择偏差。</li><li>不同上市日期导致单品种历史长度不同；覆盖报告保留每个品种的首尾时间和缺失比例。</li><li>生产 <code>config.yaml</code> 运行前后哈希一致，未部署、未重启服务。</li></ul></section>
 <section data-contract-section="recommended-next-steps"><h2>建议下一步</h2><p>{'候选只能进入后续模拟盘一致性验证，不能直接实盘。' if status == 'candidate_passed' else '执行完整两年多品种验证。' if status == 'smoke_only' else '继续积累新样本；不要因本次未晋级而放宽统计门槛。'}</p></section>
@@ -964,6 +1007,7 @@ code{{background:#F4F5F7;padding:2px 5px;border-radius:4px}}
 
 def main() -> None:
     args = parse_args()
+    accounting_metadata = validation_execution_metadata(args)
     production_config_path = Path("config.yaml")
     production_config_hash_before = sha256_file(production_config_path) if production_config_path.exists() else None
     start, end = default_window(args)
@@ -1089,6 +1133,7 @@ def main() -> None:
         "production_config_modified": False,
         "deployed": False,
         "arguments": vars(args),
+        "execution_metadata": accounting_metadata,
         "test_summary": test_summary,
     }
     write_json(output_dir / "manifest.json", manifest)

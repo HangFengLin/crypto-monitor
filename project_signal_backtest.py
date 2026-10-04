@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -32,6 +33,9 @@ from data_client import fetch_historical_klines, fetch_okx_historical_klines, in
 from indicators import calculate_indicators
 from position_manager import (
     ATR_TRAILING_AFTER_1R_STOP_MODE,
+    LEGACY_RATIO_V1,
+    LINEAR_USDM_V1,
+    RETURN_MODEL_CHOICES,
     STOP_MODE_CHOICES,
     calculate_return_pct,
     calculate_target_levels,
@@ -87,6 +91,8 @@ class SignalTrade:
     hit_1_5r_before_initial_stop: bool = False
     hit_2r_before_initial_stop: bool = False
     horizon_close_r_path: list[float] = field(default_factory=list)
+    return_model: str = LEGACY_RATIO_V1
+    exit_legs: list[dict[str, Any]] = field(default_factory=list)
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,6 +106,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-risk", type=float, default=2.0, help="目标价按几倍初始风险计算，默认 2R")
     parser.add_argument("--max-hold-bars", type=int, default=96, help="最多观察多少根 K 线，15m 下 96 根约等于 1 天")
     parser.add_argument("--fee-rate", type=float, default=0.001, help="单边手续费/滑点估计，默认 0.001")
+    parser.add_argument("--return-model", choices=RETURN_MODEL_CHOICES, default=LINEAR_USDM_V1,
+                        help="新研究默认线性USD-M；复现旧报告时显式选择legacy_ratio_v1")
+    parser.add_argument("--holding-limit-convention", choices=["entry_bar_is_first", "legacy_inclusive_end"],
+                        default="entry_bar_is_first",
+                        help="新研究把入场bar计为第1根；旧报告复现显式选择legacy_inclusive_end")
     parser.add_argument(
         "--stop-mode",
         choices=[*STOP_MODE_CHOICES, "all"],
@@ -290,10 +301,14 @@ def evaluate_trade(
     max_hold_bars: int,
     fee_rate: float,
     stop_mode: str = "structure_atr",
+    *, return_model: str = LEGACY_RATIO_V1, legacy_holding_limit: bool = True,
 ) -> SignalTrade | None:
     """用后续 K 线验证信号是否有效：先止损则失败，先到目标/推保护则成功。"""
     if entry_index >= len(bars):
         return None
+    minimum = 0 if legacy_holding_limit else 1
+    if not isinstance(max_hold_bars, int) or isinstance(max_hold_bars, bool) or max_hold_bars < minimum:
+        raise ValueError("invalid max_hold_bars for holding-limit convention")
     direction = signal["signal"]
     entry_bar = bars[entry_index]
     entry_price = entry_bar["open"]
@@ -306,7 +321,7 @@ def evaluate_trade(
     target_price = levels["target_price"]
     protection_price = levels["protection_price"]
 
-    last_index = min(len(bars) - 1, entry_index + max_hold_bars)
+    last_index = min(len(bars) - 1, entry_index + max_hold_bars - (not legacy_holding_limit))
     exit_index = last_index
     exit_bar = bars[last_index]
     exit_price = exit_bar["close"]
@@ -317,6 +332,9 @@ def evaluate_trade(
     lowest_price = entry_price
     protection_activated = False
     protected_stop_price = 0.0
+    remaining_fraction = 1.0
+    partial_taken = False
+    exit_legs: list[dict[str, Any]] = []
 
     for index in range(entry_index, last_index + 1):
         bar = bars[index]
@@ -339,7 +357,17 @@ def evaluate_trade(
             stop_mode=stop_mode,
             fee_rate=fee_rate,
             atr_value=bar.get("atr"),
+            return_model=return_model,
+            remaining_fraction=remaining_fraction,
+            partial_taken=partial_taken,
         )
+        exited_fraction = 0.0
+        for partial in lifecycle.partial_exits:
+            exit_legs.append({"fraction": partial.fraction, "exit_price": partial.exit_price,
+                              "exit_reason": partial.reason, "exit_time": bar["time"]})
+            exited_fraction += partial.fraction
+        remaining_fraction -= exited_fraction
+        partial_taken = lifecycle.partial_taken
         active_stop = lifecycle.active_stop
         highest_price = lifecycle.highest_price
         lowest_price = lifecycle.lowest_price
@@ -350,14 +378,22 @@ def evaluate_trade(
             exit_bar = bar
             exit_price = lifecycle.decision.exit_price
             exit_reason = lifecycle.decision.reason
+            exit_legs.append({"fraction": remaining_fraction, "exit_price": exit_price,
+                              "exit_reason": exit_reason, "exit_time": bar["time"]})
+            remaining_fraction = 0.0
             if stop_mode == ATR_TRAILING_AFTER_1R_STOP_MODE and exit_reason == "protected_stop":
                 exit_reason = "trailing_stop"
             break
 
-    net_return = calculate_return_pct(direction, entry_price, exit_price, fee_rate)
+    if remaining_fraction > 0:
+        exit_legs.append({"fraction": remaining_fraction, "exit_price": exit_price,
+                          "exit_reason": exit_reason, "exit_time": exit_bar["time"]})
+    net_return = sum(leg["fraction"] * calculate_return_pct(
+        direction, entry_price, leg["exit_price"], fee_rate, return_model=return_model,
+    ) for leg in exit_legs)
     if abs(net_return) < 1e-12:
         net_return = 0.0
-    outcome = "win" if net_return > 0 else "loss"
+    outcome = "win" if net_return > 0 else "breakeven" if net_return == 0 and return_model != LEGACY_RATIO_V1 else "loss"
     path = trade_path_diagnostics(
         direction,
         bars,
@@ -402,8 +438,10 @@ def evaluate_trade(
         protected_stop_price=protected_stop_price,
         horizon_close_price=horizon_close_price,
         horizon_close_return_pct=calculate_return_pct(
-            direction, entry_price, horizon_close_price, fee_rate
+            direction, entry_price, horizon_close_price, fee_rate, return_model=return_model,
         ),
+        return_model=return_model,
+        exit_legs=exit_legs,
         **path,
     )
 
@@ -459,6 +497,8 @@ def run_backtest(
     structure_text_exact: str | None = None,
     structure_text_contains: str | None = None,
     entry_filter: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], bool] | None = None,
+    return_model: str = LEGACY_RATIO_V1,
+    legacy_holding_limit: bool = True,
 ) -> tuple[list[SignalTrade], pd.Series]:
     """逐根 K 线滚动生成信号并验证结果，同时生成累计收益曲线。"""
     engine = ProjectSignalEngine(strategy_config or DEFAULT_CONFIG)
@@ -514,7 +554,8 @@ def run_backtest(
         if entry_filter is not None and not entry_filter(signal, bars[index], bars[next_index]):
             continue
 
-        trade = evaluate_trade(signal, bars, index + 1, reward_risk, max_hold_bars, fee_rate, stop_mode)
+        trade = evaluate_trade(signal, bars, index + 1, reward_risk, max_hold_bars, fee_rate, stop_mode,
+                               return_model=return_model, legacy_holding_limit=legacy_holding_limit)
         if trade is None:
             continue
         trades.append(trade)
@@ -730,6 +771,24 @@ def print_report(symbol: str, interval: str, trades: list[SignalTrade], metrics:
             print(weak.to_string(index=False, formatters={"win_rate": "{:.2%}".format, "avg_return": "{:.2%}".format, "avg_score": "{:.1f}".format, "avg_structure": "{:.1f}".format, "avg_confirm_bars": "{:.1f}".format}))
 
 
+def execution_metadata(return_model: str, max_hold_bars: int, legacy_holding_limit: bool) -> dict[str, Any]:
+    """Disclose the single-symbol diagnostic's accounting and time boundaries."""
+    if (return_model not in RETURN_MODEL_CHOICES or not isinstance(legacy_holding_limit, bool)
+            or not isinstance(max_hold_bars, int) or isinstance(max_hold_bars, bool)
+            or max_hold_bars < (0 if legacy_holding_limit else 1)):
+        raise ValueError("invalid accounting model or holding-limit convention")
+    return {
+        "return_model": return_model,
+        "holding_limit_convention": "legacy_inclusive_end" if legacy_holding_limit else "entry_bar_is_first",
+        "max_observed_bars": max_hold_bars + int(legacy_holding_limit),
+        "timestamp_boundary": "bar_open_label_not_execution_time",
+        "equity_boundary": "exit_label_compounding_without_open_position_mtm",
+        "funding_included": False,
+        "independent_slippage_included": False,
+        "execution_scope": "single_symbol_signal_diagnostic",
+    }
+
+
 def build_stop_mode_result(
     bars: list[dict[str, Any]],
     reward_risk: float,
@@ -745,8 +804,11 @@ def build_stop_mode_result(
     signal_direction: str = "all",
     structure_text_exact: str | None = None,
     structure_text_contains: str | None = None,
+    return_model: str = LEGACY_RATIO_V1,
+    legacy_holding_limit: bool = True,
 ) -> dict[str, Any]:
     """运行单个止损模式并返回报告构建所需数据。"""
+    metadata = execution_metadata(return_model, max_hold_bars, legacy_holding_limit)
     trades, equity_curve = run_backtest(
         bars,
         reward_risk,
@@ -761,6 +823,8 @@ def build_stop_mode_result(
         signal_direction=signal_direction,
         structure_text_exact=structure_text_exact,
         structure_text_contains=structure_text_contains,
+        return_model=return_model,
+        legacy_holding_limit=legacy_holding_limit,
     )
     metrics = calculate_metrics(trades, equity_curve)
     group_stats = build_group_stats(trades, min_group_trades)
@@ -772,6 +836,7 @@ def build_stop_mode_result(
         "metrics": metrics,
         "group_stats": group_stats,
         "full_group_stats": full_group_stats,
+        "execution_metadata": metadata,
     }
 
 
@@ -842,7 +907,9 @@ def main() -> None:
         filter_label_parts.append(f"structure_exact={args.structure_text_exact}")
     if args.structure_text_contains:
         filter_label_parts.append(f"structure_contains={args.structure_text_contains}")
-    filter_label = f"; {', '.join(filter_label_parts)}" if filter_label_parts else ""
+    filter_label_parts.extend([f"return_model={args.return_model}",
+                              f"holding_limit={args.holding_limit_convention}"])
+    filter_label = f"; {', '.join(filter_label_parts)}"
     results = [
         build_stop_mode_result(
             bars,
@@ -858,6 +925,8 @@ def main() -> None:
             signal_direction=args.signal_direction,
             structure_text_exact=args.structure_text_exact,
             structure_text_contains=args.structure_text_contains,
+            return_model=args.return_model,
+            legacy_holding_limit=args.holding_limit_convention == "legacy_inclusive_end",
         )
         for stop_mode in stop_modes
     ]
@@ -876,6 +945,22 @@ def main() -> None:
     )
     primary["group_stats"].to_csv(output_path.with_name(f"{output_path.stem}_groups.csv"), index=False)
     primary["full_group_stats"].to_csv(output_path.with_name(f"{output_path.stem}_groups_full_8d.csv"), index=False)
+    manifest = {
+        "status": "RESEARCH_ONLY",
+        "symbol": report_symbol,
+        "interval": args.interval,
+        "exchange": args.exchange,
+        "parameters": vars(args),
+        "bars": len(bars),
+        "started_at": pd.Timestamp(bars[0]["time"]).isoformat() if bars else None,
+        "ended_at": pd.Timestamp(bars[-1]["time"]).isoformat() if bars else None,
+        "execution_metadata": primary["execution_metadata"],
+        "stop_mode_results": [{"stop_mode": result["stop_mode"],
+                               "execution_metadata": result["execution_metadata"]} for result in results],
+    }
+    output_path.with_name(f"{output_path.stem}_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8",
+    )
     print_report(
         report_symbol,
         args.interval,

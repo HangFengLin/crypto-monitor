@@ -63,7 +63,17 @@ class Outbox:
             }
         )
 
-    def observe(self, trades, reports, fault):
+    def observe(self, trades, reports, fault, alerts=None):
+        if alerts is not None:
+            # Upgrade existing queues by baselining retained history once.
+            seen = self.data.get("alerts")
+            if seen is None:
+                self.data["alerts"] = {alert["key"]: True for alert in alerts}
+            else:
+                for alert in alerts:
+                    if alert["key"] not in seen:
+                        self.enqueue(f"alert:{alert['key']}", "signal", alert["title"], alert["body"])
+                        seen[alert["key"]] = True
         current = {str(t["id"]): t.get("status") for t in trades if t.get("id")}
         report_versions = {r["path"]: r.get("updated_at") for r in reports}
         if not self.data["initialized"]:
@@ -80,15 +90,21 @@ class Outbox:
                     info = f"Binance 官方合约模拟盘 · 策略版本：{trade.get('strategy_version')}\n{trade.get('symbol')} · {trade.get('direction')}\n信号参考价：{trade.get('reference_price')}\n模拟成交均价：{trade.get('entry_price')}\n成交数量：{trade.get('executed_qty')}\n初始止损：{trade.get('initial_stop_loss')}"
                 if old is None:
                     self.enqueue(
-                        f"{key}:open", "signal", "Binance 模拟盘开仓成交" if demo else "新开仓信号（模拟）", info
+                        f"{key}:open", "signal", "💵 Binance 模拟盘开仓成交" if demo else "💵 新开仓信号（模拟）", info
                     )
                 if old != "closed" and trade.get("status") == "closed":
                     result = trade.get("return_pct")
                     gain = f"{result * 100:.2f}%" if isinstance(result, (int, float)) else "未知"
+                    reason = trade.get("exit_reason")
+                    prefix = ""
+                    if reason in ("stop_loss", "protected_stop", "trailing_stop"):
+                        prefix = "❌ "
+                    elif reason in ("take_profit", "protection_reached"):
+                        prefix = "✅ "
                     self.enqueue(
                         f"{key}:closed",
                         "signal",
-                        "Binance 模拟盘平仓" if demo else "模拟退出",
+                        prefix + ("Binance 模拟盘平仓" if demo else "模拟退出"),
                         f"{info}\n退出价：{trade.get('exit_price')}\n退出原因：{trade.get('exit_reason')}\n模拟收益：{gain}",
                     )
             for report in reports:

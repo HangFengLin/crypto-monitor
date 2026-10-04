@@ -84,8 +84,10 @@ class RuntimeSettingsTest(unittest.TestCase):
         self.assertEqual((before["target_price"], after["target_price"]), (110, 115))
         self.app.close_strategy_trade(before, 110, "target", "win")
         self.app.close_strategy_trade(after, 110, "target", "win")
-        self.assertAlmostEqual(before["return_pct"], 0.098)
-        self.assertAlmostEqual(after["return_pct"], 0.096)
+        # New records book entry notional 100 and exit notional 110 fees.
+        self.assertEqual(before["return_model"], "linear_usdm_v1")
+        self.assertAlmostEqual(before["return_pct"], 0.0979)
+        self.assertAlmostEqual(after["return_pct"], 0.0958)
         self.assertNotEqual(before["config_revision"], after["config_revision"])
 
     def test_pause_prevents_new_record_but_existing_trade_can_exit(self):

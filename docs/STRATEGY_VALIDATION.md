@@ -3,6 +3,12 @@
 `strategy_validation.py` 是独立研究入口。它复用生产 `ProjectSignalEngine` 与
 `position_manager.py`，但不会修改 `config.yaml`、启动机器人、提交订单或部署 VPS。
 
+新验证默认采用 `linear_usdm_v1`，手续费按入场和退出的实际名义本金计算，入场 K 线
+计为观察的第一根。执行版本与观察边界写入 manifest；旧报告缺少版本字段时，断点恢复
+仍沿用 `legacy_ratio_v1` 与原期限语义，不能混入新版对照。显式复现旧实验可传入
+`--return-model legacy_ratio_v1 --holding-limit-convention legacy_inclusive_end`。
+正式验证固定全额 `structure_atr` 退出；成本压力不接受分仓退出记录。
+
 安装研究和静态图表依赖：
 
 ```bash

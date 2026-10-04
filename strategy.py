@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,6 +67,9 @@ class StrategyConfig:
     max_extreme_lag_bars: int = MAX_EXTREME_LAG_BARS
     require_higher_trend_alignment: bool = REQUIRE_HIGHER_TREND_ALIGNMENT
     volume_confirmation_enabled: bool = VOLUME_CONFIRMATION_ENABLED
+    volume_sequence_enabled: bool = False
+    strict_candidate_lifecycle: bool = False
+    chan_structure_snapshot: bool = False
     volume_contraction_ratio: float = VOLUME_CONTRACTION_RATIO
     volume_breakout_ratio: float = VOLUME_BREAKOUT_RATIO
     obv_confirmation_enabled: bool = OBV_CONFIRMATION_ENABLED
@@ -337,6 +341,79 @@ def build_chan_structure_context(
         "zone": zone,
         "stop_anchor": stop_anchor,
     }
+
+
+def build_chan_structure_snapshot(
+    direction: str,
+    ready_bars: list[dict[str, Any]],
+    divergence_time: int,
+    first_ready_time: int,
+    duration: int,
+    divergence_info: dict[str, Any],
+    config: StrategyConfig = DEFAULT_CONFIG,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Freeze the existing close-fractal approximation at original readiness.
+
+    Confirmation still observes the complete right side at first_ready_time.
+    Later price endpoints cannot change the reference strokes, zone or anchor.
+    This does not reproduce CZSC inclusion removal or its finished-BI analyzer.
+    """
+    ready_index = next((index for index in range(len(ready_bars) - 1, -1, -1)
+                        if ready_bars[index].get("close_time") == first_ready_time), None)
+    if ready_index is None or ready_index < 199 or duration <= 0:
+        return None
+    reference = ready_bars[ready_index - 199:ready_index + 1]
+    start_time = first_ready_time - 199 * duration
+    for index, bar in enumerate(reference):
+        close_time, open_time = bar.get("close_time"), bar.get("open_time")
+        values = [_finite_float(bar.get(key)) for key in ("open", "high", "low", "close", "macd")]
+        if (not isinstance(close_time, int) or isinstance(close_time, bool)
+                or not isinstance(open_time, int) or isinstance(open_time, bool)
+                or close_time != start_time + index * duration
+                or open_time != close_time - duration + 1
+                or bar.get("confirmed", True) is not True or bar.get("is_closed", True) is not True
+                or any(value is None for value in values) or any(value <= 0 for value in values[:4])):
+            return None
+        opening, high, low, close, _macd = values
+        if not low <= min(opening, close) <= max(opening, close) <= high:
+            return None
+    pivot_index = next((index for index, bar in enumerate(reference)
+                        if bar["close_time"] == divergence_time), None)
+    if pivot_index is None:
+        return None
+    closes = [float(bar["close"]) for bar in reference]
+    macd_values = [float(bar["macd"]) for bar in reference]
+    peaks, troughs = find_local_extremes(closes, config.extreme_window)
+    # Crop only after confirming endpoints on the complete ready-time window;
+    # filtering the raw window at the pivot would remove its right-side proof.
+    peaks = [point for point in peaks if point[0] <= pivot_index]
+    troughs = [point for point in troughs if point[0] <= pivot_index]
+    matching = troughs if direction == "long" else peaks
+    price_key = "price_low" if direction == "long" else "price_high"
+    if not any(index == pivot_index and price == divergence_info[price_key] for index, price in matching):
+        return None
+    info = {**divergence_info, "index": pivot_index}
+    structure = build_chan_structure_context(direction, reference, peaks, troughs, macd_values, info)
+    strokes = _latest_strokes(peaks, troughs)
+    metadata = {
+        "version": "chan_structure_snapshot_v1",
+        "reference_close_time": first_ready_time,
+        "window_start_close_time": reference[0]["close_time"],
+        "window_end_close_time": reference[-1]["close_time"],
+        "divergence_close_time": divergence_time,
+        "source_bar_count": len(reference),
+        "source_strokes": [
+            {"start_close_time": reference[stroke["start"]["index"]]["close_time"],
+             "end_close_time": reference[stroke["end"]["index"]]["close_time"],
+             "direction": stroke["direction"], "start_price": stroke["start"]["price"],
+             "end_price": stroke["end"]["price"]} for stroke in strokes
+        ],
+        "zone": deepcopy(structure["zone"]),
+        "stop_anchor": structure["stop_anchor"],
+        "score": structure["score"],
+        "factors": list(structure["factors"]),
+    }
+    return structure, metadata
 
 
 def detect_bullish_divergence(
@@ -617,11 +694,83 @@ def check_microstructure_confirmation(direction: str, bar: dict[str, Any], confi
     return (not config.require_microstructure), "微观结构未触发"
 
 
-def check_entry_context(direction: str, bar: dict[str, Any], config: StrategyConfig = DEFAULT_CONFIG) -> tuple[bool, str]:
+def strict_rvol20(bars: list[dict[str, Any]], index: int) -> float | None:
+    """Current volume divided by the preceding twenty completed bar volumes."""
+    if index < 20 or index >= len(bars):
+        return None
+    window = bars[index - 20 : index + 1]
+    if any(bar.get("confirmed") is False for bar in window):
+        return None
+    volumes = [_finite_float(bar.get("volume")) for bar in window]
+    if any(value is None or value <= 0 for value in volumes):
+        return None
+    try:
+        if any(int(current["open_time"]) != int(previous["close_time"]) + 1
+               for previous, current in zip(window, window[1:])):
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return volumes[-1] / (sum(volumes[:-1]) / 20)
+
+
+def check_volume_sequence(
+    direction: str,
+    bars: list[dict[str, Any]],
+    created_close_time: Any,
+    config: StrategyConfig = DEFAULT_CONFIG,
+    *,
+    stop_anchor: float | None = None,
+) -> tuple[bool, str, bool]:
+    """Replay frozen A/B conditions causally; return passed, reason, cancelled.
+
+    The first post-candidate A locks the three-bar window. Earlier A/B events
+    cannot be reused at a later decision. No input bar is changed.
+    """
+    try:
+        created = int(created_close_time)
+        created_index = next(index for index, bar in enumerate(bars)
+                             if int(bar.get("close_time", -1)) == created)
+    except (StopIteration, TypeError, ValueError):
+        return False, "量价顺序候选时点缺失", True
+    stage_a: int | None = None
+    for index in range(created_index + 1, len(bars)):
+        bar, previous = bars[index], bars[index - 1]
+        values = {key: _finite_float(bar.get(key)) for key in ("open", "high", "low", "close")}
+        rvol = strict_rvol20(bars, index)
+        if any(value is None for value in values.values()) or rvol is None or bar.get("confirmed") is False:
+            return False, "量价顺序必需数据缺失或K线缺口", True
+        previous_close = _finite_float(previous.get("close"))
+        previous_extreme = _finite_float(previous.get("high" if direction == "long" else "low"))
+        if previous_close is None or previous_extreme is None:
+            return False, "量价顺序前一根数据缺失", True
+        if stop_anchor is not None and ((direction == "long" and values["low"] < stop_anchor)
+                                        or (direction == "short" and values["high"] > stop_anchor)):
+            return False, "量价顺序原结构失效", True
+        if stage_a is None:
+            pullback = values["close"] <= previous_close if direction == "long" else values["close"] >= previous_close
+            if rvol <= config.volume_contraction_ratio and pullback:
+                stage_a = index
+            continue
+        elapsed = index - stage_a
+        if elapsed > 3:
+            return False, "量价顺序A后三根未确认", True
+        directional_body = values["close"] > values["open"] if direction == "long" else values["close"] < values["open"]
+        breakout = values["close"] > previous_extreme if direction == "long" else values["close"] < previous_extreme
+        if rvol >= config.volume_breakout_ratio and directional_body and breakout:
+            if index != len(bars) - 1:
+                return False, "量价顺序B已过期", True
+            return True, f"✓ 有序量价A→B({elapsed}根), RVOL20={rvol:.2f}", False
+        if elapsed == 3:
+            return False, "量价顺序A后三根未确认", True
+    return False, "等待量价顺序A→B", False
+
+
+def check_entry_context(direction: str, bar: dict[str, Any], config: StrategyConfig = DEFAULT_CONFIG,
+                        *, volume_confirmation_result: tuple[bool, str] | None = None) -> tuple[bool, str]:
     checks = [
         check_regime_filter(bar, config),
         check_higher_timeframe_alignment(direction, bar, config),
-        check_volume_confirmation(direction, bar, config),
+        volume_confirmation_result if volume_confirmation_result is not None else check_volume_confirmation(direction, bar, config),
         check_microstructure_confirmation(direction, bar, config),
     ]
     blocked = [text for passed, text in checks if not passed]
@@ -763,9 +912,200 @@ def grade_signal(
 
 class ProjectSignalEngine:
     def __init__(self, config: StrategyConfig = DEFAULT_CONFIG) -> None:
+        if config.chan_structure_snapshot and not config.strict_candidate_lifecycle:
+            raise ValueError("chan_structure_snapshot requires strict_candidate_lifecycle=True")
         self.config = config
         self.pending_buy: dict[str, Any] | None = None
         self.pending_sell: dict[str, Any] | None = None
+        self.used_volume_sequence_candidates: set[tuple[str, Any]] = set()
+        self.used_strict_candidates: set[tuple[str, int]] = set()
+        self.strict_candidate_ready_times: dict[tuple[str, int], int] = {}
+
+    def build_strict_candidate(self, direction: str, window: list[dict[str, Any]],
+                               price_peaks: list[tuple[int, float]], price_troughs: list[tuple[int, float]],
+                               macd_values: list[float | None], info: dict[str, Any], strength: float,
+                               ready_bars: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+        divergence_index = int(info["index"])
+        ready_index = int(info.get("confirm_index", divergence_index + self.config.extreme_window))
+        if not 0 <= divergence_index <= ready_index < len(window):
+            return None
+        divergence_bar, ready_bar = window[divergence_index], window[ready_index]
+        try:
+            divergence_time = int(divergence_bar["close_time"])
+            ready_time = int(ready_bar["close_time"])
+            duration = divergence_time - int(divergence_bar["open_time"]) + 1
+        except (KeyError, TypeError, ValueError):
+            return None
+        identity = (direction, divergence_time)
+        if identity in self.used_strict_candidates:
+            return None
+        anchor = _finite_float(divergence_bar.get("low" if direction == "long" else "high"))
+        if (duration <= 0 or anchor is None or anchor <= 0
+                or divergence_bar.get("confirmed", True) is not True
+                or divergence_bar.get("is_closed", True) is not True):
+            self.used_strict_candidates.add(identity)
+            return None
+        first_ready = self.strict_candidate_ready_times.setdefault(identity, ready_time)
+        candidate = {
+            "strength": strength,
+            "price_low" if direction == "long" else "price_high": info["price_low" if direction == "long" else "price_high"],
+            "divergence_time": divergence_time,
+            "signal_ready_time": first_ready,
+            "divergence_type": info.get("type", "macd"),
+            "created_close_time": first_ready,
+            "lifecycle_anchor": anchor,
+            "lifecycle_bar_ms": duration,
+        }
+        if self.config.chan_structure_snapshot:
+            existing = self.pending_buy if direction == "long" else self.pending_sell
+            if existing and existing["divergence_time"] == divergence_time and "structure_snapshot" in existing:
+                candidate["structure"] = existing["structure"]
+                candidate["structure_snapshot"] = existing["structure_snapshot"]
+            else:
+                snapshot = build_chan_structure_snapshot(direction, ready_bars or [], divergence_time,
+                                                         first_ready, duration, info, self.config)
+                if snapshot is None:
+                    self.used_strict_candidates.add(identity)
+                    return None
+                candidate["structure"], candidate["structure_snapshot"] = snapshot
+        else:
+            candidate["structure"] = build_chan_structure_context(direction, window, price_peaks, price_troughs, macd_values, info)
+        return candidate
+
+    def strict_candidate_status(self, direction: str, ready_bars: list[dict[str, Any]],
+                                candidate: dict[str, Any]) -> tuple[bool, int, str]:
+        """Check (divergence close, decision close], including right-side confirmation bars."""
+        try:
+            current_time = int(ready_bars[-1]["close_time"])
+            elapsed = current_time - candidate["signal_ready_time"]
+            duration = candidate["lifecycle_bar_ms"]
+            if elapsed < 0 or elapsed % duration:
+                return False, 0, "候选时间边界无效"
+            age = elapsed // duration
+            if age > self.config.confirm_max_bars:
+                return False, age, f"超过 {self.config.confirm_max_bars} 根K线未确认"
+            divergence_time = candidate["divergence_time"]
+            span = [bar for bar in ready_bars if divergence_time < int(bar["close_time"]) <= current_time]
+            if len(span) * duration != current_time - divergence_time:
+                return False, age, "候选检查区间缺失K线"
+            for offset, bar in enumerate(span, 1):
+                close_time = int(bar["close_time"])
+                value = _finite_float(bar.get("low" if direction == "long" else "high"))
+                if (close_time != divergence_time + offset * duration
+                        or close_time - int(bar["open_time"]) + 1 != duration
+                        or bar.get("confirmed", True) is not True or bar.get("is_closed", True) is not True
+                        or value is None or value <= 0):
+                    return False, age, "候选检查区间数据无效"
+                anchor = candidate["lifecycle_anchor"]
+                if (direction == "long" and value < anchor) or (direction == "short" and value > anchor):
+                    return False, age, "背驰原始极值结构已破坏"
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            return False, 0, "候选检查区间数据缺失"
+        return True, age, "候选生命周期有效"
+
+    def detect_strict_candidates(self, ready_bars: list[dict[str, Any]], window: list[dict[str, Any]],
+                                 price_peaks: list[tuple[int, float]], price_troughs: list[tuple[int, float]],
+                                 macd_values: list[float | None], divergences: dict[str, tuple[bool, float, dict[str, Any] | None]],
+                                 ma_direction: str, macd_direction: str) -> dict[str, Any]:
+        responses = []
+        for direction, attribute, filtered, label in (("long", "pending_buy", "filtered_buy", "底背驰"),
+                                                      ("short", "pending_sell", "filtered_sell", "顶背驰")):
+            candidate = getattr(self, attribute)
+            detected, strength, info = divergences[direction]
+            if detected and strength >= self.config.min_divergence_strength and info:
+                incoming = self.build_strict_candidate(direction, window, price_peaks, price_troughs,
+                                                       macd_values, info, strength, ready_bars=ready_bars)
+                if incoming:
+                    if candidate is None or incoming["divergence_time"] > candidate["divergence_time"]:
+                        if candidate:
+                            self.used_strict_candidates.add((direction, candidate["divergence_time"]))
+                        candidate = incoming
+                        setattr(self, attribute, candidate)
+                    elif incoming["divergence_time"] < candidate["divergence_time"]:
+                        self.used_strict_candidates.add((direction, incoming["divergence_time"]))
+            if candidate is None:
+                continue
+            builder = self.build_buy_response if direction == "long" else self.build_sell_response
+            valid, age, reason = self.strict_candidate_status(direction, ready_bars, candidate)
+            identity = (direction, candidate["divergence_time"])
+            if not valid:
+                setattr(self, attribute, None)
+                self.used_strict_candidates.add(identity)
+                response = builder(candidate, filtered, f"{label}生命周期取消", reason, ready_bars[-1], age)
+            elif self.config.volume_sequence_enabled:
+                response = self.evaluate_volume_sequence_pending(direction, ready_bars, candidate, ma_direction, macd_direction)
+                if getattr(self, attribute) is None:
+                    self.used_strict_candidates.add(identity)
+            else:
+                confirmed, _flags = confirmation_passed(direction, ma_direction, macd_direction, self.config.confirmation_mode)
+                if confirmed:
+                    # The first crossing is the single decision, even when the
+                    # original current-bar entry filters reject that decision.
+                    setattr(self, attribute, None)
+                    self.used_strict_candidates.add(identity)
+                    context_passed, context_text = check_entry_context(direction, ready_bars[-1], self.config)
+                    filter_passed, filter_text = (check_buy_filter if direction == "long" else check_sell_filter)(ready_bars, self.config)
+                    accepted = context_passed and filter_passed
+                    response = builder(candidate, direction if accepted else filtered,
+                                       f"{label}严格生命周期确认" if accepted else f"{label}首次确认被过滤",
+                                       f"{context_text}；{filter_text}", ready_bars[-1], age)
+                else:
+                    response = builder(candidate, filtered, f"{label}等待确认",
+                                       confirmation_wait_text(direction, self.config), ready_bars[-1], age)
+            checked_time = _finite_float(ready_bars[-1].get("close_time"))
+            response["candidate_lifecycle"] = {
+                "version": "strict_candidate_v1", "anchor": candidate["lifecycle_anchor"],
+                "anchor_close_time": candidate["divergence_time"], "first_ready_time": candidate["signal_ready_time"],
+                "checked_through_close_time": int(checked_time) if checked_time is not None else None,
+            }
+            if "structure_snapshot" in candidate:
+                response["structure_snapshot"] = deepcopy(candidate["structure_snapshot"])
+            responses.append(response)
+        if responses:
+            # Evaluate both directions before choosing a response, so an old
+            # waiting candidate cannot hide a newer independently valid one.
+            return max(responses, key=lambda item: (item["signal"] in {"long", "short"},
+                                                    item["signal_ready_time"], item["divergence_time"]))
+        return {"signal": "wait", "signal_name": "等待新MACD背驰", "strength": max(item[1] for item in divergences.values())}
+
+    def evaluate_volume_sequence_pending(self, direction: str, ready_bars: list[dict[str, Any]],
+                                         candidate: dict[str, Any], ma_direction: str, macd_direction: str) -> dict[str, Any]:
+        current_bar = {**ready_bars[-1], "rvol20_strict": strict_rvol20(ready_bars, len(ready_bars) - 1)}
+        bars_waited = self.bars_waited_since(ready_bars, candidate.get("created_close_time"))
+        response_builder = self.build_buy_response if direction == "long" else self.build_sell_response
+        filtered = "filtered_buy" if direction == "long" else "filtered_sell"
+        label = "底背驰" if direction == "long" else "顶背驰"
+        pending_attribute = "pending_buy" if direction == "long" else "pending_sell"
+        structure = candidate.get("structure")
+        anchor = (candidate.get("lifecycle_anchor") if self.config.strict_candidate_lifecycle
+                  else structure.get("stop_anchor") if structure else None)
+        if anchor is None:
+            anchor = candidate["price_low" if direction == "long" else "price_high"]
+        passed, reason, cancelled = check_volume_sequence(direction, ready_bars, candidate.get("created_close_time"),
+                                                          self.config, stop_anchor=float(anchor))
+        if bars_waited > self.config.confirm_max_bars:
+            cancelled, reason = True, f"超过 {self.config.confirm_max_bars} 根K线未确认"
+        if cancelled:
+            setattr(self, pending_attribute, None)
+            self.used_volume_sequence_candidates.add((direction, candidate["divergence_time"]))
+            return response_builder(candidate, filtered, f"{label}量价顺序取消", reason, current_bar, bars_waited)
+        if not passed:
+            return response_builder(candidate, filtered, f"{label}等待量价顺序", reason, current_bar, bars_waited)
+        # B is the single decision event. Failed original confirmation/context
+        # cancels it; a later crossing cannot reopen the same divergence.
+        setattr(self, pending_attribute, None)
+        self.used_volume_sequence_candidates.add((direction, candidate["divergence_time"]))
+        confirmed, _flags = confirmation_passed(direction, ma_direction, macd_direction, self.config.confirmation_mode)
+        context_passed, context_text = check_entry_context(direction, current_bar, self.config,
+                                                          volume_confirmation_result=(True, reason))
+        filter_passed, filter_text = (check_buy_filter if direction == "long" else check_sell_filter)(ready_bars, self.config)
+        accepted = confirmed and context_passed and filter_passed
+        result = response_builder(candidate, direction if accepted else filtered,
+                                  f"{label}有序量价确认" if accepted else f"{label}量价B未通过原过滤",
+                                  f"{context_text}；{filter_text}；" + ("交叉确认通过" if confirmed else confirmation_wait_text(direction, self.config)),
+                                  current_bar, bars_waited)
+        result["rvol20_strict"] = current_bar["rvol20_strict"]
+        return result
 
     @staticmethod
     def bars_waited_since(ready_bars: list[dict[str, Any]], close_time: Any, fallback: int = 0) -> int:
@@ -807,7 +1147,15 @@ class ProjectSignalEngine:
         ma_direction = latest_ma_direction(ready_bars, self.config)
         macd_direction = latest_macd_direction(ready_bars)
 
+        if self.config.strict_candidate_lifecycle:
+            return self.detect_strict_candidates(ready_bars, window, price_peaks, price_troughs, macd_values,
+                                                 {"long": (bullish_div, bullish_strength, bullish_info),
+                                                  "short": (bearish_div, bearish_strength, bearish_info)},
+                                                 ma_direction, macd_direction)
+
         if self.pending_buy:
+            if self.config.volume_sequence_enabled:
+                return self.evaluate_volume_sequence_pending("long", ready_bars, self.pending_buy, ma_direction, macd_direction)
             fallback_waited = len(ready_bars) - int(self.pending_buy.get("ready_index", len(ready_bars)) or len(ready_bars))
             bars_waited = self.bars_waited_since(ready_bars, self.pending_buy.get("created_close_time"), fallback_waited)
             if bars_waited > self.config.confirm_max_bars:
@@ -826,7 +1174,8 @@ class ProjectSignalEngine:
                 return self.build_buy_response(candidate, "long" if filter_passed else "filtered_buy", "MACD底背驰确认开多" if filter_passed else "底背驰被买入过滤", combined_text, current_bar, bars_waited)
             return self.build_buy_response(self.pending_buy, "filtered_buy", "底背驰等待确认", confirmation_wait_text("long", self.config), current_bar, bars_waited)
 
-        if bullish_div and bullish_strength >= self.config.min_divergence_strength and bullish_info:
+        if (bullish_div and bullish_strength >= self.config.min_divergence_strength and bullish_info
+                and (not self.config.volume_sequence_enabled or ("long", window[bullish_info["index"]].get("close_time", window[bullish_info["index"]].get("open_time"))) not in self.used_volume_sequence_candidates)):
             divergence_bar = window[bullish_info["index"]]
             ready_index = min(int(bullish_info.get("confirm_index", bullish_info["index"]) or bullish_info["index"]), len(window) - 1)
             ready_bar = window[ready_index]
@@ -840,6 +1189,9 @@ class ProjectSignalEngine:
                 "created_close_time": current_bar.get("close_time", current_bar.get("open_time")),
             }
             candidate["structure"] = build_chan_structure_context("long", window, price_peaks, price_troughs, macd_values, bullish_info)
+            if self.config.volume_sequence_enabled:
+                self.pending_buy = candidate
+                return self.evaluate_volume_sequence_pending("long", ready_bars, candidate, ma_direction, macd_direction)
             confirmed, _confirmation_flags = confirmation_passed("long", ma_direction, macd_direction, self.config.confirmation_mode)
             if not confirmed:
                 self.pending_buy = candidate
@@ -851,32 +1203,17 @@ class ProjectSignalEngine:
             combined_text = f"{context_text}；{filter_text}"
             return self.build_buy_response(candidate, "long" if filter_passed else "filtered_buy", "MACD底背驰确认开多" if filter_passed else "底背驰被买入过滤", combined_text, current_bar, 0)
 
-        if bearish_div and bearish_strength >= self.config.min_divergence_strength and bearish_info:
-            divergence_bar = window[bearish_info["index"]]
-            ready_index = min(int(bearish_info.get("confirm_index", bearish_info["index"]) or bearish_info["index"]), len(window) - 1)
-            ready_bar = window[ready_index]
-            candidate = {
-                "strength": bearish_strength,
-                "price_high": bearish_info["price_high"],
-                "divergence_time": divergence_bar.get("close_time", divergence_bar.get("open_time")),
-                "signal_ready_time": ready_bar.get("close_time", ready_bar.get("open_time")),
-                "divergence_type": bearish_info.get("type", "macd"),
-                "ready_index": len(ready_bars),
-                "created_close_time": current_bar.get("close_time", current_bar.get("open_time")),
-            }
-            candidate["structure"] = build_chan_structure_context("short", window, price_peaks, price_troughs, macd_values, bearish_info)
-            confirmed, _confirmation_flags = confirmation_passed("short", ma_direction, macd_direction, self.config.confirmation_mode)
-            if not confirmed:
-                self.pending_sell = candidate
-                return self.build_sell_response(candidate, "filtered_sell", "顶背驰等待确认", confirmation_wait_text("short", self.config), current_bar, 0)
-            context_passed, context_text = check_entry_context("short", current_bar, self.config)
-            if not context_passed:
-                return self.build_sell_response(candidate, "filtered_sell", "顶背驰被共振/量价/震荡过滤", context_text, current_bar, 0)
-            filter_passed, filter_text = check_sell_filter(ready_bars, self.config)
-            combined_text = f"{context_text}；{filter_text}"
-            return self.build_sell_response(candidate, "short" if filter_passed else "filtered_sell", "MACD顶背驰开空观察" if filter_passed else "顶背驰被卖出过滤", combined_text, current_bar, 0)
+        bearish_allowed = bool(bearish_div and bearish_strength >= self.config.min_divergence_strength and bearish_info)
+        bearish_time = (window[bearish_info["index"]].get("close_time", window[bearish_info["index"]].get("open_time"))
+                        if bearish_allowed else None)
+        if self.config.volume_sequence_enabled and ("short", bearish_time) in self.used_volume_sequence_candidates:
+            bearish_allowed = False
 
-        if self.pending_sell:
+        # Repeated detection of the same divergence must not reset its clock.
+        # A genuinely new divergence may replace the stale short candidate.
+        if self.pending_sell and (not bearish_allowed or bearish_time == self.pending_sell["divergence_time"]):
+            if self.config.volume_sequence_enabled:
+                return self.evaluate_volume_sequence_pending("short", ready_bars, self.pending_sell, ma_direction, macd_direction)
             fallback_waited = len(ready_bars) - int(self.pending_sell.get("ready_index", len(ready_bars)) or len(ready_bars))
             bars_waited = self.bars_waited_since(ready_bars, self.pending_sell.get("created_close_time"), fallback_waited)
             if bars_waited > self.config.confirm_max_bars:
@@ -894,6 +1231,34 @@ class ProjectSignalEngine:
             filter_passed, filter_text = check_sell_filter(ready_bars, self.config)
             combined_text = f"{context_text}；{filter_text}"
             return self.build_sell_response(candidate, "short" if filter_passed else "filtered_sell", "MACD顶背驰开空观察" if filter_passed else "顶背驰被卖出过滤", combined_text, current_bar, bars_waited)
+
+        if bearish_allowed:
+            divergence_bar = window[bearish_info["index"]]
+            ready_index = min(int(bearish_info.get("confirm_index", bearish_info["index"]) or bearish_info["index"]), len(window) - 1)
+            ready_bar = window[ready_index]
+            candidate = {
+                "strength": bearish_strength,
+                "price_high": bearish_info["price_high"],
+                "divergence_time": divergence_bar.get("close_time", divergence_bar.get("open_time")),
+                "signal_ready_time": ready_bar.get("close_time", ready_bar.get("open_time")),
+                "divergence_type": bearish_info.get("type", "macd"),
+                "ready_index": len(ready_bars),
+                "created_close_time": current_bar.get("close_time", current_bar.get("open_time")),
+            }
+            candidate["structure"] = build_chan_structure_context("short", window, price_peaks, price_troughs, macd_values, bearish_info)
+            if self.config.volume_sequence_enabled:
+                self.pending_sell = candidate
+                return self.evaluate_volume_sequence_pending("short", ready_bars, candidate, ma_direction, macd_direction)
+            confirmed, _confirmation_flags = confirmation_passed("short", ma_direction, macd_direction, self.config.confirmation_mode)
+            if not confirmed:
+                self.pending_sell = candidate
+                return self.build_sell_response(candidate, "filtered_sell", "顶背驰等待确认", confirmation_wait_text("short", self.config), current_bar, 0)
+            context_passed, context_text = check_entry_context("short", current_bar, self.config)
+            if not context_passed:
+                return self.build_sell_response(candidate, "filtered_sell", "顶背驰被共振/量价/震荡过滤", context_text, current_bar, 0)
+            filter_passed, filter_text = check_sell_filter(ready_bars, self.config)
+            combined_text = f"{context_text}；{filter_text}"
+            return self.build_sell_response(candidate, "short" if filter_passed else "filtered_sell", "MACD顶背驰开空观察" if filter_passed else "顶背驰被卖出过滤", combined_text, current_bar, 0)
 
         return {"signal": "wait", "signal_name": "等待MACD背驰", "strength": max(bullish_strength, bearish_strength)}
 

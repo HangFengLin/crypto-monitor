@@ -1,0 +1,93 @@
+{
+  "audited_at_utc": "2026-10-03T11:40:34.436728+00:00",
+  "status": "PASS_SOURCE_STRUCTURE_ONLY",
+  "protocol_sha256": "a79cb6df64e0d3fb15af3d48a6501e15518fbe1a88cc20fd111e6f95a49b770d",
+  "market": "binance_usdm_linear_perpetual",
+  "data_status": "HOLDOUT_EXPOSED_DIAGNOSTIC_ONLY",
+  "performance_status": "NOT_EVALUATED",
+  "inputs": [
+    {
+      "symbol": "BTCUSDT",
+      "prepared": {
+        "path": "runtime/backtest-data/prepared/binance/BTCUSDT/15m/1714521600000_1781913600000_fa0bec8bfe99_oi1_v1.json.gz",
+        "sha256": "68701cb337271e497df8004e2bc159d02ac26934beab3750edc53e4e1bdea56a",
+        "bytes": 19707788,
+        "bars": 74880,
+        "start_inclusive_ms": 1714521600000,
+        "end_exclusive_ms": 1781913600000,
+        "duplicate_times": 0,
+        "gaps": 0,
+        "ohlcv_structure": "PASS",
+        "aggregation": {
+          "4h": {
+            "complete_buckets": 4680,
+            "partial_buckets": 0
+          },
+          "1d": {
+            "complete_buckets": 780,
+            "partial_buckets": 0
+          }
+        }
+      },
+      "funding": {
+        "path": "reports/strategy_optimization_20261003/funding_evidence/BTCUSDT.json",
+        "sha256": "a61d90f95f7a1339bc891ebc3def84c399d31947c3219a76a9594240cb3f7536",
+        "collector_source": "Binance /fapi/v1/fundingRate",
+        "retrieved_at": "2026-10-03T09:39:53.135111+00:00",
+        "start_inclusive_ms": 1718841600000,
+        "end_exclusive_ms": 1781913600000,
+        "collector_complete": true,
+        "collector_gaps": [],
+        "records": 2190,
+        "normalized_records_match_raw": "PASS",
+        "min_settlement_delta_ms": 28799984,
+        "max_settlement_delta_ms": 28800016,
+        "duplicate_times": 0
+      }
+    },
+    {
+      "symbol": "ETHUSDT",
+      "prepared": {
+        "path": "runtime/backtest-data/prepared/binance/ETHUSDT/15m/1714521600000_1781913600000_fa0bec8bfe99_oi1_v1.json.gz",
+        "sha256": "9e18c8d95734de9de957ea566d67cb210072d52b17202564e2026ce31170bab2",
+        "bytes": 19871108,
+        "bars": 74880,
+        "start_inclusive_ms": 1714521600000,
+        "end_exclusive_ms": 1781913600000,
+        "duplicate_times": 0,
+        "gaps": 0,
+        "ohlcv_structure": "PASS",
+        "aggregation": {
+          "4h": {
+            "complete_buckets": 4680,
+            "partial_buckets": 0
+          },
+          "1d": {
+            "complete_buckets": 780,
+            "partial_buckets": 0
+          }
+        }
+      },
+      "funding": {
+        "path": "reports/strategy_optimization_20261003/funding_evidence/ETHUSDT.json",
+        "sha256": "46b0ff1682520619e97d10be1b341da383af4729b19505a194aa73eefc24dba7",
+        "collector_source": "Binance /fapi/v1/fundingRate",
+        "retrieved_at": "2026-10-03T09:39:53.127578+00:00",
+        "start_inclusive_ms": 1718841600000,
+        "end_exclusive_ms": 1781913600000,
+        "collector_complete": true,
+        "collector_gaps": [],
+        "records": 2190,
+        "normalized_records_match_raw": "PASS",
+        "min_settlement_delta_ms": 28799984,
+        "max_settlement_delta_ms": 28800016,
+        "duplicate_times": 0
+      }
+    }
+  ],
+  "limits": [
+    "Source structure and bindings do not prove historical publication time or strategy profitability.",
+    "Funding complete is the source collector declaration; no assumption of a fixed future funding interval.",
+    "No spot evidence or venue order execution validation."
+  ]
+}

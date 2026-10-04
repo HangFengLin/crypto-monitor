@@ -20,6 +20,7 @@ import yaml
 
 from backtest_statistics import build_exploratory_group_tables
 from historical_market_data import sha256_file, write_json
+from position_manager import LEGACY_RATIO_V1, RETURN_MODEL_CHOICES
 from project_signal_backtest import SignalTrade, calculate_metrics
 from strategy import DEFAULT_CONFIG
 from strategy_validation import (
@@ -38,6 +39,7 @@ from strategy_validation import (
     trade_equity,
     trade_records,
     utc_timestamp,
+    validation_execution_metadata,
     walk_forward_windows,
 )
 
@@ -64,10 +66,31 @@ def report_runtime_args(manifest: dict[str, Any], cli: argparse.Namespace) -> ar
     values.setdefault("seed", int(manifest.get("bootstrap_seed", 20260620)))
     values.setdefault("bootstrap_iterations", int(manifest.get("bootstrap_iterations", 2000)))
     values.setdefault("min_group_trades", int(manifest.get("min_group_trades", 30)))
-    return argparse.Namespace(**values)
+    accounting_keys = ("return_model", "holding_limit_convention")
+    metadata = manifest.get("execution_metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("invalid frozen execution metadata")
+    argument_keys = [key for key in accounting_keys if key in values]
+    if argument_keys and len(argument_keys) != len(accounting_keys):
+        raise ValueError("incomplete frozen accounting arguments")
+    if metadata is not None:
+        if any(key not in metadata for key in accounting_keys):
+            raise ValueError("incomplete frozen execution metadata")
+        for key in accounting_keys:
+            if key in values and values[key] != metadata[key]:
+                raise ValueError("frozen accounting arguments conflict with execution metadata")
+            values[key] = metadata[key]
+    elif not argument_keys:
+        # Pre-version manifests were produced with these two legacy defaults.
+        values.update(return_model="legacy_ratio_v1", holding_limit_convention="legacy_inclusive_end")
+    args = argparse.Namespace(**values)
+    expected = validation_execution_metadata(args)
+    if metadata is not None and any(metadata[key] != value for key, value in expected.items() if key in metadata):
+        raise ValueError("frozen execution metadata conflicts with replay arguments")
+    return args
 
 
-def frame_to_trades(frame: pd.DataFrame) -> list[SignalTrade]:
+def frame_to_trades(frame: pd.DataFrame, *, expected_return_model: str | None = None) -> list[SignalTrade]:
     if frame.empty:
         return []
     fields = list(dataclasses.fields(SignalTrade))
@@ -85,6 +108,12 @@ def frame_to_trades(frame: pd.DataFrame) -> list[SignalTrade]:
                 raise KeyError(field.name)
         values["entry_time"] = utc_timestamp(values["entry_time"])
         values["exit_time"] = utc_timestamp(values["exit_time"])
+        model = values["return_model"]
+        if pd.isna(model):
+            model = LEGACY_RATIO_V1
+        if model not in RETURN_MODEL_CHOICES or (expected_return_model is not None and model != expected_return_model):
+            raise ValueError("trade accounting version differs from frozen replay arguments")
+        values["return_model"] = model
         item = SignalTrade(**values)
         item.symbol = str(row.get("symbol") or "")
         trades.append(item)
@@ -97,6 +126,7 @@ def rebuild_validation_statistics(
     windows: list[dict[str, pd.Timestamp]],
     args: argparse.Namespace,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    expected_model = validation_execution_metadata(args)["return_model"]
     fold_rows: list[dict[str, Any]] = []
     symbols_by_candidate: dict[str, list[dict[str, Any]]] = {item["name"]: [] for item in candidates}
     records_by_candidate: dict[str, list[dict[str, Any]]] = {}
@@ -107,7 +137,7 @@ def rebuild_validation_statistics(
         for window in windows:
             fold = window["fold"]
             fold_frame = candidate_records[candidate_records["fold"] == fold]
-            trades = frame_to_trades(fold_frame)
+            trades = frame_to_trades(fold_frame, expected_return_model=expected_model)
             metrics = calculate_metrics(
                 trades,
                 trade_equity(trades),
@@ -128,7 +158,7 @@ def rebuild_validation_statistics(
                 }
             )
             for symbol, symbol_frame in fold_frame.groupby("symbol", sort=False):
-                symbol_trades = frame_to_trades(symbol_frame)
+                symbol_trades = frame_to_trades(symbol_frame, expected_return_model=expected_model)
                 symbol_metrics = calculate_metrics(symbol_trades, trade_equity(symbol_trades), bootstrap_iterations=0)
                 symbols_by_candidate[name].append({"symbol": symbol, "candidate": name, "fold": fold, **symbol_metrics})
     fold_metrics = pd.DataFrame(fold_rows)
@@ -253,8 +283,8 @@ def main() -> None:
             baseline_frame = pd.DataFrame(trade_records(baseline_test, candidate="baseline", phase="test"))
             candidate_frame = pd.DataFrame(trade_records(candidate_test, candidate=selected_name, phase="test"))
 
-        baseline_test = frame_to_trades(baseline_frame)
-        candidate_test = frame_to_trades(candidate_frame)
+        baseline_test = frame_to_trades(baseline_frame, expected_return_model=args.return_model)
+        candidate_test = frame_to_trades(candidate_frame, expected_return_model=args.return_model)
         baseline_metrics = calculate_metrics(
             baseline_test, trade_equity(baseline_test), args.bootstrap_iterations, args.seed
         )
@@ -338,6 +368,8 @@ def main() -> None:
             "deployed": False,
             "test_summary": test_summary,
             "resumed": True,
+            "arguments": vars(args),
+            "execution_metadata": validation_execution_metadata(args),
         }
     )
     write_json(report_dir / "manifest.json", manifest)

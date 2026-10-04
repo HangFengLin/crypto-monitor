@@ -16,6 +16,7 @@ class SignalTrackingTest(unittest.TestCase):
         for replacement in (
             patch.object(app, "state", app.MonitorState()),
             patch.object(app, "STRATEGY_TRADES_FILE", self.ledger),
+            patch.object(app, "PAPER_UNIVERSE_ENABLED", False),
         ):
             replacement.start()
             self.addCleanup(replacement.stop)
@@ -72,6 +73,40 @@ class SignalTrackingTest(unittest.TestCase):
             box.observe(*app.automatic_notification_inputs())
             self.assertEqual(box.data["pending"], [])
 
+    def test_indicator_and_support_alerts_reach_durable_feishu_queue(self):
+        from automatic_notifications import Outbox
+
+        path = Path(self.tmp.name) / "outbox.json"
+        box = Outbox(path)
+        old = dict(type="indicator", event_key="old", symbol="BTCUSDT", interval="15m", price=100)
+        with patch.object(app, "list_report_files", return_value=[]), patch.object(
+            app, "site_monitor_snapshot", return_value={"enabled": False}
+        ):
+            # An existing queue upgrades without replaying historical alerts.
+            box.observe([], [], None)
+            app.state.events = [old]
+            box.observe(*app.automatic_notification_inputs())
+            self.assertEqual(box.data["pending"], [])
+            app.state.events = [
+                dict(type="support", event_key="support:new", symbol="ETHUSDT", interval="1h", support=90, price=91),
+                {**old, "event_key": "indicator:new", "indicator_label": "均线向上"},
+                old,
+            ]
+            box.observe(*app.automatic_notification_inputs())
+            self.assertEqual([m["channel"] for m in box.data["pending"]], ["signal", "signal"])
+            self.assertIn("均线向上", box.data["pending"][0]["body"])
+            self.assertIn("ETHUSDT", box.data["pending"][1]["body"])
+            box.deliver(lambda *args: {"ok": False, "error": "timeout"})
+            box = Outbox(path)
+            box.observe(*app.automatic_notification_inputs())
+            self.assertEqual(len(box.data["pending"]), 2)
+            for message in box.data["pending"]:
+                message["next_attempt"] = 0
+            box.deliver(lambda *args: {"ok": True})
+            box = Outbox(path)
+            box.observe(*app.automatic_notification_inputs())
+            self.assertEqual(box.data["pending"], [])
+
     def test_marks_and_progress_are_saved_even_without_exit(self):
         app.register_strategy_signal(self.signal())
         bars = [{"close_time": 2000, "low": 100, "high": 102, "close": 101}]
@@ -120,6 +155,55 @@ class SignalTrackingTest(unittest.TestCase):
             app.register_strategy_signal(self.signal(divergence_time=i + 1))
         app.close_strategy_trade(app.state.strategy_trades[0], 95, "stop_loss", "loss")
         self.assertEqual(app.snapshot()["strategy_trades"][0]["id"], "BTCUSDT:15m:long:1")
+
+    def test_okx_demo_ledger_preserves_closed_records_and_estimated_pnl(self):
+        okx_state = Path(self.tmp.name) / "okx_market_cap_bot_state.json"
+        okx_state.write_text(
+            json.dumps(
+                {
+                    "positions": [
+                        {
+                            "id": "BTCUSDT:15m:long:1",
+                            "symbol": "BTCUSDT",
+                            "inst_id": "BTC-USDT-SWAP",
+                            "interval": "15m",
+                            "direction": "long",
+                            "status": "closed",
+                            "size": "0.5",
+                            "entry_price": 100,
+                            "exit_price": 110,
+                            "opened_at": 10,
+                            "closed_at": 20,
+                            "exit_reason": "protection_reached",
+                            "return_pct": 0.098,
+                            "position_sizing": {"notional_usdt": "50"},
+                        },
+                        {
+                            "id": "ETHUSDT:15m:short:2",
+                            "symbol": "ETHUSDT",
+                            "inst_id": "ETH-USDT-SWAP",
+                            "interval": "15m",
+                            "direction": "short",
+                            "status": "open",
+                            "size": "1",
+                            "entry_price": 200,
+                            "opened_at": 30,
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        with patch.object(app, "OKX_DEMO_LEDGER_FILE", okx_state):
+            ledger = app.load_okx_demo_ledger()
+        self.assertEqual(ledger["stats"]["total_trades"], 2)
+        self.assertEqual(ledger["stats"]["open_trades"], 1)
+        self.assertEqual(ledger["stats"]["closed_trades"], 1)
+        self.assertEqual(ledger["stats"]["wins"], 1)
+        self.assertAlmostEqual(ledger["stats"]["total_return"], 0.098)
+        self.assertAlmostEqual(ledger["stats"]["realized_pnl_usdt"], 4.9)
+        self.assertTrue(ledger["trades"][1]["pnl_usdt_estimated"])
+        self.assertEqual(ledger["trades"][1]["pnl_usdt"], 4.9)
 
 
 if __name__ == "__main__":

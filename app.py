@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import math
 import os
 import smtplib
 import socket
@@ -34,10 +35,14 @@ from data_client import (
     test_external_dependencies,
 )
 from indicators import calculate_indicators, macd, rolling_average
+from paper_universe import PaperUniverse
 from position_manager import (
+    LEGACY_RATIO_V1,
+    LINEAR_USDM_V1,
     STRUCTURE_ATR_STOP_MODE,
     calculate_return_pct,
     calculate_target_levels,
+    classify_return_outcome,
     evaluate_lifecycle_bar,
 )
 from product_settings import SettingsConflict, SettingsStore
@@ -63,6 +68,7 @@ from strategy import (
     latest_macd_direction,
     score_signal,
 )
+from strategy_universe import fetch_binance_paper_universe
 
 try:
     import uvicorn
@@ -86,11 +92,17 @@ automatic_notification_status = {"enabled": False, "running": False, "pending": 
 def automatic_notification_inputs():
     with state_lock:
         trades = [dict(trade) for trade in state.strategy_trades]
+        events = [dict(event) for event in reversed(state.events)
+                  if event.get("type") in {"indicator", "support"} and event.get("event_key")]
         faults = [state.published_fault] if state.published_fault else []
     monitor = site_monitor_snapshot()
     if monitor.get("enabled") and monitor.get("ok") is False:
         faults.append("站点巡检")
-    return trades, list_report_files(), "、".join(faults) or None
+    alerts = []
+    for event in events:
+        title, body = format_alert_text(event)
+        alerts.append({"key": event["event_key"], "title": title, "body": body})
+    return trades, list_report_files(), "、".join(faults) or None, alerts
 
 
 async def automatic_notification_loop(stop_event, box):
@@ -156,6 +168,9 @@ REPORTS_DIR = Path(os.getenv("REPORTS_DIR", str(ROOT / "reports"))).expanduser()
 STATE_FILE = Path(os.getenv("WATCHLIST_FILE", str(ROOT / "watchlist.json"))).expanduser()
 EVENT_LOG_FILE = Path(os.getenv("EVENT_LOG_FILE", str(ROOT / "signal_events.jsonl"))).expanduser()
 STRATEGY_TRADES_FILE = Path(os.getenv("STRATEGY_TRADES_FILE", str(ROOT / "strategy_trades.json"))).expanduser()
+OKX_DEMO_LEDGER_FILE = Path(
+    os.getenv("OKX_DEMO_LEDGER_FILE", str(ROOT / "runtime" / "okx_market_cap_bot_state.json"))
+).expanduser()
 STARTED_AT = time.time()
 EVENT_HISTORY_LIMIT = 500
 DEFAULT_SIGNAL_INTERVAL = str(config_value(CONFIG, "app", "default_signal_interval", "15m"))
@@ -188,6 +203,15 @@ STRATEGY_FEE_RATE = float(config_value(CONFIG, "app", "strategy_fee_rate", 0.001
 STRATEGY_STOP_MODE = str(config_value(CONFIG, "app", "strategy_stop_mode", STRUCTURE_ATR_STOP_MODE))
 STRATEGY_HISTORY_LIMIT = int(config_value(CONFIG, "app", "strategy_history_limit", 200))
 RECORD_STRATEGY_TRADES = bool(config_value(CONFIG, "app", "record_strategy_trades", True))
+PAPER_UNIVERSE_ENABLED = env_bool("PAPER_UNIVERSE_ENABLED", bool(config_value(CONFIG, "paper_universe", "enabled", True)))
+PAPER_UNIVERSE_INTERVAL = str(config_value(CONFIG, "paper_universe", "interval", "15m"))
+PAPER_UNIVERSE_WORKERS = max(1, min(4, int(config_value(CONFIG, "paper_universe", "workers", 2))))
+PAPER_UNIVERSE = PaperUniverse(
+    os.getenv("PAPER_UNIVERSE_FILE", str(STRATEGY_TRADES_FILE.parent / "paper-universe.json")),
+    top_n=int(config_value(CONFIG, "paper_universe", "top_n", 100)),
+    selection=str(config_value(CONFIG, "paper_universe", "selection", "exchange_top_n")),
+    refresh_seconds=int(config_value(CONFIG, "paper_universe", "refresh_seconds", 21600)),
+)
 REPORT_FILE_SUFFIXES = {".html", ".htm"}
 SITE_MONITOR_DEFAULT_PORT = os.getenv("PORT", "8080").strip() or "8080"
 SITE_MONITOR_DEFAULT_TARGETS = (
@@ -223,6 +247,8 @@ class MonitorState:
     watchlist: list[dict[str, Any]] = field(default_factory=list)
     prices: dict[str, dict[str, Any]] = field(default_factory=dict)
     signals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    paper_pool_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    paper_pool_scan: dict[str, Any] = field(default_factory=dict)
     indicator_signals: dict[str, dict[str, Any]] = field(default_factory=dict)
     support_levels: dict[str, dict[str, Any]] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -291,6 +317,8 @@ def code_fingerprint() -> str:
             "binance_strategy_bot.py",
             "position_manager.py",
             "runtime_utils.py",
+            "paper_universe.py",
+            "strategy_universe.py",
         ),
     )
 
@@ -686,6 +714,112 @@ def load_strategy_trades() -> list[dict[str, Any]]:
     return [trade for trade in trades if isinstance(trade, dict)]
 
 
+def okx_demo_ledger_candidates() -> list[Path]:
+    candidates = [OKX_DEMO_LEDGER_FILE]
+    legacy_file = ROOT / "okx_market_cap_bot_state.json"
+    if legacy_file not in candidates:
+        candidates.append(legacy_file)
+    return candidates
+
+
+def okx_demo_outcome(position: dict[str, Any]) -> str:
+    if position.get("status") == "open":
+        return "open"
+    return_pct = parse_float(position.get("return_pct"))
+    if return_pct is None:
+        return "unknown"
+    if return_pct > 0:
+        return "win"
+    if return_pct < 0:
+        return "loss"
+    return "breakeven"
+
+
+def okx_demo_notional_usdt(position: dict[str, Any]) -> float | None:
+    sizing = position.get("position_sizing")
+    if isinstance(sizing, dict):
+        notional = parse_float(sizing.get("notional_usdt"))
+        if notional is not None:
+            return notional
+    entry_price = parse_float(position.get("entry_price"))
+    size = parse_float(position.get("size"))
+    if entry_price is None or size is None:
+        return None
+    ct_val = parse_float(sizing.get("ctVal")) if isinstance(sizing, dict) else None
+    multiplier = ct_val if ct_val is not None else 1.0
+    return abs(entry_price * size * multiplier)
+
+
+def normalize_okx_demo_position(position: dict[str, Any]) -> dict[str, Any]:
+    trade = dict(position)
+    trade["mode"] = "okx_demo"
+    trade["outcome"] = okx_demo_outcome(position)
+    notional_usdt = okx_demo_notional_usdt(position)
+    return_pct = parse_float(position.get("return_pct"))
+    trade["notional_usdt"] = notional_usdt
+    trade["pnl_usdt"] = notional_usdt * return_pct if notional_usdt is not None and return_pct is not None else None
+    trade["pnl_usdt_estimated"] = trade["pnl_usdt"] is not None
+    return trade
+
+
+def calculate_okx_demo_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    closed = [trade for trade in trades if trade.get("status") == "closed"]
+    open_trades = [trade for trade in trades if trade.get("status") == "open"]
+    returns = [parse_float(trade.get("return_pct")) or 0.0 for trade in closed]
+    pnls = [parse_float(trade.get("pnl_usdt")) or 0.0 for trade in closed]
+    wins = [trade for trade in closed if trade.get("outcome") == "win"]
+    losses = [trade for trade in closed if trade.get("outcome") == "loss"]
+    breakevens = [trade for trade in closed if trade.get("outcome") == "breakeven"]
+    return {
+        "total_trades": len(trades),
+        "open_trades": len(open_trades),
+        "closed_trades": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "breakevens": len(breakevens),
+        "win_rate": len(wins) / len(closed) if closed else 0.0,
+        "expectancy": sum(returns) / len(returns) if returns else 0.0,
+        "total_return": sum(returns),
+        "realized_pnl_usdt": sum(pnls),
+    }
+
+
+def load_okx_demo_ledger() -> dict[str, Any]:
+    source = next((path for path in okx_demo_ledger_candidates() if path.exists()), OKX_DEMO_LEDGER_FILE)
+    if not source.exists():
+        return {
+            "mode": "okx_demo",
+            "source_exists": False,
+            "source_updated_at": None,
+            "trades": [],
+            "stats": calculate_okx_demo_stats([]),
+            "retention_note": "未找到 OKX Demo 历史账本；不会创建或清理数据",
+        }
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "mode": "okx_demo",
+            "source_exists": True,
+            "source_updated_at": source.stat().st_mtime if source.exists() else None,
+            "trades": [],
+            "stats": calculate_okx_demo_stats([]),
+            "error": "OKX Demo 历史账本读取失败",
+            "retention_note": "保留原始账本；请先修复 JSON 文件后再展示",
+        }
+    positions = data.get("positions", []) if isinstance(data, dict) else []
+    trades = [normalize_okx_demo_position(position) for position in positions if isinstance(position, dict)]
+    trades.sort(key=lambda trade: parse_float(trade.get("closed_at")) or parse_float(trade.get("opened_at")) or 0.0, reverse=True)
+    return {
+        "mode": "okx_demo",
+        "source_exists": True,
+        "source_updated_at": source.stat().st_mtime,
+        "trades": trades,
+        "stats": calculate_okx_demo_stats(trades),
+        "retention_note": "展示保留的 OKX Demo 历史开平仓记录；USDT 盈亏按记录名义本金估算，不代表账户净值",
+    }
+
+
 def retain_strategy_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Limit completed history without losing an active observation."""
     closed = [trade for trade in trades if trade.get("status") != "open"]
@@ -860,6 +994,7 @@ def build_strategy_trade_from_signal(signal: dict[str, Any]) -> dict[str, Any] |
         "protected_stop_price": 0.0,
         "exit_mode": paper["stop_mode"],
         "fee_rate": paper["fee_rate"],
+        "return_model": LINEAR_USDM_V1,
         "config_revision": runtime["revision"],
         "engine_version": runtime["engine_version"],
         "runtime_config": runtime,
@@ -884,9 +1019,10 @@ def build_strategy_trade_from_signal(signal: dict[str, Any]) -> dict[str, Any] |
 
 
 def strategy_return_pct(
-    direction: str, entry_price: float, exit_price: float, fee_rate: float = STRATEGY_FEE_RATE
+    direction: str, entry_price: float, exit_price: float, fee_rate: float = STRATEGY_FEE_RATE,
+    *, return_model: str = LEGACY_RATIO_V1,
 ) -> float:
-    return calculate_return_pct(direction, entry_price, exit_price, fee_rate)
+    return calculate_return_pct(direction, entry_price, exit_price, fee_rate, return_model=return_model)
 
 
 def apply_strategy_lifecycle(
@@ -917,6 +1053,7 @@ def apply_strategy_lifecycle(
         protected_stop_price=parse_float(trade.get("protected_stop_price")) or 0.0,
         stop_mode=str(trade.get("exit_mode") or STRATEGY_STOP_MODE),
         fee_rate=trade.get("fee_rate", STRATEGY_FEE_RATE),
+        return_model=trade.get("return_model", LEGACY_RATIO_V1),
         atr_value=atr_value,
     )
     trade["active_stop"] = lifecycle.active_stop
@@ -940,7 +1077,8 @@ def refresh_strategy_trade_mark(trade: dict[str, Any], current_price: float) -> 
     trade["highest_price"] = max(parse_float(trade.get("highest_price")) or entry_price, current_price)
     trade["lowest_price"] = min(parse_float(trade.get("lowest_price")) or entry_price, current_price)
     trade["unrealized_pct"] = strategy_return_pct(
-        direction, entry_price, current_price, trade.get("fee_rate", STRATEGY_FEE_RATE)
+        direction, entry_price, current_price, trade.get("fee_rate", STRATEGY_FEE_RATE),
+        return_model=trade.get("return_model", LEGACY_RATIO_V1),
     )
 
 
@@ -954,8 +1092,14 @@ def close_strategy_trade(trade: dict[str, Any], exit_price: float, reason: str, 
     trade["exit_price"] = exit_price
     trade["closed_at"] = time.time()
     trade["return_pct"] = strategy_return_pct(
-        str(trade.get("direction")), entry_price, exit_price, trade.get("fee_rate", STRATEGY_FEE_RATE)
+        str(trade.get("direction")), entry_price, exit_price, trade.get("fee_rate", STRATEGY_FEE_RATE),
+        return_model=trade.get("return_model", LEGACY_RATIO_V1),
     )
+    if trade.get("return_model") == LINEAR_USDM_V1:
+        trade["outcome"] = classify_return_outcome(
+            str(trade.get("direction")), entry_price, exit_price,
+            trade.get("fee_rate", STRATEGY_FEE_RATE), return_model=LINEAR_USDM_V1,
+        )
 
 
 def evaluate_open_strategy_trade(trade: dict[str, Any], current_price: float) -> bool:
@@ -1016,6 +1160,16 @@ def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         if trade.get("exit_reason") in {"protection_reached", "protected_stop", "trailing_stop"}
     ]
     stop_losses = [trade for trade in closed if trade.get("exit_reason") == "stop_loss"]
+    return_models: dict[str, int] = {}
+    for trade in closed:
+        model = str(trade.get("return_model", LEGACY_RATIO_V1))
+        return_models[model] = return_models.get(model, 0) + 1
+    model_stats = {}
+    for model in return_models:
+        model_returns = [parse_float(trade.get("return_pct")) or 0.0 for trade in closed
+                         if trade.get("return_model", LEGACY_RATIO_V1) == model]
+        model_stats[model] = {"closed_trades": len(model_returns),
+                              "expectancy": sum(model_returns) / len(model_returns)}
     return {
         "total_trades": len(trades),
         "open_trades": len(open_trades),
@@ -1028,13 +1182,29 @@ def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "total_return": sum(returns),
         "stop_loss_rate": len(stop_losses) / len(closed) if closed else 0.0,
         "protection_rate": len(protection_wins) / len(closed) if closed else 0.0,
+        "return_models": return_models,
+        "mixed_return_models": len(return_models) > 1,
+        "return_model_stats": model_stats,
+        "comparability_note": ("记录包含不同收益口径，请按收益版本分别比较；总体指标只用于展示。"
+                               if len(return_models) > 1 else "收益按记录固定的版本计算；逐笔比例不代表账户净值。"),
     }
 
 
-def register_strategy_signal(signal: dict[str, Any]) -> None:
+def register_strategy_signal(signal: dict[str, Any]) -> bool:
+    membership = None
+    if PAPER_UNIVERSE_ENABLED:
+        pool = PAPER_UNIVERSE.status()
+        if (not pool["ready"] or signal.get("paper_universe_snapshot_id") != pool.get("snapshot_id")
+                or signal.get("interval", DEFAULT_SIGNAL_INTERVAL) != PAPER_UNIVERSE_INTERVAL):
+            return False
+        membership = next((member for member in pool["members"] if member["symbol"] == signal.get("symbol")), None)
+        if membership is None:
+            return False
     trade = build_strategy_trade_from_signal(signal)
     if not trade:
-        return
+        return False
+    if membership:
+        trade["paper_universe"] = {**membership, "snapshot_id": pool["snapshot_id"], "updated_at": pool["updated_at"]}
 
     changed = False
     with state_lock:
@@ -1048,6 +1218,7 @@ def register_strategy_signal(signal: dict[str, Any]) -> None:
 
     if changed:
         save_strategy_trades(trades_snapshot)
+    return changed
 
 
 async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, Any]]) -> None:
@@ -1400,9 +1571,9 @@ def get_td_signals(symbol: str, timestamp_ms: int) -> dict[str, int]:
     return signals
 
 
-def signal_engine(symbol: str, interval: str, runtime=None) -> ProjectSignalEngine:
+def signal_engine(symbol: str, interval: str, runtime=None, namespace="watchlist") -> ProjectSignalEngine:
     runtime = runtime or RUNTIME_SETTINGS.get()
-    key = (symbol.upper(), normalize_interval(interval), runtime["revision"])
+    key = (namespace, symbol.upper(), normalize_interval(interval), runtime["revision"])
     engine = SIGNAL_ENGINES.get(key)
     if engine is None:
         engine = ProjectSignalEngine(StrategyConfig(**runtime["effective_strategy"]))
@@ -1470,19 +1641,19 @@ def build_project_signal_bars(symbol: str, interval: str) -> list[dict[str, Any]
     return ready_bars
 
 
-def detect_project_signal(symbol: str, interval: str) -> dict[str, Any]:
+def detect_project_signal(symbol: str, interval: str, *, engine_namespace="watchlist", include_td=True) -> dict[str, Any]:
     if market_data_source() != "binance_usdm":
         raise ValueError("当前产品要求 Binance USDT 合约行情，请使用统一启动器")
     normalized_interval = normalize_interval(interval)
     ready_bars = build_project_signal_bars(symbol, normalized_interval)
     runtime = RUNTIME_SETTINGS.get()
-    signal = signal_engine(symbol, normalized_interval, runtime).detect(ready_bars)
+    signal = signal_engine(symbol, normalized_interval, runtime, engine_namespace).detect(ready_bars)
     signal["runtime_config"] = runtime
     signal["config_revision"] = runtime["revision"]
     latest = ready_bars[-1] if ready_bars else {}
     close_time = latest.get("close_time") or latest.get("open_time")
     td_signals: dict[str, int] = {}
-    if close_time is not None:
+    if include_td and close_time is not None:
         try:
             td_signals = get_td_signals(symbol, int(close_time))
         except (
@@ -1795,6 +1966,24 @@ def build_wait_signal(symbol: str, interval: str, reason: str) -> dict[str, Any]
     }
 
 
+def serialize_backtest_groups(group_stats) -> list[dict[str, Any]]:
+    """Keep marginal/predeclared group identities without inventing other dimensions."""
+    groups = []
+    for row in group_stats.head(12).to_dict("records"):
+        group = {}
+        for key in ("group_dimensions", "group_value", "signal", "trend", "higher_trend",
+                    "signal_grade", "score_bucket", "structure_bucket", "divergence_type", "strength_bucket"):
+            value = row.get(key)
+            if isinstance(value, str) and value:
+                group[key] = value
+        for key in ("trades", "avg_score", "win_rate", "avg_return", "avg_confirm_bars"):
+            value = row.get(key)
+            if isinstance(value, (int, float)) and math.isfinite(value):
+                group[key] = int(value) if key == "trades" else float(value)
+        groups.append(group)
+    return groups
+
+
 def run_signal_backtest_summary(
     symbol: str,
     interval: str,
@@ -1830,37 +2019,22 @@ def run_signal_backtest_summary(
             fee_rate,
             mode,
             strategy_config=StrategyConfig(**runtime["effective_strategy"]),
+            return_model=LINEAR_USDM_V1,
+            legacy_holding_limit=False,
             min_signal_score=runtime["values"]["paper"]["min_signal_score"],
             signal_direction=runtime["values"]["paper"]["signal_direction"],
         )
         for mode in stop_modes
     ]
     primary = mode_results[0]
+    execution_metadata = primary["execution_metadata"]
     trades = primary["trades"]
     metrics = primary["metrics"]
     group_stats = primary["group_stats"]
     started_at = enriched_bars[0]["time"].isoformat() if enriched_bars else None
     ended_at = enriched_bars[-1]["time"].isoformat() if enriched_bars else None
 
-    groups = []
-    if not group_stats.empty:
-        groups = [
-            {
-                "signal": str(row["signal"]),
-                "trend": str(row["trend"]),
-                "higher_trend": str(row.get("higher_trend", "unknown")),
-                "signal_grade": str(row.get("signal_grade", "weak")),
-                "score_bucket": str(row.get("score_bucket", "unknown")),
-                "divergence_type": str(row["divergence_type"]),
-                "strength_bucket": str(row["strength_bucket"]),
-                "trades": int(row["trades"]),
-                "avg_score": float(row.get("avg_score", 0)),
-                "win_rate": float(row["win_rate"]),
-                "avg_return": float(row["avg_return"]),
-                "avg_confirm_bars": float(row.get("avg_confirm_bars", 0)),
-            }
-            for row in group_stats.head(12).to_dict("records")
-        ]
+    groups = serialize_backtest_groups(group_stats)
 
     return RESEARCH_ARCHIVE.save(
         {
@@ -1873,17 +2047,22 @@ def run_signal_backtest_summary(
             "limit": len(enriched_bars),
             "started_at": started_at,
             "ended_at": ended_at,
+            "execution_metadata": execution_metadata,
             "params": {
                 "reward_risk": reward_risk,
                 "max_hold_bars": max_hold_bars,
                 "fee_rate": fee_rate,
                 "stop_mode": stop_mode,
+                "return_model": execution_metadata["return_model"],
+                "holding_limit_convention": execution_metadata["holding_limit_convention"],
+                "max_observed_bars": execution_metadata["max_observed_bars"],
             },
             "metrics": metrics,
             "stop_mode_results": [
                 {
                     "stop_mode": result["stop_mode"],
                     "metrics": result["metrics"],
+                    "execution_metadata": result["execution_metadata"],
                 }
                 for result in mode_results
             ],
@@ -1897,6 +2076,7 @@ def run_signal_backtest_summary(
                     "exit_reason": trade.exit_reason,
                     "outcome": trade.outcome,
                     "return_pct": trade.return_pct,
+                    "return_model": trade.return_model,
                     "bars_held": trade.bars_held,
                     "confirm_bars": trade.confirm_bars,
                     "strength": trade.strength,
@@ -1909,6 +2089,78 @@ def run_signal_backtest_summary(
             ],
         }
     )
+
+
+def paper_universe_snapshot():
+    pool = PAPER_UNIVERSE.status()
+    with state_lock:
+        scan = dict(state.paper_pool_scan)
+    return {**pool, "enabled": PAPER_UNIVERSE_ENABLED, "interval": PAPER_UNIVERSE_INTERVAL, "scan": scan}
+
+
+async def scan_paper_universe_once(stop_event=None):
+    from data_client import interval_ms
+
+    if not PAPER_UNIVERSE_ENABLED:
+        return
+    await asyncio.to_thread(PAPER_UNIVERSE.refresh, lambda: fetch_binance_paper_universe(
+        PAPER_UNIVERSE.top_n, PAPER_UNIVERSE.selection))
+    pool = PAPER_UNIVERSE.status()
+    with state_lock:
+        state.module_errors["paper_universe"] = None if pool["ready"] else (pool["error"] or "市值币池尚未就绪")
+    if not pool["ready"]:
+        return
+    width = interval_ms(PAPER_UNIVERSE_INTERVAL)
+    closed_at = int(time.time() * 1000 // width) * width - 1
+    members = {item["symbol"]: item for item in pool["members"]}
+    with state_lock:
+        state.paper_pool_results = {key: value for key, value in state.paper_pool_results.items() if key in members}
+        pending = [symbol for symbol in members if state.paper_pool_results.get(symbol, {}).get("kline_close_time", 0) < closed_at]
+        state.paper_pool_scan = {"running": True, "started_at": time.time(), "eligible_count": len(members),
+                                 "checked_count": len(members) - len(pending), "errors": {}, "bar_close_time": closed_at}
+    semaphore = asyncio.Semaphore(PAPER_UNIVERSE_WORKERS)
+
+    async def scan(symbol):
+        async with semaphore:
+            if stop_event and stop_event.is_set():
+                return
+            try:
+                signal = await asyncio.to_thread(detect_project_signal, symbol, PAPER_UNIVERSE_INTERVAL,
+                                                 engine_namespace="paper_pool", include_td=False)
+                if (signal.get("kline_close_time") or 0) < closed_at:
+                    raise ValueError("合约K线尚未更新到本轮已收盘时间")
+                if stop_event and stop_event.is_set():
+                    return
+                event_key = "paper:" + strategy_trade_id(signal)
+                signal = {**signal, "paper_universe_snapshot_id": pool["snapshot_id"], "event_key": event_key}
+                if RECORD_STRATEGY_TRADES and register_strategy_signal(signal):
+                    record_event(signal, event_key)
+                with state_lock:
+                    state.paper_pool_results[symbol] = signal
+                    state.paper_pool_scan["checked_count"] += 1
+            except Exception as exc:
+                with state_lock:
+                    state.paper_pool_scan["errors"][symbol] = type(exc).__name__
+
+    await asyncio.gather(*(scan(symbol) for symbol in pending))
+    with state_lock:
+        state.paper_pool_scan.update(running=False, last_scan_at=time.time())
+        failures = len(state.paper_pool_scan["errors"])
+        state.module_errors["paper_pool"] = f"模拟币池 {failures} 个品种扫描失败" if failures else None
+
+
+async def paper_universe_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            await scan_paper_universe_once(stop_event)
+        except Exception as exc:
+            with state_lock:
+                state.module_errors["paper_pool"] = f"模拟币池扫描异常（{type(exc).__name__}）"
+                state.paper_pool_scan.update(running=False)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=60)
+        except TimeoutError:
+            pass
 
 
 async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
@@ -2571,10 +2823,17 @@ def create_app():
                 automatic_lease.close()
             automatic_notification_status["error"] = f"通知初始化失败（{type(exc).__name__}）"
         monitor_task = asyncio.create_task(run_monitor_loop(monitor_stop_event), name="market-monitor")
+        paper_task = asyncio.create_task(paper_universe_loop(monitor_stop_event), name="paper-universe") if PAPER_UNIVERSE_ENABLED else None
         try:
             yield
         finally:
             monitor_stop_event.set()
+            if paper_task:
+                try:
+                    await asyncio.wait_for(paper_task, timeout=20)
+                except TimeoutError:
+                    paper_task.cancel()
+                    await asyncio.gather(paper_task, return_exceptions=True)
             if automatic_task:
                 try:
                     await automatic_task
@@ -2665,12 +2924,12 @@ def create_app():
     async def binance_demo_status():
         return {"status": "extension_disabled", "mode": "paper", "credentials_required": False}
 
-    notification_test_lock = asyncio.Lock()
+    notification_test_lock = None
     notification_test_at = 0.0
 
     @app.post("/api/notifications/test")
     async def notification_test(request: Request):
-        nonlocal notification_test_at
+        nonlocal notification_test_at, notification_test_lock
         if not env_bool("FEISHU_TEST_ENABLED", False):
             raise HTTPException(status_code=403, detail="通知测试未开启")
         if "application/json" not in request.headers.get("content-type", ""):
@@ -2679,6 +2938,8 @@ def create_app():
         channel = payload.get("channel") if isinstance(payload, dict) else None
         if channel not in feishu_notifications.CHANNELS:
             raise HTTPException(status_code=400, detail="未知通知渠道")
+        if notification_test_lock is None:
+            notification_test_lock = asyncio.Lock()
         async with notification_test_lock:
             if time.monotonic() - notification_test_at < 3:
                 raise HTTPException(status_code=429, detail="请等待 3 秒后重试")
@@ -2731,17 +2992,38 @@ def create_app():
 
     @app.get("/api/paper-trades")
     async def api_paper_trades():
+        universe = paper_universe_snapshot()
         with state_lock:
+            stats = calculate_strategy_stats(state.strategy_trades)
+            mixed = stats["mixed_return_models"]
+            comparability_note = stats["comparability_note"]
             return {
                 "mode": "paper",
+                "universe": universe,
                 "trades": list(state.strategy_trades),
-                "stats": calculate_strategy_stats(state.strategy_trades),
-                "retention_note": "展示本地保留的交易记录；收益为逐笔比例，不代表账户净值",
+                "stats": stats,
+                "comparison_status": "MIXED_RETURN_MODELS" if mixed else "SINGLE_RETURN_MODEL" if stats["return_models"] else "NO_CLOSED_RECORDS",
+                "comparability_note": comparability_note,
+                "retention_note": "展示本地保留的交易记录；收益为逐笔比例，不代表账户净值。" + comparability_note,
             }
+
+    @app.get("/api/okx-demo-ledger")
+    async def api_okx_demo_ledger():
+        return await asyncio.to_thread(load_okx_demo_ledger)
+
+    @app.get("/api/paper-universe")
+    async def api_paper_universe():
+        return paper_universe_snapshot()
 
     @app.get("/api/research-runs")
     async def research_runs():
         return {"runs": await asyncio.to_thread(RESEARCH_ARCHIVE.list)}
+
+    @app.get("/api/research-evidence")
+    async def research_evidence():
+        from research_evidence import list_validation_evidence
+
+        return await asyncio.to_thread(list_validation_evidence, REPORTS_DIR)
 
     @app.get("/api/research-runs/{run_id}")
     async def research_run(run_id: str):

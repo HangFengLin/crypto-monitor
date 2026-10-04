@@ -763,7 +763,7 @@ def fetch_open_interest(symbol: str) -> dict[str, Any]:
 def fetch_open_interest_ratio(symbol: str, period: str = "15m", limit: int = 20) -> dict[str, Any]:
     if market_data_source() == "gate":
         return {"symbol": symbol, "openInterest": None, "openInterestRatio": None}
-    params = urllib.parse.urlencode({"pair": symbol, "contractType": "PERPETUAL", "period": period, "limit": limit})
+    params = urllib.parse.urlencode({"symbol": symbol, "period": period, "limit": limit})
     payload = read_json_url(f"{BINANCE_OPEN_INTEREST_HIST_URL}?{params}", timeout=12)
     rows = payload if isinstance(payload, list) else []
     values = [parse_float(row.get("sumOpenInterest")) for row in rows if isinstance(row, dict)]
@@ -974,7 +974,7 @@ async def async_fetch_funding_rate(symbol: str) -> dict[str, Any]:
 async def async_fetch_open_interest_ratio(symbol: str, period: str = "15m", limit: int = 20) -> dict[str, Any]:
     if market_data_source() == "gate":
         return {"symbol": symbol, "openInterest": None, "openInterestRatio": None}
-    params = urllib.parse.urlencode({"pair": symbol, "contractType": "PERPETUAL", "period": period, "limit": limit})
+    params = urllib.parse.urlencode({"symbol": symbol, "period": period, "limit": limit})
     payload = await async_read_json_url(f"{BINANCE_OPEN_INTEREST_HIST_URL}?{params}", timeout=12)
     rows = payload if isinstance(payload, list) else []
     values = [parse_float(row.get("sumOpenInterest")) for row in rows if isinstance(row, dict)]

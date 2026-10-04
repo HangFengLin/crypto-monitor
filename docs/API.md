@@ -12,7 +12,8 @@ FastAPI also serves interactive OpenAPI documentation at `/docs` and the schema 
 | `GET` | `/api/watchlist` | Current monitored symbols and alert settings |
 | `POST` | `/api/watchlist` | Validate and replace the watchlist |
 | `POST` | `/api/network-test` | Test configured external market dependencies |
-| `POST` | `/api/backtest` | Run a bounded strategy backtest summary |
+| `GET` | `/api/backtest` | Run a bounded strategy backtest summary |
+| `GET` | `/api/research-evidence` | Read experiment comparisons and validation evidence; never runs experiments |
 
 Treat `/api/state` and the SSE payload as UI contracts rather than a versioned public API. Mutating endpoints return HTTP 4xx with a concrete validation message when input is invalid.
 
@@ -34,6 +35,7 @@ No API endpoint submits exchange orders.
 - `PUT /api/settings`：JSON `{values, expected_revision}`；保存并从下一次信号计算生效。无效值返回 400，旧版本覆盖返回 409。历史交易不重新套用新费率。
 - `GET /api/paper-trades`：同一模拟账本的全部保留记录和统计，不包含交易所账户操作。
 - `GET /api/research-runs`、`GET /api/research-runs/{run_id}`：读取本地实验列表、参数、数据区间和结果。
+- `GET /api/research-evidence`：只读聚合正式验证与离线优化诊断。返回中文结论、同实验候选对照、收益版本与门槛证据；摘要哈希不匹配或证据缺失时降级。所有结果保持 `RESEARCH_ONLY`，工程勾稽通过不代表策略有效。接口不触发计算、不修改设置，也不返回原始配置。
 - `GET /api/backtest`：使用 Binance USDT 合约历史收盘 K 线，成功后自动保存实验；不会修改运行设置。
 - `PUT /api/notifications/config`：JSON `{channel, webhook}`；按信号/系统/研究渠道保存本机 Webhook，空字符串停用。返回配置状态，不返回地址。
 - `/api/binance-demo/status`：仅返回 `extension_disabled`，当前不需要交易所密钥。
