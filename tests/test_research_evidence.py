@@ -1,3 +1,4 @@
+import ast
 import csv
 import hashlib
 import importlib.util
@@ -402,6 +403,83 @@ class ResearchEvidenceTests(unittest.TestCase):
                     _final_gate()
         finally:
             _final_gate.cache_clear()
+
+    def test_unchanged_reviewed_pure_gates_load_and_keep_numeric_and_evidence_limits(self):
+        from research_evidence import ACCOUNT_SCOPE, _final_gate
+
+        _final_gate.cache_clear()
+        self.addCleanup(_final_gate.cache_clear)
+        try:
+            gate = _final_gate()
+        except ValueError as error:
+            self.fail(f"Unchanged reviewed predicates must load on the supported interpreter: {error}")
+        common = dict(account_verified=True, account_scope=ACCOUNT_SCOPE,
+            funding_complete=True, coverage_complete=True, funding_included=True,
+            notional_fees_included=True, independent_slippage_included=True,
+            account_max_drawdown=-.1, account_total_return=.02,
+            account_contract_sha256="a"*64, account_input_sha256="b"*64,
+            account_result_sha256="c"*64, fee_multiplier=1, slippage_multiplier=1,
+            expectancy=.001, total_trades=100)
+        baseline = dict(common)
+        candidate = dict(common, expectancy=.002)
+        double = dict(common, expectancy=.001, fee_multiplier=2, slippage_multiplier=2)
+        kwargs = dict(okx_direction_consistent=True, max_symbol_profit_share=.2)
+        self.assertTrue(gate(baseline, candidate, double, **kwargs))
+        self.assertFalse(gate(baseline, dict(candidate, total_trades=99), double, **kwargs))
+        self.assertFalse(gate(baseline, candidate, dict(double, expectancy=0.), **kwargs))
+        self.assertFalse(gate(baseline, dict(candidate, funding_complete=False), double, **kwargs))
+
+    def test_either_reviewed_predicate_logic_or_signature_change_is_rejected(self):
+        from research_evidence import _final_gate
+
+        read_text = Path.read_text
+        for filename, name in (("validation_account.py", "account_evidence_valid"),
+                               ("strategy_validation.py", "passes_final_candidate_gates")):
+            original = read_text(Path(__file__).resolve().parents[1] / filename)
+            for mutation in ("constant_pass", "extra_parameter"):
+                with self.subTest(function=name, mutation=mutation):
+                    tree = ast.parse(original)
+                    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+                    if mutation == "constant_pass":
+                        function.body = [ast.Return(value=ast.Constant(value=True))]
+                    else:
+                        function.args.args.append(ast.arg(arg="unreviewed_parameter"))
+                    altered = ast.unparse(ast.fix_missing_locations(tree))
+
+                    def source(path, *args, altered=altered, filename=filename, **kwargs):
+                        return altered if path.name == filename else read_text(path, *args, **kwargs)
+
+                    _final_gate.cache_clear()
+                    try:
+                        with patch("research_evidence.Path.read_text", autospec=True, side_effect=source):
+                            with self.assertRaisesRegex(ValueError, "unsupported gate source shape"):
+                                _final_gate()
+                    finally:
+                        _final_gate.cache_clear()
+
+    def test_nonempty_type_parameters_cannot_use_the_reviewed_empty_field_compatibility(self):
+        from research_evidence import _final_gate
+
+        read_text = Path.read_text
+        for filename, name in (("validation_account.py", "account_evidence_valid"),
+                               ("strategy_validation.py", "passes_final_candidate_gates")):
+            original = read_text(Path(__file__).resolve().parents[1] / filename)
+            altered = original.replace(f"def {name}(", f"def {name}[Unreviewed](", 1)
+            self.assertNotEqual(original, altered)
+
+            def source(path, *args, altered=altered, filename=filename, **kwargs):
+                return altered if path.name == filename else read_text(path, *args, **kwargs)
+
+            with self.subTest(function=name):
+                _final_gate.cache_clear()
+                try:
+                    with patch("research_evidence.Path.read_text", autospec=True, side_effect=source):
+                        # 3.11 does not parse generic function syntax; 3.12
+                        # parses it but its nonempty AST is not approved.
+                        with self.assertRaises((ValueError, SyntaxError)):
+                            _final_gate()
+                finally:
+                    _final_gate.cache_clear()
 
     def test_validation_flag_cannot_override_missing_or_failed_fold_robustness(self):
         run = self.fixture(passed=True)

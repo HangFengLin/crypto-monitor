@@ -28,10 +28,18 @@ RUN_NAME = re.compile(r"strategy_(validation|optimization)_[A-Za-z0-9_-]{1,100}\
 SHA256 = re.compile(r"[a-fA-F0-9]{64}\Z")
 ACCOUNT_SCOPE = "synchronized_linear_perpetual_account_v1"
 # Reviewed complete ASTs of the two pure predicates, not archive-provided code.
-# Any rule/helper/signature change requires explicit review and a new shape pin.
+# CPython3.11 omits FunctionDef.type_params; 3.12 includes an empty list. Only
+# these two exact equivalent shapes are allowed, with no generic normalization.
+# Any rule/helper/signature or nonempty type-parameter change needs new review.
 TRUSTED_GATE_AST = {
-    "passes_final_candidate_gates": "0ad40505573a9c344f31b96dca1ad192fcfc2eef324b73d780772f03ac3aa163",
-    "account_evidence_valid": "57fa975538973f90ef166fd9bc299ccdc9015dd0f423bccd2fa47885d666b8f1",
+    "passes_final_candidate_gates": frozenset({
+        "ebb47ada870c85f240c658a061d341a0d44f3a8ba25e0aa2b475f6f1bc66bebe",  # CPython3.11
+        "0ad40505573a9c344f31b96dca1ad192fcfc2eef324b73d780772f03ac3aa163",  # CPython3.12
+    }),
+    "account_evidence_valid": frozenset({
+        "c7c614e685c6eed80c53a72a7299d2a8f82902f7b5a764d36dedd53cb99d01f5",  # CPython3.11
+        "57fa975538973f90ef166fd9bc299ccdc9015dd0f423bccd2fa47885d666b8f1",  # CPython3.12
+    }),
 }
 
 
@@ -202,7 +210,7 @@ def _final_gate():
             raise ValueError("unsupported gate source")
         function = matches[0]
         shape = hashlib.sha256(ast.dump(function, include_attributes=False).encode()).hexdigest()
-        if shape != TRUSTED_GATE_AST[name]:
+        if shape not in TRUSTED_GATE_AST[name]:
             raise ValueError("unsupported gate source shape")
         functions.append(function)
     namespace = {"__builtins__": {"bool": bool, "abs": abs, "dict": dict, "float": float,
