@@ -68,8 +68,8 @@ class ResearchEvidenceTests(unittest.TestCase):
         return run
 
     def rehash(self, run):
-        write_json(run / "artifact_hashes.json", {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                                                  for path in run.iterdir() if path.name != "artifact_hashes.json" and path.is_file()})
+        write_json(run / "artifact_hashes.json", {str(path.relative_to(run)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                                  for path in run.rglob("*") if path.name != "artifact_hashes.json" and path.is_file()})
 
     def update_summary(self, run, mutate):
         summary = json.loads((run / "test_summary.json").read_text())
@@ -100,7 +100,7 @@ class ResearchEvidenceTests(unittest.TestCase):
     def test_candidate_pass_requires_bound_artifacts_and_existing_final_gates(self):
         self.fixture(passed=True)
         item = self.list_evidence()["validations"][0]
-        self.assertEqual(item["status"], "candidate_passed")
+        self.assertEqual(item["status"], "unverified", "legacy trade statistics cannot certify an account")
         self.assertEqual(item["kind"], "formal_validation")
         self.assertIn("研究", item["conclusion"])
 
@@ -208,13 +208,200 @@ class ResearchEvidenceTests(unittest.TestCase):
         self.assertEqual(self.list_evidence()["validations"][0]["status"], "unverified")
 
     def test_bounded_cache_hash_manifest_can_be_larger_than_summary_files(self):
-        run = self.fixture(passed=True)
+        run = self.fixture()
         path = run / "data_config_hashes.json"
         data = json.loads(path.read_text())
         data["cache_inventory_note"] = "x" * (2200 * 1024)
         write_json(path, data)
         self.rehash(run)
-        self.assertEqual(self.list_evidence()["validations"][0]["status"], "candidate_passed")
+        self.assertEqual(self.list_evidence()["validations"][0]["status"], "baseline_retained")
+
+    def formal_account_fixture(self, *, direction_limit=None):
+        """Reuse the legal fixed account fixture; no strategy search or real data."""
+        import pandas as pd
+        from test_validation_account_gate import FixtureDetector, ValidationAccountGateTest
+
+        import strategy_validation as validation
+        from strategy import DEFAULT_CONFIG
+
+        source = self.root / "input"
+        source.mkdir()
+        data, start, end, args = ValidationAccountGateTest().fixture_account(source)
+        data["E"] = [dict(bar) for bar in data["D"]]
+        payload = json.loads((source / "D.json").read_text())
+        payload["symbol"] = "E"
+        write_json(source / "E.json", payload)
+        contract_path = Path(args.account_contract)
+        contract = json.loads(contract_path.read_text())
+        contract["execution"]["max_positions"] = 5
+        if direction_limit is not None:
+            contract["execution"]["direction_risk_fraction"] = direction_limit
+        contract["funding_evidence"]["binance"]["E"] = dict(
+            path=str(source / "E.json"), sha256=hashlib.sha256((source / "E.json").read_bytes()).hexdigest())
+        contract["funding_evidence"]["okx"] = {}
+        for symbol in data:
+            payload = json.loads((source / f"{symbol}.json").read_text())
+            payload.update(exchange="okx", source="OKX native synthetic fixture settlements")
+            path = source / f"okx_{symbol}.json"
+            write_json(path, payload)
+            contract["funding_evidence"]["okx"][symbol] = dict(
+                path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        write_json(contract_path, contract)
+        args.__dict__.update(start=str(start), end=str(end), smoke=False, reports_dir=str(self.root),
+                             cache_dir=str(source / "cache"), min_quote_volume=1, candidate_overrides=None,
+                             skip_okx=False, min_group_trades=30)
+        snapshot = {venue: [{"symbol": symbol} for symbol in data] for venue in ("binance", "okx")}
+        candidates = [dict(name="baseline", family="baseline", overrides={}),
+                      dict(name="fixture_candidate", family="confirmation", overrides=dict(
+                          confirmation_mode="ma_only" if DEFAULT_CONFIG.confirmation_mode != "ma_only" else "both"))]
+
+        class Detector(FixtureDetector):
+            def __init__(self, config):
+                self.config = config
+
+            def detect(self, bars, clean=False):
+                signal = dict(super().detect(bars, clean))
+                if signal.get("signal") == "long" and self.config == DEFAULT_CONFIG:
+                    signal["stop_loss"] = 97
+                return signal
+
+        def frozen_snapshot(_args, output, _minimum):
+            validation.write_json(output / "universe_snapshot.json", snapshot)
+            return snapshot
+
+        def prepare(venue, *_args):
+            return data, [dict(exchange=venue, symbol=symbol, bars=len(rows)) for symbol, rows in data.items()]
+
+        windows = [dict(fold="fixture", train_start=start, train_end=start, validation_start=start, validation_end=end)]
+        # Fixed statistical metadata exercises the reader contract, not significance.
+        eligible = pd.DataFrame([dict(candidate="fixture_candidate", validation_gate=True, delta=.01,
+            ci_low=.001, ci_high=.02, q_value=.08, fdr_reject=True, fold_positive_ratio=1.,
+            symbol_nonworse_ratio=1., max_drawdown_ratio=0., account_gate_ready=True)])
+        with patch("strategy_validation.load_or_build_snapshot", side_effect=frozen_snapshot), \
+             patch("strategy_validation.prepare_snapshot_datasets", side_effect=prepare), \
+             patch("strategy_validation.load_candidates", return_value=candidates), \
+             patch("strategy_validation.walk_forward_windows", return_value=(windows, start)), \
+             patch("strategy_validation.compare_candidates", return_value=eligible), \
+             patch("strategy_validation.render_chart", return_value=[]), \
+             patch("validation_account.ProjectSignalEngine", Detector):
+            report = validation.run_validation(args)
+        self.assertEqual(json.loads((report.parent / "test_summary.json").read_text())["status"], "candidate_passed")
+        return report.parent
+
+    def test_real_formal_account_archive_is_read_without_mutating_or_exposing_source_paths(self):
+        run = self.formal_account_fixture()
+        before = {str(path.relative_to(run)): path.read_bytes() for path in run.rglob("*") if path.is_file()}
+        item = self.list_evidence()["validations"][0]
+        self.assertEqual(item["status"], "candidate_passed", item)
+        self.assertTrue(item["account_verified"])
+        self.assertEqual(item["metric_basis"], "shared_cash_plus_bar_close_open_position_mtm")
+        self.assertEqual(before, {str(path.relative_to(run)): path.read_bytes() for path in run.rglob("*") if path.is_file()})
+        self.assertNotIn(str(self.root), json.dumps(item))
+
+    def test_legal_common_scalar_direction_limit_is_read_as_formal_account(self):
+        self.formal_account_fixture(direction_limit=.01)
+        item = self.list_evidence()["validations"][0]
+        self.assertEqual(item["status"], "candidate_passed", item)
+        self.assertTrue(item["account_verified"])
+
+    def test_account_protocol_rejects_shared_numeric_bound_violations(self):
+        import shutil
+
+        from research_evidence import EvidenceIssue, _account_protocol, _Reader
+
+        original = self.formal_account_fixture()
+        for index, (key, value) in enumerate((('risk_fraction', 1.01), ('max_risk_fraction', 1.01),
+                ('direction_risk_fraction', 1.01), ('fee_rate', 1.), ('slippage_bps', 10000.),
+                ('max_hold_bars', 1.5), ('risk_fraction', True), ('risk_fraction', '0.1'))):
+            with self.subTest(key=key, value=value):
+                run = self.root / f"numeric_{index}"
+                shutil.copytree(original, run)
+                contract = json.loads((run / 'account_contract.json').read_text())
+                contract['execution'][key] = value
+                write_json(run / 'account_contract.json', contract)
+                manifest = json.loads((run / 'manifest.json').read_text())
+                manifest['execution_metadata']['account_execution'] = contract['execution']
+                manifest['execution_metadata']['account_contract_sha256'] = hashlib.sha256((run / 'account_contract.json').read_bytes()).hexdigest()
+                write_json(run / 'manifest.json', manifest)
+                self.rehash(run)
+                with self.assertRaises(EvidenceIssue):
+                    _account_protocol(_Reader(run), manifest, json.loads((run / 'data_config_hashes.json').read_text()))
+
+    def test_account_mode_false_screen_gate_preserves_baseline_without_final_holdout(self):
+        run = self.formal_account_fixture()
+        path = run / 'candidate_comparison.csv'
+        with path.open(newline='') as handle:
+            rows = list(csv.DictReader(handle))
+        rows[0].update(account_gate_ready='False', validation_gate='False')
+        with path.open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        self.update_summary(run, lambda value: value.update(selected_candidate=None, status='baseline_retained'))
+        item = self.list_evidence()['validations'][0]
+        self.assertEqual(item['status'], 'baseline_retained', item)
+        self.assertTrue(item['account_verified'])
+
+    def test_formal_claims_cannot_override_contract_coverage_replay_or_metric_drift(self):
+        import shutil
+
+        from validation_account import fingerprint
+
+        original = self.formal_account_fixture()
+        for variant in ("contract", "coverage", "window", "replay_bytes", "replay_metrics", "summary_metric", "missing_replay", "symlink_directory", "bad_cost"):
+            with self.subTest(variant=variant):
+                run = self.root / ("strategy_validation_" + variant)
+                shutil.copytree(original, run)
+                summary = json.loads((run / "test_summary.json").read_text())
+                artifact_name = "account_replays/" + Path(summary["candidate"]["account_artifact_path"]).name
+                artifact = run / artifact_name
+                if variant == "contract":
+                    contract = json.loads((run / "account_contract.json").read_text())
+                    contract["execution"]["risk_fraction"] *= 2
+                    write_json(run / "account_contract.json", contract)
+                elif variant == "coverage":
+                    coverage = json.loads((run / "coverage_gate.json").read_text())
+                    coverage["binance"]["requested"].pop()
+                    write_json(run / "coverage_gate.json", coverage)
+                elif variant == "window":
+                    manifest = json.loads((run / "manifest.json").read_text())
+                    manifest["end"] = "2025-01-01T00:15:00+00:00"
+                    write_json(run / "manifest.json", manifest)
+                elif variant == "missing_replay":
+                    artifact.unlink()
+                elif variant == "symlink_directory":
+                    target = self.root / "outside_replays"
+                    shutil.move(str(run / "account_replays"), target)
+                    (run / "account_replays").symlink_to(target, target_is_directory=True)
+                elif variant == "bad_cost":
+                    self.update_summary(run, lambda value: value["double_cost"].update(slippage_multiplier=1))
+                elif variant == "summary_metric":
+                    self.update_summary(run, lambda value: value["candidate"].update(expectancy=value["candidate"]["expectancy"]+.001))
+                else:
+                    result = json.loads(artifact.read_text())
+                    result["equity"][-1]["equity"] += 1
+                    write_json(artifact, result)
+                    if variant == "replay_metrics":
+                        # Updating all byte/binding digests still cannot replace derived metrics.
+                        self.update_summary(run, lambda value, result=result: value["candidate"].update(account_result_sha256=fingerprint(result)))
+                if variant not in ("replay_bytes", "symlink_directory"):
+                    self.rehash(run)
+                item = next(value for value in self.list_evidence()["validations"] if value["id"] == run.name)
+                self.assertIn(item["status"], ("unverified", "incomplete"), item)
+                self.assertFalse(item.get("account_verified", False))
+
+    def test_pure_account_helper_or_gate_source_shape_change_fails_closed(self):
+        from research_evidence import _final_gate
+
+        _final_gate.cache_clear()
+        try:
+            _final_gate()  # The current two pure functions must be explicitly supported.
+            with patch("research_evidence.Path.read_text", return_value="def account_evidence_valid(metrics):\n    return True\n"):
+                _final_gate.cache_clear()
+                with self.assertRaises((ValueError, StopIteration)):
+                    _final_gate()
+        finally:
+            _final_gate.cache_clear()
 
     def test_validation_flag_cannot_override_missing_or_failed_fold_robustness(self):
         run = self.fixture(passed=True)

@@ -20,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt -r requirements-validation.txt
+        run: python -m pip install --require-hashes -r locks/validation-py311-linux-x86_64.txt
 
       - name: Lint
         run: ruff check .
@@ -34,5 +34,23 @@ jobs:
       - name: Run unit tests with coverage
         run: coverage run -m unittest discover -s tests -p "test_*.py" && coverage report --fail-under=1
 
+      - name: Check target-weight adapter
+        run: python -m unittest discover -s research_projects/trend_portfolio_v1 -p "test_*.py"
+
       - name: Build Docker image
-        run: docker build .
+        run: |
+          mkdir -p .ci-evidence
+          docker build --iidfile .ci-evidence/image-id.txt -t lianqi-ci .
+          docker image inspect lianqi-ci --format '{{json .}}' > .ci-evidence/image-inspect.json
+
+      - name: Check isolated image runtime
+        run: |
+          docker run --rm --network none --entrypoint python lianqi-ci scripts/image_smoke.py > .ci-evidence/image-smoke.json
+
+      - name: Preserve image evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-${{ github.sha }}
+          path: .ci-evidence/
+          if-no-files-found: warn

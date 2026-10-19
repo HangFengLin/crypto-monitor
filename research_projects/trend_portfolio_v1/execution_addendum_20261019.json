@@ -1,0 +1,23 @@
+{
+  "status": "FROZEN_BEFORE_NEW_TARGET_WEIGHT_PNL",
+  "created_at_utc": "2026-10-19T15:55:01.988350+00:00",
+  "protocol_sha256": "a79cb6df64e0d3fb15af3d48a6501e15518fbe1a88cc20fd111e6f95a49b770d",
+  "data_exposure": "ALL_SOURCE_HISTORY_ALREADY_EXPOSED_DIAGNOSTIC_ONLY",
+  "approval": "Root reviewed original protocol and PROJECT; accepted these five deterministic execution choices before any new payoff computation.",
+  "clarifications": {
+    "first_weekly_decision": "First Monday at or after scoring start:2024-08-05T00:00:00Z; trend and vol_scaled_hold remain collateral cash before that decision.",
+    "buy_hold_initialization": "One equal net allocation decision at2024-08-01T00:00:00Z; base/double fill00:15, extra delay fill00:30; no later rebalance.",
+    "equal_time_funding": "Settlement timestamp exactly at a fill open is applied to old held quantity before fills; later timestamps use new quantity.",
+    "target_equity": "Targets are raw-open marked notionals divided by post-friction account equity; solve the self-financing scalar equation including actual side-dependent fill fees and adverse slippage. Sell reductions before increases, same snapshot; no spot-notional collateral debit.",
+    "zero_volatility": "Finite zero sample standard deviation is valid and takes the formula cap limit0.5 per asset; momentum<=0 still has zero weight. Missing/nonfinite input fails."
+  },
+  "unchanged": [
+    "T28 andT84 only",
+    "BTC andETH only",
+    "original weekly/60return/ddof1/365/.20/.50 parameters",
+    "original12cost scenarios andeconomic screen",
+    "no stops or R targets or terminal liquidation",
+    "no freshholdout andno automatic promotion",
+    "no minimum notional or lot sizes added"
+  ]
+}

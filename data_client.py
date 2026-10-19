@@ -110,6 +110,14 @@ def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
 
 def normalize_ticker(ticker: dict[str, Any]) -> dict[str, Any]:
     last_price = parse_float(ticker.get("lastPrice"))
+    # Keep the source clock; receiving an old response does not make its quote fresh.
+    raw_clock = ticker.get("closeTime")
+    try:
+        close_time = int(raw_clock)
+        if isinstance(raw_clock, bool) or close_time <= 0 or float(raw_clock) != close_time:
+            close_time = None
+    except (TypeError, ValueError, OverflowError):
+        close_time = None
     return {
         "symbol": ticker.get("symbol"),
         "price": last_price,
@@ -121,6 +129,7 @@ def normalize_ticker(ticker: dict[str, Any]) -> dict[str, Any]:
         "volume": parse_float(ticker.get("volume")),
         "quoteVolume": parse_float(ticker.get("quoteVolume")),
         "openPrice": parse_float(ticker.get("openPrice")),
+        "closeTime": close_time,
     }
 
 

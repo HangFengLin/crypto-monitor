@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -111,7 +112,8 @@ class SignalTrackingTest(unittest.TestCase):
         app.register_strategy_signal(self.signal())
         bars = [{"close_time": 2000, "low": 100, "high": 102, "close": 101}]
         with patch.object(app, "async_fetch_klines", new=AsyncMock(return_value=bars)):
-            asyncio.run(app.update_strategy_trades_with_prices_async({"BTCUSDT": {"lastPrice": 102}}))
+            asyncio.run(app.update_strategy_trades_with_prices_async(
+                {"BTCUSDT": {"lastPrice": 102, "closeTime": int(time.time() * 1000)}}))
         saved = app.load_strategy_trades()[0]
         self.assertEqual(saved["current_price"], 102)
         self.assertEqual(saved["last_evaluated_close_time"], 2000)

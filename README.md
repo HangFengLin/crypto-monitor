@@ -20,6 +20,9 @@
 - 旧的 OKX 机器人脚本启动会返回“retired”；下单配置文件与 Docker 服务已移除。
 - 本地修改不自动停止已运行的远程容器。部署迁移前应单独核对旧服务和未结束的 Demo 持仓，历史账本及缓存保留。
 
+候选 checkpoint、坏账本停止条件、报价新鲜度和配置/执行版本的区别，见
+[paper 状态恢复说明](docs/PAPER_STATE_RECOVERY.md)。
+
 ## 后端独立启动（维护用途）
 
 只启动 API 与旧版兼容静态页面（不会下单，日常使用上面的原网站入口）：
@@ -44,8 +47,9 @@ python3 strategy_validation.py --smoke --end 2024-01-08 --skip-okx --bootstrap-i
 ```
 
 完整流程、候选覆盖文件和报告字段见 [抗过拟合策略验证](docs/STRATEGY_VALIDATION.md)。
-官方数据限流或归档失败时，可用 `resume_strategy_validation.py --report-dir <报告目录>`
-补齐缺失品种并重建统计，无需重跑已经完成的全部候选回放。
+正式流程须事先冻结 [账户及资金费合同](docs/ACCOUNT_VALIDATION_CONTRACT.md)；冻结池
+缺失时阻断候选筛选。恢复入口需要显式合同，在新目录完整重放账户，保留旧报告；
+旧逐笔 CSV 不会被自动升级为账户净值证据。重放已曝光区间仍不属于新样本外确认。
 
 已经生成 prepared 缓存后，可用 `vectorbt_research.py` 把生产信号与持仓生命周期只计算
 一次，再批量筛选不会改变信号生成的评分、结构、背驰类型、方向和逆势过滤组合。该入口

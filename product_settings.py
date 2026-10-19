@@ -20,8 +20,15 @@ ROOT = Path(__file__).resolve().parent
 _LOCK = threading.RLock()
 _BASE = load_config()
 _STRATEGY = asdict(DEFAULT_CONFIG)
+ENGINE_SOURCE_FILES = (
+    "strategy.py", "position_manager.py", "indicators.py", "app.py", "data_client.py",
+    "product_settings.py", "signal_engine_state.py",
+    "project_signal_backtest.py", "backtest_statistics.py", "historical_market_data.py",
+    "config.py", "runtime_utils.py",
+)
 ENGINE_VERSION = hashlib.sha256(
-    b"".join((ROOT / name).read_bytes() for name in ("strategy.py", "position_manager.py", "indicators.py"))
+    b"".join(name.encode()+b"\0"+((ROOT/name).read_bytes() if (ROOT/name).exists() else b"<absent>")+b"\0"
+             for name in ENGINE_SOURCE_FILES)
 ).hexdigest()[:12]
 _EDITABLE = (
     "min_divergence_strength",
@@ -114,6 +121,49 @@ class SettingsConflict(ValueError):
     pass
 
 
+def _effective_for_execution(document):
+    """Validate a signed historical configuration before applying current defaults."""
+    values = validate(document["values"])
+    effective = document["effective_strategy"]
+    if not isinstance(effective, dict) or set(effective) - set(_STRATEGY):
+        raise ValueError("配置包含当前引擎不支持的策略字段")
+    for name, value in effective.items():
+        template = _STRATEGY[name]
+        if isinstance(template, bool):
+            valid = isinstance(value, bool)
+        elif isinstance(template, int):
+            valid = isinstance(value, int) and not isinstance(value, bool)
+        elif isinstance(template, float):
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        else:
+            valid = isinstance(value, type(template))
+        if not valid:
+            raise ValueError(f"策略字段 {name} 类型不兼容")
+    for name, value in values["strategy"].items():
+        if effective.get(name) != value:
+            raise ValueError("生效策略与已保存参数不一致")
+    return {**_STRATEGY, **effective}, sorted(set(_STRATEGY) - set(effective))
+
+
+def execution_settings(document):
+    """Bind next execution to current source while retaining immutable config identity."""
+    source = copy.deepcopy(document.get("configuration_snapshot", document))
+    try:
+        payload = {key:source[key] for key in ("values", "effective_strategy", "engine_version")}
+        digest = hashlib.sha256(json.dumps(payload,sort_keys=True,allow_nan=False).encode()).hexdigest()[:16]
+        if source["revision"] != digest:
+            raise ValueError("配置快照与版本不匹配")
+        effective, added = _effective_for_execution(source)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("运行配置与当前执行引擎不兼容") from exc
+    binding = {"config_revision":source["revision"],"engine_version":ENGINE_VERSION,"effective_strategy":effective}
+    execution_revision = hashlib.sha256(json.dumps(binding,sort_keys=True,allow_nan=False).encode()).hexdigest()[:16]
+    return dict(source, effective_strategy=effective, engine_version=ENGINE_VERSION,
+                config_revision=source["revision"], config_engine_version=source["engine_version"],
+                execution_revision=execution_revision, strategy_defaults_applied=added,
+                engine_source_files=list(ENGINE_SOURCE_FILES), configuration_snapshot=source)
+
+
 class SettingsStore:
     def __init__(self, path):
         self.path = Path(path)
@@ -147,6 +197,7 @@ class SettingsStore:
                 digest = hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
                 if digest != doc["revision"]:
                     raise ValueError("配置快照与版本不匹配")
+                _effective_for_execution(doc)
                 return doc
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("运行设置损坏，已停止采用新配置；请恢复有效版本") from exc

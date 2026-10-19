@@ -45,10 +45,11 @@ from position_manager import (
     classify_return_outcome,
     evaluate_lifecycle_bar,
 )
-from product_settings import SettingsConflict, SettingsStore
+from product_settings import ENGINE_VERSION, SettingsConflict, SettingsStore, execution_settings
 from research_archive import ResearchArchive
 from runtime_utils import append_jsonl, post_discord
 from runtime_utils import code_fingerprint as build_code_fingerprint
+from signal_engine_state import PersistentSignalEngine
 from strategy import (
     DEFAULT_CONFIG,
     HIGHER_TREND_INTERVAL,
@@ -272,6 +273,8 @@ class MonitorState:
 state = MonitorState()
 state_lock = threading.Lock()
 SIGNAL_ENGINES: dict[tuple[str, ...], ProjectSignalEngine] = {}
+_signal_engines_lock = threading.Lock()
+PAPER_QUOTE_MAX_AGE_MS = 30_000
 RESEARCH_ARCHIVE = ResearchArchive(
     Path(os.getenv("RESEARCH_RUNS_DIR", str(STRATEGY_TRADES_FILE.parent / "research-runs")))
 )
@@ -705,13 +708,15 @@ def load_strategy_trades() -> list[dict[str, Any]]:
 
     try:
         data = json.loads(STRATEGY_TRADES_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("策略交易账本不可读取或已损坏，停止采用空账本") from error
     if isinstance(data, dict):
-        trades = data.get("trades", [])
+        trades = data.get("trades")
     else:
         trades = data
-    return [trade for trade in trades if isinstance(trade, dict)]
+    if not isinstance(trades, list) or any(not isinstance(trade, dict) for trade in trades):
+        raise ValueError("策略交易账本结构无效，停止采用空账本")
+    return trades
 
 
 def okx_demo_ledger_candidates() -> list[Path]:
@@ -953,7 +958,7 @@ def calculate_strategy_levels(direction: str, entry_price: float, stop_loss: flo
 
 
 def build_strategy_trade_from_signal(signal: dict[str, Any]) -> dict[str, Any] | None:
-    runtime = signal.get("runtime_config") or RUNTIME_SETTINGS.get()
+    runtime = execution_settings(signal.get("runtime_config") or RUNTIME_SETTINGS.get())
     paper = runtime["values"]["paper"]
     direction = str(signal.get("signal", ""))
     if not paper["enabled"] or paper["signal_direction"] not in {"all", direction}:
@@ -995,13 +1000,23 @@ def build_strategy_trade_from_signal(signal: dict[str, Any]) -> dict[str, Any] |
         "exit_mode": paper["stop_mode"],
         "fee_rate": paper["fee_rate"],
         "return_model": LINEAR_USDM_V1,
-        "config_revision": runtime["revision"],
+        "config_revision": runtime["config_revision"],
+        "config_engine_version": runtime["config_engine_version"],
+        "execution_revision": runtime["execution_revision"],
         "engine_version": runtime["engine_version"],
         "runtime_config": runtime,
         "market_data_source": runtime["market_data_source"],
         "opened_at": opened_at,
         "opened_kline_close_time": signal.get("kline_close_time"),
         "last_evaluated_close_time": signal.get("kline_close_time"),
+        "signal_ready_time": signal.get("signal_ready_time"),
+        "decision_close_time": signal.get("decision_close_time", signal.get("kline_close_time")),
+        "observed_at": signal.get("observed_at"),
+        "observed_at_unit": signal.get("observed_at_unit"),
+        "input_sha256": signal.get("input_sha256"),
+        "input_snapshot_ref": signal.get("input_snapshot_ref"),
+        "entry_boundary": "signal_reference_price",
+        "fill_boundary": "open_before_range_v1_adverse_stop_at_observed_open",
         "divergence_time": signal.get("divergence_time"),
         "event_key": signal.get("event_key"),
         "strength": signal.get("strength"),
@@ -1026,7 +1041,8 @@ def strategy_return_pct(
 
 
 def apply_strategy_lifecycle(
-    trade: dict[str, Any], low: float, high: float, close: float, atr_value: float | None = None
+    trade: dict[str, Any], low: float, high: float, close: float, atr_value: float | None = None,
+    *, open_price: float | None = None,
 ) -> bool:
     direction = str(trade.get("direction"))
     entry_price = parse_float(trade.get("entry_price"))
@@ -1055,6 +1071,7 @@ def apply_strategy_lifecycle(
         fee_rate=trade.get("fee_rate", STRATEGY_FEE_RATE),
         return_model=trade.get("return_model", LEGACY_RATIO_V1),
         atr_value=atr_value,
+        open_price=open_price,
     )
     trade["active_stop"] = lifecycle.active_stop
     trade["stop_loss"] = lifecycle.active_stop
@@ -1065,6 +1082,7 @@ def apply_strategy_lifecycle(
     if not lifecycle.decision:
         return False
     close_strategy_trade(trade, lifecycle.decision.exit_price, lifecycle.decision.reason, lifecycle.decision.outcome)
+    trade["exit_phase"] = lifecycle.exit_phase
     return True
 
 
@@ -1091,6 +1109,7 @@ def close_strategy_trade(trade: dict[str, Any], exit_price: float, reason: str, 
     trade["outcome"] = outcome
     trade["exit_price"] = exit_price
     trade["closed_at"] = time.time()
+    trade["exit_engine_version"] = ENGINE_VERSION
     trade["return_pct"] = strategy_return_pct(
         str(trade.get("direction")), entry_price, exit_price, trade.get("fee_rate", STRATEGY_FEE_RATE),
         return_model=trade.get("return_model", LEGACY_RATIO_V1),
@@ -1107,7 +1126,7 @@ def evaluate_open_strategy_trade(trade: dict[str, Any], current_price: float) ->
         return False
 
     refresh_strategy_trade_mark(trade, current_price)
-    return apply_strategy_lifecycle(trade, current_price, current_price, current_price)
+    return apply_strategy_lifecycle(trade, current_price, current_price, current_price, open_price=current_price)
 
 
 def evaluate_open_strategy_trade_with_bars(
@@ -1119,28 +1138,47 @@ def evaluate_open_strategy_trade_with_bars(
     opened_close_time = parse_int(trade.get("opened_kline_close_time"), 0)
     last_evaluated = parse_int(trade.get("last_evaluated_close_time"), opened_close_time)
 
-    future_bars = [
-        bar
-        for bar in bars
-        if opened_close_time > 0
-        and parse_int(bar.get("close_time"), 0) > max(opened_close_time, last_evaluated)
-        and bar.get("confirmed") is not False
-        and parse_int(bar.get("close_time"), 0) <= int(time.time() * 1000)
-    ]
+    # Validate the entire unseen batch before changing marks or progress. A
+    # same-time conflicting revision must not partially consume this batch.
+    unique_bars: dict[int, dict[str, Any]] = {}
+    now_ms = int(time.time() * 1000)
+    for bar in bars:
+        close_time = parse_int(bar.get("close_time"), 0)
+        if (opened_close_time <= 0 or close_time <= max(opened_close_time, last_evaluated)
+                or close_time > now_ms or bar.get("confirmed") is False or bar.get("is_closed") is False):
+            continue
+        for price_field in ("low", "high", "close"):
+            number = parse_float(bar.get(price_field))
+            if number is None or not math.isfinite(number) or number <= 0:
+                raise ValueError("策略持仓K线价格无效")
+        if float(bar["low"]) > float(bar["high"]) or not float(bar["low"]) <= float(bar["close"]) <= float(bar["high"]):
+            raise ValueError("策略持仓K线价格范围无效")
+        open_price = parse_float(bar.get("open"))
+        if "open" in bar and (open_price is None or not math.isfinite(open_price)
+                               or not float(bar["low"]) <= open_price <= float(bar["high"])):
+            raise ValueError("策略持仓K线开盘价无效")
+        previous = unique_bars.get(close_time)
+        if previous is not None and previous != bar:
+            raise ValueError("策略持仓K线同一时刻出现冲突数据")
+        unique_bars[close_time] = bar
+    future_bars = list(unique_bars.values())
     for bar in sorted(future_bars, key=lambda item: parse_int(item.get("close_time"), 0)):
         high = parse_float(bar.get("high"))
         low = parse_float(bar.get("low"))
         close = parse_float(bar.get("close"))
         if high is None or low is None:
             continue
-        if close is not None:
-            refresh_strategy_trade_mark(trade, close)
         trade["last_evaluated_close_time"] = bar["close_time"]
         if apply_strategy_lifecycle(
-            trade, low, high, close if close is not None else high, parse_float(bar.get("atr"))
+            trade, low, high, close if close is not None else high, parse_float(bar.get("atr")),
+            open_price=parse_float(bar.get("open")),
         ):
+            # An opening gap exits before the later range/close is observable.
+            refresh_strategy_trade_mark(trade, trade["exit_price"])
             trade["exit_kline_close_time"] = bar["close_time"]
             return True
+        if close is not None:
+            refresh_strategy_trade_mark(trade, close)
 
     if current_price is None:
         return False
@@ -1191,6 +1229,9 @@ def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def register_strategy_signal(signal: dict[str, Any]) -> bool:
+    with state_lock:
+        if state.module_errors.get("ledger"):
+            return False
     membership = None
     if PAPER_UNIVERSE_ENABLED:
         pool = PAPER_UNIVERSE.status()
@@ -1221,9 +1262,28 @@ def register_strategy_signal(signal: dict[str, Any]) -> bool:
     return changed
 
 
+def qualified_paper_quote(ticker: dict[str, Any] | None) -> float | None:
+    """A point-price fill requires a finite price and a fresh source clock.
+
+    Binance's source closeTime is retained by the adapter. The poll's local
+    arrival time cannot substitute for a missing or stale source timestamp.
+    """
+    if not ticker:
+        return None
+    price = parse_float(ticker.get("lastPrice"))
+    timestamp = parse_float(ticker.get("closeTime"))
+    if (price is None or not math.isfinite(price) or price <= 0
+            or timestamp is None or not math.isfinite(timestamp) or timestamp <= 0):
+        return None
+    age = time.time() * 1000 - timestamp
+    return price if 0 <= age <= PAPER_QUOTE_MAX_AGE_MS else None
+
+
 async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, Any]]) -> None:
     changed = False
     with state_lock:
+        if state.module_errors.get("ledger"):
+            return
         open_keys = sorted(
             {
                 (
@@ -1235,6 +1295,7 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
             }
         )
 
+    data_errors: dict[tuple[str, str], str] = {}
     async def load_bars(symbol: str, interval: str) -> tuple[tuple[str, str], list[dict[str, Any]]]:
         try:
             return (symbol, interval), await async_fetch_klines(symbol, interval, KLINE_LIMIT)
@@ -1248,7 +1309,8 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
             OSError,
             RuntimeError,
             ValueError,
-        ):
+        ) as error:
+            data_errors[(symbol, interval)] = f"{symbol}:{interval} K线不可用 ({type(error).__name__})"
             return (symbol, interval), []
 
     bars_by_key = (
@@ -1265,13 +1327,19 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
             symbol = str(trade.get("symbol", "")).upper()
             interval = normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL))
             ticker = prices.get(symbol)
-            current_price = parse_float((ticker or {}).get("lastPrice"))
+            current_price = qualified_paper_quote(ticker)
             bars = bars_by_key.get((symbol, interval), [])
-            if bars and evaluate_open_strategy_trade_with_bars(trade, bars, current_price):
-                changed = True
-            elif not bars and current_price is not None and evaluate_open_strategy_trade(trade, current_price):
-                changed = True
+            if current_price is None and ticker:
+                data_errors[(symbol, interval)] = f"{symbol}:{interval} 缺少有效新鲜报价"
+            try:
+                if bars and evaluate_open_strategy_trade_with_bars(trade, bars, current_price):
+                    changed = True
+                elif not bars and current_price is not None and evaluate_open_strategy_trade(trade, current_price):
+                    changed = True
+            except ValueError as error:
+                data_errors[(symbol, interval)] = f"{symbol}:{interval} {error}"
             changed = changed or before != trade
+        state.module_errors["paper_data"] = "; ".join(data_errors.values()) or None
         state.strategy_stats = calculate_strategy_stats(state.strategy_trades)
         trades_snapshot = [dict(item) for item in state.strategy_trades]
 
@@ -1572,12 +1640,14 @@ def get_td_signals(symbol: str, timestamp_ms: int) -> dict[str, int]:
 
 
 def signal_engine(symbol: str, interval: str, runtime=None, namespace="watchlist") -> ProjectSignalEngine:
-    runtime = runtime or RUNTIME_SETTINGS.get()
-    key = (namespace, symbol.upper(), normalize_interval(interval), runtime["revision"])
-    engine = SIGNAL_ENGINES.get(key)
-    if engine is None:
-        engine = ProjectSignalEngine(StrategyConfig(**runtime["effective_strategy"]))
-        SIGNAL_ENGINES[key] = engine
+    runtime = execution_settings(runtime or RUNTIME_SETTINGS.get())
+    key = (namespace, symbol.upper(), normalize_interval(interval), runtime["execution_revision"], runtime["engine_version"])
+    with _signal_engines_lock:
+        engine = SIGNAL_ENGINES.get(key)
+        if engine is None:
+            directory = Path(os.getenv("SIGNAL_ENGINE_STATE_DIR", str(STRATEGY_TRADES_FILE.parent / "signal-engine-state")))
+            engine = PersistentSignalEngine(StrategyConfig(**runtime["effective_strategy"]), directory, key)
+            SIGNAL_ENGINES[key] = engine
     return engine
 
 
@@ -1646,10 +1716,13 @@ def detect_project_signal(symbol: str, interval: str, *, engine_namespace="watch
         raise ValueError("当前产品要求 Binance USDT 合约行情，请使用统一启动器")
     normalized_interval = normalize_interval(interval)
     ready_bars = build_project_signal_bars(symbol, normalized_interval)
-    runtime = RUNTIME_SETTINGS.get()
+    runtime = execution_settings(RUNTIME_SETTINGS.get())
     signal = signal_engine(symbol, normalized_interval, runtime, engine_namespace).detect(ready_bars)
     signal["runtime_config"] = runtime
-    signal["config_revision"] = runtime["revision"]
+    signal["config_revision"] = runtime["config_revision"]
+    signal["config_engine_version"] = runtime["config_engine_version"]
+    signal["engine_version"] = runtime["engine_version"]
+    signal["execution_revision"] = runtime["execution_revision"]
     latest = ready_bars[-1] if ready_bars else {}
     close_time = latest.get("close_time") or latest.get("open_time")
     td_signals: dict[str, int] = {}
@@ -2002,7 +2075,7 @@ def run_signal_backtest_summary(
             "error": f"缺少依赖包 {missing}，请先运行 python3 -m pip install -r requirements.txt",
         }
 
-    runtime = RUNTIME_SETTINGS.get()
+    runtime = execution_settings(RUNTIME_SETTINGS.get())
     bars = project_signal_backtest.fetch_exchange_klines("binance_usdm", symbol, interval, limit)
     enriched_bars = project_signal_backtest.fetch_higher_timeframe_context(
         symbol,
@@ -2040,7 +2113,10 @@ def run_signal_backtest_summary(
         {
             "ok": True,
             "market_data_source": "binance_usdm",
-            "config_revision": runtime["revision"],
+            "config_revision": runtime["config_revision"],
+            "config_engine_version": runtime["config_engine_version"],
+            "engine_version": runtime["engine_version"],
+            "execution_revision": runtime["execution_revision"],
             "runtime_config": runtime,
             "symbol": symbol,
             "interval": interval,
@@ -2779,14 +2855,20 @@ def initialize_state() -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     all_events = load_all_event_history()
     # Existing ledgers resume, but old alerts are not invented as new live tracks.
-    strategy_trades = load_strategy_trades()
+    try:
+        strategy_trades = load_strategy_trades()
+    except ValueError:
+        with state_lock:
+            state.module_errors["ledger"] = "策略交易账本损坏或不可读，已停止写账及新信号"
+        raise
     with state_lock:
         state.watchlist = load_watchlist()
         state.events = list(reversed(all_events[-50:]))
         state.sent_alerts = {event["event_key"] for event in state.events if isinstance(event.get("event_key"), str)}
         state.strategy_trades = strategy_trades
         state.strategy_stats = calculate_strategy_stats(strategy_trades)
-    save_strategy_trades(strategy_trades)
+    with state_lock:
+        state.module_errors["ledger"] = None
 
 
 async def state_event_stream():
