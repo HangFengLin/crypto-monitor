@@ -210,6 +210,61 @@ class ForwardObserverTest(unittest.TestCase):
             self.assertTrue(result["input_revision_ignored"])
             self.assertEqual({str(p): p.read_bytes() for p in Path(temp).rglob("*.json")}, before)
 
+    def test_recovery_reads_one_local_snapshot_and_sees_the_next_commit(self):
+        module = self.module()
+        symbols = ("BTCUSDT", "ETHUSDT")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            observer = module.ForwardObserver(
+                root,
+                universe={"ready": True, "members": [{"symbol": symbol} for symbol in symbols]},
+                frozen_at_ms=301 * STEP + 10,
+            )
+            for symbol in symbols:
+                self.assertEqual(
+                    observer.accept_inputs(symbol, self.inputs(301), 301 * STEP + 20)["status"], "WARMED"
+                )
+                self.assertEqual(
+                    observer.accept_inputs(symbol, self.inputs(302), 302 * STEP + 1000)["status"], "OBSERVED"
+                )
+
+            def views():
+                return {
+                    str(path.relative_to(root)): path.read_bytes()
+                    for pattern in ("decisions/*/*.json", "events/*/*.json")
+                    for path in root.glob(pattern)
+                }
+
+            state_path = root / "state.json"
+            saved_state_bytes = state_path.read_bytes()
+            saved_state = json.loads(saved_state_bytes)["payload"]
+            self.assertEqual(set(saved_state["symbols"]), set(symbols))
+            self.assertEqual(len(list(root.glob("observations/*/*.json"))), 4)
+            self.assertTrue(list(root.glob("decisions/*/*.json")))
+            self.assertTrue(list(root.glob("events/*/*.json")))
+            before_state = copy.deepcopy(observer.state)
+            before_views = views()
+            with patch.object(observer, "_documents", wraps=observer._documents) as documents:
+                observer._recover()
+            self.assertEqual(documents.call_count, 1)
+            self.assertEqual(observer.state, before_state)
+            self.assertEqual(state_path.read_bytes(), saved_state_bytes)
+            self.assertEqual(views(), before_views)
+
+            # The snapshot belongs to one recovery, never to this instance.
+            result = observer.accept_inputs(symbols[0], self.inputs(303), 303 * STEP + 1000)
+            self.assertEqual(result["status"], "OBSERVED")
+            with patch.object(observer, "_documents", wraps=observer._documents) as documents:
+                observer._recover()
+            self.assertEqual(documents.call_count, 1)
+            self.assertEqual(len(list(root.glob("observations/*/*.json"))), 5)
+            self.assertEqual(observer.state["symbols"][symbols[0]]["last_close"], 303 * STEP - 1)
+            self.assertEqual(observer.state["symbols"][symbols[1]], before_state["symbols"][symbols[1]])
+            self.assertEqual(json.loads(state_path.read_bytes())["payload"], observer.state)
+            self.assertGreater(len(views()), len(before_views))
+            for relative, data in before_views.items():
+                self.assertEqual((root / relative).read_bytes(), data)
+
     def test_missing_state_cache_is_reconstructed_from_immutable_journal(self):
         module = self.module()
         with tempfile.TemporaryDirectory() as temp:

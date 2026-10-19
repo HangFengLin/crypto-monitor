@@ -332,7 +332,8 @@ class ForwardObserver:
         symbols = {}
         history = {}
         expected_views = set()
-        for path, payload in self._documents():
+        documents = self._documents()
+        for path, payload in documents:
             symbol = payload["symbol"]
             if payload["manifest_sha256"] != _sha(_bytes(self.manifest)) or payload["before_state"] != symbols.get(
                 symbol
@@ -370,7 +371,7 @@ class ForwardObserver:
                 current = symbols.get(symbol)
                 if current is None or state["last_close"] > current["last_close"]:
                     raise ValueError("state is ahead of committed journal")
-                options = [p["after_state"] for _, p in self._documents() if p["symbol"] == symbol]
+                options = [p["after_state"] for _, p in documents if p["symbol"] == symbol]
                 if state not in options:
                     raise ValueError("state cache drift")
             if saved.get("manifest_sha256") != self.state["manifest_sha256"]:
