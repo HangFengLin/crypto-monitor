@@ -3,7 +3,7 @@ WORKDIR /src/sites/lianqi
 COPY sites/lianqi/package.json sites/lianqi/pnpm-lock.yaml ./
 RUN npm install -g pnpm@10.32.1 && pnpm install --frozen-lockfile
 COPY sites/lianqi/ ./
-RUN node --test tests/dashboard-state.test.mjs
+RUN node --test tests/dashboard-interactions.test.mjs tests/dashboard-state.test.mjs
 RUN pnpm run build:vps
 
 FROM python:3.11-slim
