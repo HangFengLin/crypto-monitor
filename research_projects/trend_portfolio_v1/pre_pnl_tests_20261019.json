@@ -1,0 +1,37 @@
+{
+  "status": "PASS",
+  "tests_run": 11,
+  "exit_code": 0,
+  "completed_at_utc": "2026-10-19T16:00:11.994773+00:00",
+  "command": [
+    ".venv/bin/python",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "research_projects/trend_portfolio_v1",
+    "-p",
+    "test_*.py",
+    "-v"
+  ],
+  "log_sha256": "cdf13b26d9f4fafde6b8fd32e4d01b4d857858d385e87aae3711d39869188d69",
+  "source_bindings": {
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/protocol.json": "a79cb6df64e0d3fb15af3d48a6501e15518fbe1a88cc20fd111e6f95a49b770d",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/PROJECT.md": "938d4e3724afd1a6bfb451baf3cee57c26b631772a43ab661b9faace3028ba9e",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/source_audit.json": "d4925062b210759177c90a1438dca147678fdf3293e946111b7ec5086a2a8dfb",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/execution_addendum_20261019.json": "f3fe6672d27b55109aa49b41fb97f37455d39028cfae5920cdb591c8db81bde3",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/target_weight_adapter.py": "e63f37928f493fdbf5831c969a52360f8c755cfb85c0c43b90a5d55d6a6202b7",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/test_target_weight_adapter.py": "7c7baa17f02b62a73d2804a139ab0bd0eaf5f96d3b5d418b579e68736cd42a96",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/run_study.py": "f19a56f6734e7ba44ae225d6a951e42246412f07a929aa43e3d397f8941bb0b9",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/test_run_study.py": "c0077e043f15c3a8d2b4ff3a3239940892cb60ba2021c4b14c54f387bb210ca3",
+    "/Users/meta-lin/Documents/New project/position_manager.py": "b8ccb89a983b949c8451f936f6b07d3002ffe1f62106644ffb48e1133f8b8cc2",
+    "/Users/meta-lin/Documents/New project/research_portfolio.py": "228e68a7f420cf8f8c5fa30b8c1dbeb90a1ed9bcd7c7113577757439ee139212"
+  },
+  "red_phase": {
+    "adapter_missing_failures": 8,
+    "driver_missing_failures": 3,
+    "observed_before_each_implementation": true
+  },
+  "new_market_pnl_read": false
+}

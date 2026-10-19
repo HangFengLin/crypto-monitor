@@ -46,7 +46,8 @@ export function viewFromHash(hash) {
   return ['overview', 'markets', 'paper', 'research', 'settings'].includes(view) ? view : 'overview';
 }
 
-// GET and SSE can both deliver snapshots captured before a completed save.
+// The scan clock is not a watchlist revision. A successful current-generation
+// GET or save anchors the list until another such GET confirms a change.
 export function createWatchlistSync() {
   let generation = 0;
   let saving = false;
@@ -58,18 +59,17 @@ export function createWatchlistSync() {
     generation: () => generation,
     beginSave() { generation++; saving = true; },
     finishSave(items) { generation++; saving = false; expected = signature(items); },
-    failSave() { generation++; saving = false; expected = null; },
+    failSave() { generation++; saving = false; },
     /** @param {number | null} [requestGeneration] */
     accept(items, requestGeneration = null) {
       if (saving) return false;
       if (requestGeneration !== null) {
         if (requestGeneration !== generation) return false;
-        if (expected !== null) expected = signature(items);
+        expected = signature(items);
         return true;
       }
       if (expected !== null) {
         if (signature(items) !== expected) return false;
-        expected = null;
       }
       return true;
     },

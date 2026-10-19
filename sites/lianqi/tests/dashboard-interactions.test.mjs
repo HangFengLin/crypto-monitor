@@ -65,7 +65,8 @@ test('a successful save cannot be rolled back by an earlier fetch or a delayed s
   assert.equal(sync.accept([item('DOGEUSDT')], sync.generation()), true);
   assert.equal(sync.accept(rows), false);
   assert.equal(sync.accept([item('DOGEUSDT')]), true);
-  assert.equal(sync.accept([item('ADAUSDT')]), true);
+  assert.equal(sync.accept([item('ADAUSDT')]), false);
+  assert.equal(sync.accept([item('DOGEUSDT')]), true);
 });
 
 test('save failure resumes new snapshots but still rejects a fetch from before the save', () => {
@@ -78,4 +79,34 @@ test('save failure resumes new snapshots but still rejects a fetch from before t
   assert.equal(sync.accept(rows, earlier), false);
   assert.equal(sync.accept(rows, during), false);
   assert.equal(sync.accept(rows, sync.generation()), true);
+});
+
+test('initial successful GET anchors the list until a later current-generation GET confirms a change', () => {
+  const sync = interactions.createWatchlistSync();
+  assert.equal(sync.accept(rows, sync.generation()), true);
+  assert.equal(sync.accept([item('ADAUSDT')]), false);
+  assert.equal(sync.accept(rows), true);
+  assert.equal(sync.accept(rows), true);
+  assert.equal(sync.accept([item('ADAUSDT')], sync.generation()), true);
+  assert.equal(sync.accept(rows), false);
+  assert.equal(sync.accept([item('ADAUSDT')]), true);
+});
+
+test('failed save retains the last GET or successful-save anchor and rejects older fetch generations', () => {
+  for (const establishedBy of ['get', 'save']) {
+    const sync = interactions.createWatchlistSync();
+    if (establishedBy === 'get') sync.accept(rows, sync.generation());
+    else sync.finishSave(rows);
+    const earlier = sync.generation();
+    sync.beginSave();
+    const during = sync.generation();
+    sync.failSave();
+    assert.equal(sync.accept([item('ADAUSDT')], earlier), false);
+    assert.equal(sync.accept([item('ADAUSDT')], during), false);
+    assert.equal(sync.accept([item('ADAUSDT')]), false);
+    assert.equal(sync.accept(rows), true);
+    assert.equal(sync.accept([item('ADAUSDT')], sync.generation()), true);
+    assert.equal(sync.accept(rows), false);
+    assert.equal(sync.accept([item('ADAUSDT')]), true);
+  }
 });

@@ -4,10 +4,11 @@
 `position_manager.py`，但不会修改 `config.yaml`、启动机器人、提交订单或部署 VPS。
 
 新验证默认采用 `linear_usdm_v1`，手续费按入场和退出的实际名义本金计算，入场 K 线
-计为观察的第一根。执行版本与观察边界写入 manifest；旧报告缺少版本字段时，断点恢复
-仍沿用 `legacy_ratio_v1` 与原期限语义，不能混入新版对照。显式复现旧实验可传入
+计为观察的第一根。执行版本与观察边界写入 manifest；旧报告缺少版本字段时，读取为
+`legacy_ratio_v1` 与原期限语义，不能混入新版账户对照。显式诊断旧实验可传入
 `--return-model legacy_ratio_v1 --holding-limit-convention legacy_inclusive_end`。
-正式验证固定全额 `structure_atr` 退出；成本压力不接受分仓退出记录。
+正式验证固定全额 `structure_atr` 退出；成本压力用相同账户和输入完整重放，手续费率
+与独立滑点各乘二，资金费结算源保持冻结。逐笔 CSV 不能代替账户路径。
 
 安装研究和静态图表依赖：
 
@@ -33,16 +34,26 @@ python3 strategy_validation.py \
   --bootstrap-iterations 200
 ```
 
-完整研究默认取最近完整 UTC 日之前两年、市值前 100 的 Binance USD-M
-永续，并把同一快照中排名最高的 20 个 OKX SWAP 留作晋级复核：
+正式研究必须先提供独立账户合同及按交易所、品种绑定的完整资金费来源。合同未给定、
+资金费缺失或冻结品种覆盖不完整时，程序拒绝正式候选筛选，不能按可用子集继续晋级。
+合同的格式与来源限制见 [ACCOUNT_VALIDATION_CONTRACT.md](ACCOUNT_VALIDATION_CONTRACT.md)。
+资金规模、风险比例、并发持仓、名义手续费和滑点需要事先确定；示例数值不能代替真实
+经济与风险验收协议。正式账户只接受 `linear_usdm_v1` 与 `entry_bar_is_first`。
+
+默认研究区间为最近完整 UTC 日之前两年、市值前 100 的 Binance USD-M 永续，并把同一
+快照中排名最高的 20 个 OKX SWAP 留作晋级复核。先冻结品种池，并为池内全部品种准备
+账户合同的资金费 SHA 绑定，再运行：
 
 ```bash
-python3 strategy_validation.py --bootstrap-iterations 2000
+python3 strategy_validation.py \
+  --universe-snapshot experiments/universe_snapshot.json \
+  --account-contract experiments/account_contract.json \
+  --bootstrap-iterations 2000
 ```
 
 随机种子默认固定为 `20260620`，需要复现实验时可显式传入
-`--seed 20260620`。完整模式即使使用 `--skip-okx` 也不会放行候选；该开关只适合
-数据准备或冒烟诊断，缺少跨交易所证据时结果必定保留基线。
+`--seed 20260620`。正式模式拒绝 `--skip-okx`；该开关仅用于冒烟诊断。无账户合同的
+冒烟指标固定标记 `account_verified=false`，不具有账户或候选晋级权威。
 历史数据默认按快照顺序使用 4 个进程并发准备（`--data-workers 4`）；完成的指标、
 高周期上下文、资金费率和 OI 会按区间与基线配置哈希写入压缩缓存。落盘和统计顺序
 仍按不可变快照固定，因此并发不会改变随机结果；受限环境可改用
@@ -98,6 +109,8 @@ python3 vectorbt_research.py \
 python3 strategy_validation.py \
   --start 2024-06-20 \
   --end 2026-06-20 \
+  --universe-snapshot experiments/universe_snapshot.json \
+  --account-contract experiments/account_contract.json \
   --cache-dir data/strategy_validation \
   --reports-dir reports
 ```
@@ -110,8 +123,9 @@ python3 strategy_validation.py \
 - OKX K 线来自 OKX 历史 K 线接口；资金费率使用 OKX 官方月度历史归档并由 REST
   补齐当前月，避免 REST 约三个月的可见窗口截断两年研究。OI 使用同一币种 Binance
   USD-M 合约作为代理，报告会明确标注。
-- 资金费率和 OI 都用信号 K 线实际收盘毫秒前最后一个已发布值；恰好在下一根
-  K 线开盘时发布的数据不会被计入上一根，不使用未来值后向填充。
+- 资金费率和 OI 按源事件时间匹配信号 K 线实际收盘毫秒前的最后值；恰好在下一根
+  K 线开盘的事件不会被计入上一根，不使用未来值后向填充。源事件时间不自动证明实际
+  发布时间或可得时间，真实 publication/available_at 链仍需独立核验。
 - 每段包含 250 根指标预热；交易不得跨 fold 边界，验证边界隔离 96 根 15 分钟 K 线。
 - 候选集合预先声明，不在训练窗内继续拟合参数；240 天训练窗和 60 天验证窗边界
   会写入产物，验证期只检验预声明候选。
@@ -129,7 +143,10 @@ strategy:
 运行时传入：
 
 ```bash
-python3 strategy_validation.py --candidate-overrides experiments/candidates.yaml
+python3 strategy_validation.py \
+  --candidate-overrides experiments/candidates.yaml \
+  --universe-snapshot experiments/universe_snapshot.json \
+  --account-contract experiments/account_contract.json
 ```
 
 需要声明多个预设候选时，使用 `candidates` 列表；每项必须包含唯一名称和单一参数族：
@@ -153,12 +170,21 @@ candidates:
 - `report_source_notes.json`：技术报告章节契约、图表映射、来源产物和图表省略原因。
 - `universe_snapshot.json`：不可变研究池快照及排除原因。
 - `data_coverage.csv`：各品种 K 线、资金费率和 OI 覆盖情况。
+- `coverage_gate.json`：每个交易所请求、已评估、失败及异常品种名单和哈希。任一冻结
+  品种准备失败会在筛选前停止，仍保存覆盖错误，不能生成晋级结果。
+- `account_contract.json`、`account_replays/`：原账户合同字节及统一资金回放的成交、
+  费用、资金费、持仓、逐根收盘盯市净值、输入/源码绑定。候选门禁使用该账户回撤，
+  不再使用按退出时间排列的逐笔复利曲线。
 - `validation_trades.csv`、`test_trades_*.csv`：逐笔交易。
 - `walk_forward_folds.csv`、`fold_metrics.csv`、`candidate_comparison.csv`、`test_summary.json`：
   训练/验证边界、walk-forward、FDR 与晋级门槛。
 - `group_stats.csv`：边际和预声明二维分组，仅用于生成假设。
 - `group_stats_full_8d.csv`：完整八维诊断，不用于排序或直接生成生产规则。
 - `report.html`：总体、walk-forward、最终测试、成本压力及跨交易所复核摘要。
+
+账户净值包含收盘时的持仓浮盈亏；它不能证明盘中最坏回撤，也不能代替真实保证金、
+强平和盘口成本验收。资金费文件的 `complete` 和来源声明需要独立复核，哈希只能证明
+绑定与字节完整性。程序筛选通过仍为 `RESEARCH_ONLY`，不等于通过绝对经济目标。
 
 默认 `--min-group-trades 30`，统计输出包含 Wilson 95% 胜率区间、按 UTC 周分块的
 bootstrap 区间，以及候选间比较的 BH-FDR 0.10 校正。最终 20% 测试集只在选定候选后
@@ -171,10 +197,16 @@ bootstrap 区间，以及候选间比较的 BH-FDR 0.10 校正。最终 20% 测�
 ```bash
 python3 resume_strategy_validation.py \
   --report-dir reports/strategy_validation_<时间戳> \
+  --account-contract experiments/account_contract.json \
+  --reports-dir reports/replayed_accounts \
   --cache-dir runtime/backtest-data
 ```
 
-断点入口只重放覆盖报告中失败的 Binance 品种，随后从逐笔交易重建全部 fold 指标、
-bootstrap、FDR 和候选选择，并强制补齐完整 OKX 前 20 后重新执行最终稳健性门槛。
-如果生产 `config.yaml` 哈希与原实验不同、Binance 仍有缺失或 OKX 少于快照数量，程序
-会硬失败而不是生成部分报告。
+恢复入口保留旧报告，在其目录之外建立新报告。它校验原生产配置、候选注册表、基线、
+品种快照及哈希后，使用原区间和候选重新执行完整账户回放；旧逐笔 CSV 不能恢复账户
+浮亏、资金约束或资金费。原实验已有账户合同的，必须提供同一 SHA 的合同；改变风险
+或成本属于新实验，不能伪装为断点恢复。仅有旧逐笔诊断的线性实验需要新显式账户协议，
+旧 `legacy_ratio_v1` 实验不能通过此入口变成账户验证。
+
+重放已经看过的历史区间仍是已曝光样本；更换目录、修复代码或重建账户不会使它成为
+未见过的样本外数据。缺失任一冻结品种或完整资金费来源，程序硬失败并保留阻塞原因。

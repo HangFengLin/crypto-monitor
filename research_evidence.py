@@ -26,6 +26,21 @@ MAX_RUN_BYTES = 8 * 1024 * 1024
 MAX_CSV_ROWS = 5000
 RUN_NAME = re.compile(r"strategy_(validation|optimization)_[A-Za-z0-9_-]{1,100}\Z")
 SHA256 = re.compile(r"[a-fA-F0-9]{64}\Z")
+ACCOUNT_SCOPE = "synchronized_linear_perpetual_account_v1"
+# Reviewed complete ASTs of the two pure predicates, not archive-provided code.
+# CPython3.11 omits FunctionDef.type_params; 3.12 includes an empty list. Only
+# these two exact equivalent shapes are allowed, with no generic normalization.
+# Any rule/helper/signature or nonempty type-parameter change needs new review.
+TRUSTED_GATE_AST = {
+    "passes_final_candidate_gates": frozenset({
+        "ebb47ada870c85f240c658a061d341a0d44f3a8ba25e0aa2b475f6f1bc66bebe",  # CPython3.11
+        "0ad40505573a9c344f31b96dca1ad192fcfc2eef324b73d780772f03ac3aa163",  # CPython3.12
+    }),
+    "account_evidence_valid": frozenset({
+        "c7c614e685c6eed80c53a72a7299d2a8f82902f7b5a764d36dedd53cb99d01f5",  # CPython3.11
+        "57fa975538973f90ef166fd9bc299ccdc9015dd0f423bccd2fa47885d666b8f1",  # CPython3.12
+    }),
+}
 
 
 class EvidenceIssue(ValueError):
@@ -43,12 +58,17 @@ class _Reader:
     def read(self, name: str) -> bytes:
         if name in self.files:
             return self.files[name]
-        if not _relative_name(name) or "/" in name:
+        if not _relative_name(name):
             raise EvidenceIssue("unverified", "产物路径不安全，未读取。")
         directory_fd = file_fd = None
         try:
             directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+            parts = name.split("/")
+            for part in parts[:-1]:
+                next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
+                os.close(directory_fd)
+                directory_fd = next_fd
+            file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
             info = os.fstat(file_fd)
             # The real frozen cache-hash inventory is about 2.4 MiB; no cache
             # files are opened. Summary files retain the smaller bound.
@@ -177,31 +197,194 @@ def _integrity(reader: _Reader, required: list[str], *, optimization: bool = Fal
 
 @lru_cache(maxsize=1)
 def _final_gate():
-    """Load only the existing pure predicate from trusted repository code."""
-    source = Path(__file__).with_name("strategy_validation.py").read_text(encoding="utf-8")
-    if len(source) > 256 * 1024:
-        raise ValueError("unexpected gate source")
-    tree = ast.parse(source)
-    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                    and node.name == "passes_final_candidate_gates")
-    expected = ["baseline_metrics", "candidate_metrics", "double_cost_metrics"]
-    returned = function.body[-1] if function.body else None
-    if (not isinstance(returned, ast.Return) or not isinstance(returned.value, ast.Call)
-            or not isinstance(returned.value.func, ast.Name) or returned.value.func.id != "bool"
-            or len(returned.value.args) != 1 or not isinstance(returned.value.args[0], ast.BoolOp)
-            or not isinstance(returned.value.args[0].op, ast.And) or len(returned.value.args[0].values) != 6):
-        raise ValueError("unsupported gate result structure")
-    if ([arg.arg for arg in function.args.args] != expected
-            or [arg.arg for arg in function.args.kwonlyargs] != ["okx_direction_consistent", "max_symbol_profit_share"]
-            or function.decorator_list or function.args.defaults or function.args.vararg or function.args.kwarg
-            or any(not isinstance(node, (ast.Expr, ast.Assign, ast.Return)) for node in function.body)
-            or any(isinstance(node, (ast.Import, ast.ImportFrom, ast.Attribute)) for node in ast.walk(function))
-            or any(not isinstance(node.func, ast.Name) or node.func.id not in {"bool", "abs"}
-                   for node in ast.walk(function) if isinstance(node, ast.Call))):
-        raise ValueError("unsupported gate source")
-    namespace = {"__builtins__": {"bool": bool, "abs": abs, "dict": dict, "float": float}}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "<repository-final-gate>", "exec"), namespace)
+    """Extract both reviewed pure functions without importing runtime modules."""
+    functions = []
+    for filename, name in (("validation_account.py", "account_evidence_valid"),
+                           ("strategy_validation.py", "passes_final_candidate_gates")):
+        source = Path(__file__).with_name(filename).read_text(encoding="utf-8")
+        if len(source) > 256 * 1024:
+            raise ValueError("unexpected gate source")
+        matches = [node for node in ast.parse(source).body
+                   if isinstance(node, ast.FunctionDef) and node.name == name]
+        if len(matches) != 1:
+            raise ValueError("unsupported gate source")
+        function = matches[0]
+        shape = hashlib.sha256(ast.dump(function, include_attributes=False).encode()).hexdigest()
+        if shape not in TRUSTED_GATE_AST[name]:
+            raise ValueError("unsupported gate source shape")
+        functions.append(function)
+    namespace = {"__builtins__": {"bool": bool, "abs": abs, "dict": dict, "float": float,
+        "all": all, "any": any, "len": len, "isinstance": isinstance, "int": int, "str": str},
+        "math": math, "SCOPE": ACCOUNT_SCOPE}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "<repository-final-gate>", "exec"), namespace)
     return namespace["passes_final_candidate_gates"]
+
+
+def _fingerprint(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False,
+                                    separators=(",", ":")).encode()).hexdigest()
+
+
+def _same_number(actual: Any, expected: Any) -> None:
+    if not math.isclose(_number(actual), _number(expected), rel_tol=1e-10, abs_tol=1e-9):
+        raise EvidenceIssue("unverified", "账户回放与摘要指标不一致。")
+
+
+def _account_protocol(reader: _Reader, manifest: dict[str, Any], data_hashes: dict[str, Any]):
+    """Verify frozen contract/coverage; never open external funding/cache paths."""
+    _integrity(reader, ["account_contract.json", "coverage_gate.json", "candidate_registry.json"])
+    contract = _object(reader.json("account_contract.json"))
+    sha = hashlib.sha256(reader.read("account_contract.json")).hexdigest()
+    execution = _object(contract.get("execution"))
+    expected_keys = {"initial_equity", "risk_fraction", "max_positions", "max_risk_fraction",
+        "direction_risk_fraction", "fee_rate", "slippage_bps", "max_hold_bars", "reward_risk", "stop_mode", "return_model"}
+    metadata = _object(manifest.get("execution_metadata"))
+    if (contract.get("schema_version") != 1 or contract.get("research_only") is not True
+            or contract.get("mark_frequency") != "bar_close" or set(execution) != expected_keys
+            or execution.get("return_model") != "linear_usdm_v1" or execution.get("stop_mode") != "structure_atr"
+            or manifest.get("account_verified") is not True
+            or metadata.get("execution_scope") != ACCOUNT_SCOPE
+            or metadata.get("equity_boundary") != "shared_cash_plus_bar_close_open_position_mtm"
+            or metadata.get("account_contract_sha256") != sha or metadata.get("account_execution") != execution
+            or metadata.get("funding_included") is not True or metadata.get("independent_slippage_included") is not True):
+        raise EvidenceIssue("unverified", "正式账户合同与执行边界未绑定。")
+    for key in ("initial_equity", "risk_fraction", "max_risk_fraction", "reward_risk", "fee_rate", "slippage_bps"):
+        if isinstance(execution[key], bool) or not isinstance(execution[key], (int, float)):
+            raise EvidenceIssue("unverified", "账户合同数值类型异常。")
+        _number(execution[key])
+    for key in ("initial_equity", "reward_risk"):
+        if execution[key] <= 0:
+            raise EvidenceIssue("unverified", "账户合同资金或风险参数异常。")
+    for key in ("risk_fraction", "max_risk_fraction"):
+        if not 0 < execution[key] <= 1:
+            raise EvidenceIssue("unverified", "账户合同资金或风险参数异常。")
+    if not 0 <= execution["fee_rate"] < 1 or not 0 <= execution["slippage_bps"] < 10000:
+        raise EvidenceIssue("unverified", "账户合同成本参数异常。")
+    if any(isinstance(execution[key], bool) or not isinstance(execution[key], int) or execution[key] <= 0
+           for key in ("max_positions", "max_hold_bars")):
+        raise EvidenceIssue("unverified", "账户合同持仓或期限异常。")
+    directions = execution["direction_risk_fraction"]
+    if not isinstance(directions, dict):
+        directions = dict(long=directions, short=directions)
+    if (set(directions) != {"long", "short"}
+            or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < _number(value) <= 1
+                   for value in directions.values())):
+        raise EvidenceIssue("unverified", "账户方向风险参数异常。")
+    coverage = _object(reader.json("coverage_gate.json"))
+    universe = _object(reader.json("universe_snapshot.json"))
+    funding = _object(contract.get("funding_evidence"))
+    if set(coverage) != {"binance", "okx"} or manifest.get("coverage_gate") != coverage:
+        raise EvidenceIssue("unverified", "两交易所完整覆盖记录未绑定。")
+    for venue in coverage:
+        row = _object(coverage[venue])
+        symbols = sorted(_name(_object(value).get("symbol")) for value in universe.get(venue, []))
+        unsigned = {key: value for key, value in row.items() if key != "sha256"}
+        bindings = _object(funding.get(venue))
+        if (not symbols or len(set(symbols)) != len(symbols) or row.get("exchange") != venue
+                or row.get("complete") is not True or row.get("duplicate_requested") is not False
+                or row.get("requested") != symbols or row.get("evaluated") != symbols
+                or any(row.get(key) != [] for key in ("failed", "unexpected", "duplicate_coverage"))
+                or row.get("sha256") != _fingerprint(unsigned) or set(bindings) != set(symbols)
+                or any(not SHA256.fullmatch(str(_object(value).get("sha256", ""))) for value in bindings.values())):
+            raise EvidenceIssue("unverified", "请求/已评估/失败品种或资金费源摘要覆盖不一致。")
+    registry = _object(reader.json("candidate_registry.json"))
+    candidates = registry.get("candidates")
+    if (not isinstance(candidates, list) or registry.get("base_config_sha256") != manifest.get("base_config_sha256")
+            or registry.get("candidate_set_sha256") != data_hashes.get("candidate_set_sha256")
+            or _fingerprint(candidates) != registry.get("candidate_set_sha256")):
+        raise EvidenceIssue("unverified", "冻结候选登记与摘要不一致。")
+    boundaries = [datetime.fromisoformat(manifest[key].replace("Z", "+00:00")) for key in ("start", "end")]
+    if any(boundary.tzinfo is None for boundary in boundaries):
+        raise EvidenceIssue("unverified", "正式账户研究时间缺少时区。")
+    return contract, sha, coverage, tuple(int(boundary.timestamp() * 1000) for boundary in boundaries)
+
+
+def _account_metrics(reader: _Reader, metrics: dict[str, Any], protocol, venue: str,
+                     multiplier: int = 1) -> dict[str, Any]:
+    contract, sha, coverage, (research_start, research_end) = protocol
+    metrics = dict(metrics)
+    for key in ("account_verified", "funding_complete", "coverage_complete", "funding_included",
+                "notional_fees_included", "independent_slippage_included"):
+        if not _boolean(metrics.get(key)):
+            raise EvidenceIssue("unverified", "账户及完整成本声明缺失。")
+        metrics[key] = True  # CSV booleans become actual booleans for the pure gate.
+    for key in ("total_trades", "expectancy", "max_drawdown", "account_max_drawdown", "total_return", "account_total_return"):
+        metrics[key] = _number(metrics.get(key))
+    for key in ("fee_multiplier", "slippage_multiplier"):
+        metrics[key] = _count(metrics.get(key))
+        if metrics[key] != multiplier:
+            raise EvidenceIssue("unverified", "手续费及滑点压力场景未绑定。")
+    if metrics.get("account_scope") != ACCOUNT_SCOPE or metrics.get("account_contract_sha256") != sha:
+        raise EvidenceIssue("unverified", "账户摘要合同或口径不一致。")
+    for key in ("account_input_sha256", "account_result_sha256"):
+        if not SHA256.fullmatch(str(metrics.get(key, ""))):
+            raise EvidenceIssue("unverified", "账户输入/结果摘要缺失。")
+    path = PurePosixPath(str(metrics.get("account_artifact_path", "")))
+    if path.parent.name != "account_replays" or not re.fullmatch(r"(binance|okx)_[0-9]+_[0-9]+_[a-f0-9]{16}\.json", path.name):
+        raise EvidenceIssue("unverified", "账户回放路径不符合冻结归档约定。")
+    name = "account_replays/" + path.name
+    _integrity(reader, [name])
+    result = _object(reader.json(name))
+    binding = _object(result.get("validation_binding"))
+    parameters = _object(result.get("parameters"))
+    expected_parameters = dict(contract["execution"])
+    expected_parameters["fee_rate"] *= multiplier
+    expected_parameters["slippage_bps"] *= multiplier
+    if (metrics["account_input_sha256"] != _fingerprint(binding)
+            or metrics["account_result_sha256"] != _fingerprint(result)
+            or binding.get("contract_sha256") != sha or binding.get("exchange") != venue
+            or binding.get("coverage") != coverage[venue]
+            or binding.get("fee_multiplier") != multiplier or binding.get("slippage_multiplier") != multiplier
+            or any(parameters.get(key) != value for key, value in expected_parameters.items())
+            or result.get("status") != "RESEARCH_ONLY" or result.get("promotion_eligible") is not False
+            or result.get("funding_status") != "COMPLETE" or result.get("funding_incomplete_symbols") != []
+            or result.get("open_positions") != [] or parameters.get("finalize") is not True
+            or parameters.get("strict_funding") is not True):
+        raise EvidenceIssue("unverified", "账户回放输入/结果/完整成本合同绑定不一致。")
+    for key in ("data_sha256", "signal_inputs_sha256", "events_sha256", "strategy_sha256"):
+        if not SHA256.fullmatch(str(binding.get(key, ""))):
+            raise EvidenceIssue("unverified", "账户回放冻结输入摘要缺失。")
+    code = _object(binding.get("code_sha256"))
+    if len(code) != 8 or any(not SHA256.fullmatch(str(value)) for value in code.values()):
+        raise EvidenceIssue("unverified", "账户回放源码摘要缺失。")
+    expected_funding = {symbol: value["sha256"] for symbol, value in contract["funding_evidence"][venue].items()}
+    if binding.get("funding_sha256") != expected_funding:
+        raise EvidenceIssue("unverified", "账户回放资金费源摘要未绑定。")
+    start, end = _count(binding.get("start")), _count(binding.get("end"))
+    if (not research_start <= start < end <= research_end
+            or path.name != f"{venue}_{start}_{end}_{metrics['account_input_sha256'][:16]}.json"):
+        raise EvidenceIssue("unverified", "账户回放时间窗口或文件身份不一致。")
+    trades, equity = result.get("trades"), result.get("equity")
+    if not isinstance(trades, list) or not isinstance(equity, list) or not equity:
+        raise EvidenceIssue("unverified", "账户交易与盯市路径缺失。")
+    initial = _number(contract["execution"]["initial_equity"])
+    peak, previous, drawdown, final = initial, start, 0., initial
+    for row in equity:
+        row = _object(row)
+        timestamp, final = _count(row.get("time")), _number(row.get("equity"))
+        if not previous < timestamp <= end:
+            raise EvidenceIssue("unverified", "账户盯市路径时间退序或超界。")
+        previous, peak = timestamp, max(peak, final)
+        drawdown = min(drawdown, final / peak - 1)
+        _same_number(final, _number(row.get("cash")) + _number(row.get("unrealized_pnl")))
+    if previous != end:
+        raise EvidenceIssue("unverified", "账户盯市路径未覆盖到冻结末端。")
+    net_returns, pnl = [], 0.
+    for trade in trades:
+        trade = _object(trade)
+        if trade.get("symbol") not in expected_funding:
+            raise EvidenceIssue("unverified", "账户交易品种超出冻结覆盖。")
+        net_returns.append(_number(trade.get("net_return")))
+        pnl += _number(trade.get("net_pnl"))
+    _same_number(metrics["total_trades"], len(trades))
+    _same_number(metrics["expectancy"], sum(net_returns) / len(trades) if trades else 0.)
+    _same_number(metrics["max_drawdown"], drawdown)
+    _same_number(metrics["account_max_drawdown"], drawdown)
+    _same_number(metrics["total_return"], final / initial - 1)
+    _same_number(metrics["account_total_return"], final / initial - 1)
+    _same_number(final - initial, pnl)
+    metrics["_binding"], metrics["_trades"] = binding, trades
+    return metrics
 
 
 def _return_model(manifest: dict[str, Any], summary: dict[str, Any], gates: list[dict[str, str]]) -> str:
@@ -219,7 +402,7 @@ def _return_model(manifest: dict[str, Any], summary: dict[str, Any], gates: list
     return "legacy_ratio_v1"
 
 
-def _candidates(comparison: list[dict[str, str]], folds: list[dict[str, str]]) -> list[dict[str, Any]]:
+def _candidates(comparison: list[dict[str, str]], folds: list[dict[str, str]], *, account_mode: bool = False) -> list[dict[str, Any]]:
     totals: dict[str, tuple[int, float]] = {}
     seen_folds = set()
     for row in folds:
@@ -259,7 +442,8 @@ def _candidates(comparison: list[dict[str, str]], folds: list[dict[str, str]]) -
             raise EvidenceIssue("unverified", "验证期稳健性比率异常。")
         # Cross-check the stored statistical gate exactly as compare_candidates
         # declares it. This adapter does not calculate new tests or tune rules.
-        declared_gate = fdr and item["delta"] > 0 and fold_ratio >= .70 and symbol_ratio > .50 and drawdown_ratio <= 1.10
+        account_ready = _boolean(row.get("account_gate_ready")) if account_mode else True
+        declared_gate = fdr and account_ready and item["delta"] > 0 and fold_ratio >= .70 and symbol_ratio > .50 and drawdown_ratio <= 1.10
         if item["validation_gate"] != declared_gate or (fdr and item["q_value"] > .10):
             raise EvidenceIssue("unverified", "候选验证期结论与 FDR/增量证据不一致。")
         trades, weighted = totals[name]
@@ -299,7 +483,10 @@ def _formal(item: dict[str, Any], reader: _Reader) -> None:
             or data_hashes.get("universe_snapshot_sha256") != hashlib.sha256(reader.read("universe_snapshot.json")).hexdigest()):
         raise EvidenceIssue("unverified", "配置未改动或冻结输入的摘要绑定不一致。")
     item["gates"].append(_gate("冻结输入与配置边界", "pass", "实验内配置前后及池快照摘要一致；不核验当前生产配置或历史缓存。"))
-    item["candidates"] = _candidates(reader.csv("candidate_comparison.csv"), reader.csv("fold_metrics.csv"))
+    comparison, folds = reader.csv("candidate_comparison.csv"), reader.csv("fold_metrics.csv")
+    account_mode = (manifest.get("account_verified") is True or "account_contract.json" in hashes
+                    or _object(manifest.get("execution_metadata", {})).get("execution_scope") == ACCOUNT_SCOPE)
+    item["candidates"] = _candidates(comparison, folds, account_mode=account_mode)
     if _count(manifest.get("candidate_count")) != len(item["candidates"]):
         raise EvidenceIssue("unverified", "候选数量与对照证据不一致。")
     arguments = _object(manifest.get("arguments", {}))
@@ -310,11 +497,23 @@ def _formal(item: dict[str, Any], reader: _Reader) -> None:
         item.update(status="smoke_only", conclusion="仅完成网络与产物冒烟；未通过正式策略验证，不能用于参数晋级。")
         item["gates"].append(_gate("最终测试联合门槛", "not_applicable", "smoke 不执行正式留出测试与晋级判断。"))
     else:
+        protocol = None
+        if account_mode:
+            protocol = _account_protocol(reader, manifest, data_hashes)
+            for row in folds:
+                verified = _account_metrics(reader, row, protocol, "binance")
+                if row.get("candidate") == "baseline" and verified["_binding"]["strategy_sha256"] != base_config:
+                    raise EvidenceIssue("unverified", "基线账户策略摘要未绑定冻结配置。")
+            item.update(account_verified=True, metric_basis="shared_cash_plus_bar_close_open_position_mtm")
+            item["gates"].append(_gate("正式账户合同与回放", "pass", "合同、两交易所请求覆盖、资金费源摘要、回放哈希及账户盯市/交易指标一致；未认证外部来源或重跑行情。"))
+        else:
+            item["gates"].append(_gate("正式账户证据", "missing", "历史逐笔诊断未绑定共享账户合同/完整成本/盯市路径，不能确认候选通过。"))
         selected = summary.get("selected_candidate")
         if selected is None:
             if summary.get("status") != "baseline_retained" or any(row.get("validation_gate") for row in item["candidates"]):
                 raise EvidenceIssue("unverified", "未选候选与验证期记录结论不一致。")
-            item.update(status="baseline_retained", conclusion="验证期未选出候选，保留基线；未解封最终测试集。")
+            item.update(status="baseline_retained", conclusion=("验证期未选出候选，保留基线；未解封最终测试集。" if account_mode
+                else "历史诊断验证期未选出候选，保留基线；未验证共享账户风险或完整成本。"))
             item["gates"].append(_gate("最终测试联合门槛", "not_applicable", "没有候选进入永久留出测试。"))
         else:
             selected = _name(selected)
@@ -323,21 +522,46 @@ def _formal(item: dict[str, Any], reader: _Reader) -> None:
                 raise EvidenceIssue("unverified", "入选候选未绑定通过的验证期对照。")
             item["gates"].append(_gate("验证期 FDR 联合证据", "pass", f"入选 {selected}，q={candidate['q_value']:.6g}；验证期通过不等于最终测试通过。"))
             baseline, final, cost = (_object(summary.get(key)) for key in ("baseline", "candidate", "double_cost"))
-            baseline = {key: _number(baseline.get(key)) for key in ("expectancy", "max_drawdown")}
-            final = {"total_trades": _count(final.get("total_trades")), **{key: _number(final.get(key)) for key in ("expectancy", "max_drawdown")}}
-            cost = {"expectancy": _number(cost.get("expectancy"))}
+            if not account_mode:
+                if summary.get("status") != "baseline_retained":
+                    raise EvidenceIssue("unverified", "旧候选通过记录缺少正式账户证据，保守拒绝晋级结论。")
+                for record, keys in ((baseline, ("expectancy", "max_drawdown")),
+                                     (final, ("total_trades", "expectancy", "max_drawdown")),
+                                     (cost, ("expectancy",))):
+                    for key in keys:
+                        _number(record.get(key))
+                item.update(status="baseline_retained", conclusion="历史诊断记录当时保留基线；未验证共享账户风险或完整成本，不构成当前正式验收。")
+                item["gates"].append(_gate("最终测试联合门槛", "fail", "缺少正式账户证据；仅展示历史保留基线记录，不执行旧逐笔回撤替代门槛。"))
+                if "report.html" in hashes:
+                    _integrity(reader, ["report.html"])
+                    item["report_url"] = f"/reports/{quote(item['id'])}/report.html"
+                return
+            baseline = _account_metrics(reader, baseline, protocol, "binance")
+            final = _account_metrics(reader, final, protocol, "binance")
+            cost = _account_metrics(reader, cost, protocol, "binance", 2)
             okx = _object(summary.get("okx"))
             if okx.get("skipped") is True:
-                direction = False
-                item["gates"].append(_gate("OKX 方向复核", "missing", "实验跳过跨交易所复核；不能通过最终门槛。"))
+                raise EvidenceIssue("unverified", "正式账户记录跳过跨交易所复核。")
             else:
-                okx_baseline = _number(_object(okx.get("baseline")).get("expectancy"))
-                okx_candidate = _number(_object(okx.get("candidate")).get("expectancy"))
+                okx_base = _account_metrics(reader, _object(okx.get("baseline")), protocol, "okx")
+                okx_final = _account_metrics(reader, _object(okx.get("candidate")), protocol, "okx")
+                okx_baseline, okx_candidate = okx_base["expectancy"], okx_final["expectancy"]
                 direction = okx_candidate >= okx_baseline and okx_candidate > 0
                 item["gates"].append(_gate("OKX 方向复核", "pass" if direction else "fail", f"候选 {okx_candidate:.6g}，基线 {okx_baseline:.6g}。"))
             share = _number(summary.get("max_symbol_profit_share"))
             if not 0 <= share <= 1:
                 raise EvidenceIssue("unverified", "单品种盈利集中度数值异常。")
+            bindings = [record["_binding"] for record in (baseline, final, cost, okx_base, okx_final)]
+            if (len({(binding["start"], binding["end"]) for binding in bindings}) != 1
+                    or bindings[0]["strategy_sha256"] != base_config or bindings[3]["strategy_sha256"] != base_config
+                    or len({bindings[index]["strategy_sha256"] for index in (1, 2, 4)}) != 1):
+                raise EvidenceIssue("unverified", "最终账户比较未绑定相同留出窗口或候选策略。")
+            positive = {}
+            for trade in final["_trades"]:
+                symbol = trade["symbol"]
+                positive[symbol] = positive.get(symbol, 0.) + max(0., _number(trade["net_return"]))
+            total = sum(positive.values())
+            _same_number(share, max(positive.values(), default=0.) / total if total > 0 else 1.)
             try:
                 passed = _final_gate()(baseline, final, cost, okx_direction_consistent=direction, max_symbol_profit_share=share)
             except (OSError, ValueError, TypeError, KeyError, NameError, StopIteration, SyntaxError):
@@ -446,15 +670,15 @@ def list_validation_evidence(reports_dir: str | Path) -> dict[str, Any]:
                                "status": "incomplete", "conclusion": "证据不完整，未确认研究结论。",
                                "started_at": None, "ended_at": None, "interval": "未记录",
                                "return_model": "legacy_ratio_v1", "metric_basis": "per_trade_net_return",
-                               "gates": [], "candidates": []}
+                               "account_verified": False, "gates": [], "candidates": []}
         try:
             (_optimization if optimization else _formal)(item, _Reader(directory / name))
         except EvidenceIssue as issue:
-            item.update(status=issue.status, conclusion=issue.detail + " 未确认研究验证通过。", candidates=[])
+            item.update(status=issue.status, conclusion=issue.detail + " 未确认研究验证通过。", candidates=[], account_verified=False)
             item.pop("report_url", None)
             item["gates"].append(_gate("证据校验", "missing" if issue.status == "incomplete" else "fail", issue.detail))
         except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
-            item.update(status="unverified", conclusion="摘要字段异常，未确认研究验证通过。", candidates=[])
+            item.update(status="unverified", conclusion="摘要字段异常，未确认研究验证通过。", candidates=[], account_verified=False)
             item.pop("report_url", None)
             item["gates"].append(_gate("证据校验", "fail", "摘要字段异常。"))
         result["validations"].append(item)
