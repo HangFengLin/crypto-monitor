@@ -8,7 +8,7 @@ recording state after receiving an exit decision.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 LEGACY_RATIO_V1 = "legacy_ratio_v1"
 LINEAR_USDM_V1 = "linear_usdm_v1"
@@ -41,6 +41,7 @@ class PartialExit:
     exit_price: float
     fraction: float
     outcome: str
+    phase: str = "bar_end"
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class PositionLifecycleResult:
     remaining_fraction: float = 1.0
     partial_taken: bool = False
     partial_exits: tuple[PartialExit, ...] = ()
+    exit_phase: str = "bar_end"
 
 
 def _validate_return_model(return_model: str) -> None:
@@ -323,6 +325,7 @@ def evaluate_lifecycle_bar(
     return_model: str = LEGACY_RATIO_V1,
     remaining_fraction: float = 1.0,
     partial_taken: bool = False,
+    open_price: float | None = None,
 ) -> PositionLifecycleResult:
     """Evaluate one bar and return both exit decision and updated lifecycle state.
 
@@ -331,12 +334,51 @@ def evaluate_lifecycle_bar(
     1R, move the stop, and keep the trade alive for target/trailing outcomes.
     ``structure_atr_target_only`` retains the initial stop and full quantity
     until stop or target, ignoring 1R protection and ATR updates. Callers own
-    holding limits, gap execution, slippage and funding.
+    holding limits, slippage and funding.
     ``partial_1r_breakeven`` requires linear accounting and emits only this
     call's new half-quantity fill. Its final decision consumes the input
     remaining fraction minus those new fills; callers retain prior fills and
     prevent completed-bar replay. Its updated protected stop starts next bar.
+    With ``open_price``, evaluate the known opening point before the later
+    range. Adverse stop fills use that opening price; favorable fills retain
+    their conservative trigger prices. Opening evaluation never uses this
+    bar's ATR to advance a trailing stop. Without it, retain range-only trigger
+    decisions for existing callers that own their execution-price contract.
     """
+    decision: ExitDecision | None
+    if open_price is not None:
+        _validate_positive_price("open_price", open_price)
+        if not low <= open_price <= high:
+            raise ValueError("open_price must lie within the observed bar range")
+        opening = evaluate_lifecycle_bar(
+            direction, open_price, open_price, open_price, entry_price,
+            initial_stop_loss, target_price, protection_price,
+            active_stop=active_stop, highest_price=highest_price, lowest_price=lowest_price,
+            protection_activated=protection_activated, protected_stop_price=protected_stop_price,
+            stop_mode=stop_mode, fee_rate=fee_rate, atr_value=None,
+            trailing_atr_multiplier=trailing_atr_multiplier, return_model=return_model,
+            remaining_fraction=remaining_fraction, partial_taken=partial_taken,
+        )
+        opening_partials = tuple(replace(partial, phase="open") for partial in opening.partial_exits)
+        if opening.decision is not None:
+            decision = opening.decision
+            if decision.reason in {"stop_loss", "protected_stop", "trailing_stop"}:
+                decision = ExitDecision(
+                    decision.reason, open_price,
+                    classify_return_outcome(direction, entry_price, open_price, fee_rate,
+                                            return_model=return_model),
+                )
+            return replace(opening, decision=decision, partial_exits=opening_partials, exit_phase="open")
+        result = evaluate_lifecycle_bar(
+            direction, low, high, close, entry_price, initial_stop_loss, target_price, protection_price,
+            active_stop=opening.active_stop, highest_price=opening.highest_price,
+            lowest_price=opening.lowest_price, protection_activated=opening.protection_activated,
+            protected_stop_price=opening.protected_stop_price, stop_mode=stop_mode,
+            fee_rate=fee_rate, atr_value=atr_value, trailing_atr_multiplier=trailing_atr_multiplier,
+            return_model=return_model, remaining_fraction=opening.remaining_fraction,
+            partial_taken=opening.partial_taken,
+        )
+        return replace(result, partial_exits=opening_partials + result.partial_exits)
     _validate_return_model(return_model)
     active_stop = initial_stop_loss if active_stop is None else active_stop
     highest_price = entry_price if highest_price is None else highest_price

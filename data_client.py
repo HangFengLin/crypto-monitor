@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import time
 import urllib.error
@@ -13,6 +14,7 @@ import urllib.parse
 import urllib.request
 from datetime import timezone
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from config import load_env_file
@@ -79,9 +81,40 @@ def parse_float(value: Any) -> float | None:
         return None
 
 
-def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
+def _request_deadline(timeout: float, max_elapsed: float) -> float:
+    if not math.isfinite(timeout) or timeout <= 0 or not math.isfinite(max_elapsed) or max_elapsed <= 0:
+        raise ValueError("HTTP timeout and max_elapsed must be finite and positive")
+    return time.monotonic() + max_elapsed
+
+
+def _retry_delay(error: Exception, attempt: int) -> float:
+    status = error.code if isinstance(error, urllib.error.HTTPError) else getattr(error, "status", None)
+    if status != 429:
+        return 0.3
+    headers = getattr(error, "headers", None)
+    raw_retry_after = headers.get("Retry-After") if headers else None
+    retry_after = parse_float(raw_retry_after)
+    if retry_after is None and raw_retry_after:
+        try:
+            date = parsedate_to_datetime(raw_retry_after)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            retry_after = date.timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if retry_after is None or not math.isfinite(retry_after):
+        retry_after = 0.75 * 2 ** min(attempt, 6)
+    return min(30.0, max(0.0, retry_after))
+
+
+def read_json_url(url: str, timeout: float = 20, attempts: int = 3, *, max_elapsed: float = 60) -> Any:
+    """Read public JSON with a shared retry budget and bounded socket timeouts."""
+    deadline = _request_deadline(timeout, max_elapsed)
     last_error: Exception | None = None
     for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             request = urllib.request.Request(
                 url,
@@ -91,18 +124,18 @@ def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
                     "Connection": "close",
                 },
             )
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=min(timeout, remaining)) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            last_error = exc
-            if exc.code != 429:
-                time.sleep(0.3)
-                continue
-            retry_after = parse_float(exc.headers.get("Retry-After")) if exc.headers else None
-            time.sleep(retry_after if retry_after is not None else min(30.0, 0.75 * (2**attempt)))
         except (http.client.IncompleteRead, OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
-            time.sleep(0.3)
+        if attempt + 1 >= attempts:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        delay = min(_retry_delay(last_error, attempt), remaining)
+        if delay > 0:
+            time.sleep(delay)
     if last_error:
         raise last_error
     raise TimeoutError("request failed")
@@ -110,6 +143,14 @@ def read_json_url(url: str, timeout: int = 20, attempts: int = 8) -> Any:
 
 def normalize_ticker(ticker: dict[str, Any]) -> dict[str, Any]:
     last_price = parse_float(ticker.get("lastPrice"))
+    # Keep the source clock; receiving an old response does not make its quote fresh.
+    raw_clock = ticker.get("closeTime")
+    try:
+        close_time = int(raw_clock)
+        if isinstance(raw_clock, bool) or close_time <= 0 or float(raw_clock) != close_time:
+            close_time = None
+    except (TypeError, ValueError, OverflowError):
+        close_time = None
     return {
         "symbol": ticker.get("symbol"),
         "price": last_price,
@@ -121,6 +162,7 @@ def normalize_ticker(ticker: dict[str, Any]) -> dict[str, Any]:
         "volume": parse_float(ticker.get("volume")),
         "quoteVolume": parse_float(ticker.get("quoteVolume")),
         "openPrice": parse_float(ticker.get("openPrice")),
+        "closeTime": close_time,
     }
 
 
@@ -881,13 +923,17 @@ def test_external_dependencies(symbol: str, discord_url: str = "") -> dict[str, 
     }
 
 
-async def async_read_json_url(url: str, timeout: int = 20, attempts: int = 3) -> Any:
+async def async_read_json_url(url: str, timeout: float = 20, attempts: int = 3, *, max_elapsed: float = 60) -> Any:
     if aiohttp is None:
         raise RuntimeError("aiohttp is not installed; run python3 -m pip install -r requirements.txt")
 
+    deadline = _request_deadline(timeout, max_elapsed)
     last_error: Exception | None = None
-    timeout_config = aiohttp.ClientTimeout(total=timeout)
-    for _ in range(attempts):
+    for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        timeout_config = aiohttp.ClientTimeout(total=min(timeout, remaining))
         try:
             session = await get_http_session()
             async with session.get(url, timeout=timeout_config) as response:
@@ -895,7 +941,14 @@ async def async_read_json_url(url: str, timeout: int = 20, attempts: int = 3) ->
                 return await response.json()
         except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
-            await _async_sleep(0.3)
+        if attempt + 1 >= attempts:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        delay = min(_retry_delay(last_error, attempt), remaining)
+        if delay > 0:
+            await _async_sleep(delay)
     if last_error:
         raise last_error
     raise TimeoutError("request failed")

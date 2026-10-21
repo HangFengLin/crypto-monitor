@@ -10,6 +10,7 @@ __pycache__/
 *.pyo
 .coverage
 htmlcov/
+.ci-evidence/
 
 # Virtual environments and local tooling
 venv/

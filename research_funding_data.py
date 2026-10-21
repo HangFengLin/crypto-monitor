@@ -61,7 +61,8 @@ def collect_funding(symbol, start, end, *, provider=public_funding_page,
         if len(batch) < limit or cursor >= end:
             exhausted = True
             break
-    return {"symbol": symbol, "source": "Binance /fapi/v1/fundingRate",
+    return {"symbol": symbol, "exchange": "binance", "market": "linear_perpetual",
+            "source": "Binance /fapi/v1/fundingRate",
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
             "start": start, "end": end, "complete": exhausted and not gaps,
             "incomplete_reason": None if exhausted else "page_budget_exhausted",

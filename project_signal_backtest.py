@@ -93,6 +93,7 @@ class SignalTrade:
     horizon_close_r_path: list[float] = field(default_factory=list)
     return_model: str = LEGACY_RATIO_V1
     exit_legs: list[dict[str, Any]] = field(default_factory=list)
+    exit_phase: str = "bar_end"
 
 
 def parse_args() -> argparse.Namespace:
@@ -327,6 +328,7 @@ def evaluate_trade(
     exit_price = exit_bar["close"]
     outcome = "timeout"
     exit_reason = "timeout"
+    exit_phase = "bar_end"
     active_stop = stop_loss
     highest_price = entry_price
     lowest_price = entry_price
@@ -360,11 +362,13 @@ def evaluate_trade(
             return_model=return_model,
             remaining_fraction=remaining_fraction,
             partial_taken=partial_taken,
+            open_price=float(bar["open"]),
         )
         exited_fraction = 0.0
         for partial in lifecycle.partial_exits:
             exit_legs.append({"fraction": partial.fraction, "exit_price": partial.exit_price,
-                              "exit_reason": partial.reason, "exit_time": bar["time"]})
+                              "exit_reason": partial.reason, "exit_time": bar["time"],
+                              "phase": partial.phase})
             exited_fraction += partial.fraction
         remaining_fraction -= exited_fraction
         partial_taken = lifecycle.partial_taken
@@ -378,8 +382,9 @@ def evaluate_trade(
             exit_bar = bar
             exit_price = lifecycle.decision.exit_price
             exit_reason = lifecycle.decision.reason
+            exit_phase = lifecycle.exit_phase
             exit_legs.append({"fraction": remaining_fraction, "exit_price": exit_price,
-                              "exit_reason": exit_reason, "exit_time": bar["time"]})
+                              "exit_reason": exit_reason, "exit_time": bar["time"], "phase": exit_phase})
             remaining_fraction = 0.0
             if stop_mode == ATR_TRAILING_AFTER_1R_STOP_MODE and exit_reason == "protected_stop":
                 exit_reason = "trailing_stop"
@@ -387,7 +392,7 @@ def evaluate_trade(
 
     if remaining_fraction > 0:
         exit_legs.append({"fraction": remaining_fraction, "exit_price": exit_price,
-                          "exit_reason": exit_reason, "exit_time": exit_bar["time"]})
+                          "exit_reason": exit_reason, "exit_time": exit_bar["time"], "phase": exit_phase})
     net_return = sum(leg["fraction"] * calculate_return_pct(
         direction, entry_price, leg["exit_price"], fee_rate, return_model=return_model,
     ) for leg in exit_legs)
@@ -442,6 +447,7 @@ def evaluate_trade(
         ),
         return_model=return_model,
         exit_legs=exit_legs,
+        exit_phase=exit_phase,
         **path,
     )
 
@@ -782,6 +788,7 @@ def execution_metadata(return_model: str, max_hold_bars: int, legacy_holding_lim
         "holding_limit_convention": "legacy_inclusive_end" if legacy_holding_limit else "entry_bar_is_first",
         "max_observed_bars": max_hold_bars + int(legacy_holding_limit),
         "timestamp_boundary": "bar_open_label_not_execution_time",
+        "fill_boundary": "open_before_range_v1_adverse_stop_at_observed_open",
         "equity_boundary": "exit_label_compounding_without_open_position_mtm",
         "funding_included": False,
         "independent_slippage_included": False,

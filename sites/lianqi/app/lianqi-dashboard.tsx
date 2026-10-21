@@ -215,6 +215,7 @@ export function LianqiDashboard() {
   const mainRef = useRef<HTMLElement>(null);
   const marketListRef = useRef<HTMLDivElement>(null);
   const stateRequest = useRef<Promise<void> | null>(null);
+  const latestSnapshotAt = useRef<number | null>(null);
   const watchlistSync = useRef(createWatchlistSync());
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
@@ -249,6 +250,11 @@ export function LianqiDashboard() {
 
   const applyState = useCallback((next: LianqiState, requestGeneration: number | null = null) => {
     validateState(next);
+    const updatedAt = finiteMetric(next.updated_at);
+    // Polls and reconnecting SSE can arrive out of order. Equal scan times can
+    // contain valid watchlist/error updates, so only strictly older data loses.
+    if (updatedAt !== null && latestSnapshotAt.current !== null && updatedAt < latestSnapshotAt.current) return;
+    if (updatedAt !== null) latestSnapshotAt.current = updatedAt;
     setState(next);
     if (watchlistSync.current.accept(next.watchlist || [], requestGeneration)) setWatchlist(next.watchlist || []);
     setError(next.last_error || "");

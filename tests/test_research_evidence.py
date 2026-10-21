@@ -1,3 +1,4 @@
+import ast
 import csv
 import hashlib
 import importlib.util
@@ -68,8 +69,8 @@ class ResearchEvidenceTests(unittest.TestCase):
         return run
 
     def rehash(self, run):
-        write_json(run / "artifact_hashes.json", {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                                                  for path in run.iterdir() if path.name != "artifact_hashes.json" and path.is_file()})
+        write_json(run / "artifact_hashes.json", {str(path.relative_to(run)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                                  for path in run.rglob("*") if path.name != "artifact_hashes.json" and path.is_file()})
 
     def update_summary(self, run, mutate):
         summary = json.loads((run / "test_summary.json").read_text())
@@ -100,7 +101,7 @@ class ResearchEvidenceTests(unittest.TestCase):
     def test_candidate_pass_requires_bound_artifacts_and_existing_final_gates(self):
         self.fixture(passed=True)
         item = self.list_evidence()["validations"][0]
-        self.assertEqual(item["status"], "candidate_passed")
+        self.assertEqual(item["status"], "unverified", "legacy trade statistics cannot certify an account")
         self.assertEqual(item["kind"], "formal_validation")
         self.assertIn("研究", item["conclusion"])
 
@@ -208,13 +209,445 @@ class ResearchEvidenceTests(unittest.TestCase):
         self.assertEqual(self.list_evidence()["validations"][0]["status"], "unverified")
 
     def test_bounded_cache_hash_manifest_can_be_larger_than_summary_files(self):
-        run = self.fixture(passed=True)
+        run = self.fixture()
         path = run / "data_config_hashes.json"
         data = json.loads(path.read_text())
         data["cache_inventory_note"] = "x" * (2200 * 1024)
         write_json(path, data)
         self.rehash(run)
-        self.assertEqual(self.list_evidence()["validations"][0]["status"], "candidate_passed")
+        self.assertEqual(self.list_evidence()["validations"][0]["status"], "baseline_retained")
+
+    def formal_account_fixture(self, *, direction_limit=None):
+        """Reuse the legal fixed account fixture; no strategy search or real data."""
+        import pandas as pd
+        from test_validation_account_gate import FixtureDetector, ValidationAccountGateTest
+
+        import strategy_validation as validation
+        from strategy import DEFAULT_CONFIG
+
+        source = self.root / "input"
+        source.mkdir()
+        data, start, end, args = ValidationAccountGateTest().fixture_account(source)
+        data["E"] = [dict(bar) for bar in data["D"]]
+        payload = json.loads((source / "D.json").read_text())
+        payload["symbol"] = "E"
+        write_json(source / "E.json", payload)
+        contract_path = Path(args.account_contract)
+        contract = json.loads(contract_path.read_text())
+        contract["execution"]["max_positions"] = 5
+        if direction_limit is not None:
+            contract["execution"]["direction_risk_fraction"] = direction_limit
+        contract["funding_evidence"]["binance"]["E"] = dict(
+            path=str(source / "E.json"), sha256=hashlib.sha256((source / "E.json").read_bytes()).hexdigest())
+        contract["funding_evidence"]["okx"] = {}
+        for symbol in data:
+            payload = json.loads((source / f"{symbol}.json").read_text())
+            payload.update(exchange="okx", source="OKX native synthetic fixture settlements")
+            path = source / f"okx_{symbol}.json"
+            write_json(path, payload)
+            contract["funding_evidence"]["okx"][symbol] = dict(
+                path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        write_json(contract_path, contract)
+        args.__dict__.update(start=str(start), end=str(end), smoke=False, reports_dir=str(self.root),
+                             cache_dir=str(source / "cache"), min_quote_volume=1, candidate_overrides=None,
+                             skip_okx=False, min_group_trades=30)
+        snapshot = {venue: [{"symbol": symbol} for symbol in data] for venue in ("binance", "okx")}
+        candidates = [dict(name="baseline", family="baseline", overrides={}),
+                      dict(name="fixture_candidate", family="confirmation", overrides=dict(
+                          confirmation_mode="ma_only" if DEFAULT_CONFIG.confirmation_mode != "ma_only" else "both"))]
+
+        class Detector(FixtureDetector):
+            def __init__(self, config):
+                self.config = config
+
+            def detect(self, bars, clean=False):
+                signal = dict(super().detect(bars, clean))
+                if signal.get("signal") == "long" and self.config == DEFAULT_CONFIG:
+                    signal["stop_loss"] = 97
+                return signal
+
+        def frozen_snapshot(_args, output, _minimum):
+            validation.write_json(output / "universe_snapshot.json", snapshot)
+            return snapshot
+
+        def prepare(venue, *_args):
+            return data, [dict(exchange=venue, symbol=symbol, bars=len(rows)) for symbol, rows in data.items()]
+
+        windows = [dict(fold="fixture", train_start=start, train_end=start, validation_start=start, validation_end=end)]
+        # Fixed statistical metadata exercises the reader contract, not significance.
+        eligible = pd.DataFrame([dict(candidate="fixture_candidate", validation_gate=True, delta=.01,
+            ci_low=.001, ci_high=.02, q_value=.08, fdr_reject=True, fold_positive_ratio=1.,
+            symbol_nonworse_ratio=1., max_drawdown_ratio=0., account_gate_ready=True)])
+        with patch("strategy_validation.load_or_build_snapshot", side_effect=frozen_snapshot), \
+             patch("strategy_validation.prepare_snapshot_datasets", side_effect=prepare), \
+             patch("strategy_validation.load_candidates", return_value=candidates), \
+             patch("strategy_validation.walk_forward_windows", return_value=(windows, start)), \
+             patch("strategy_validation.compare_candidates", return_value=eligible), \
+             patch("strategy_validation.render_chart", return_value=[]), \
+             patch("validation_account.ProjectSignalEngine", Detector):
+            report = validation.run_validation(args)
+        self.assertEqual(json.loads((report.parent / "test_summary.json").read_text())["status"], "candidate_passed")
+        return report.parent
+
+    def test_real_formal_account_archive_is_read_without_mutating_or_exposing_source_paths(self):
+        run = self.formal_account_fixture()
+        before = {str(path.relative_to(run)): path.read_bytes() for path in run.rglob("*") if path.is_file()}
+        item = self.list_evidence()["validations"][0]
+        self.assertEqual(item["status"], "candidate_passed", item)
+        self.assertTrue(item["account_verified"])
+        self.assertEqual(item["metric_basis"], "shared_cash_plus_bar_close_open_position_mtm")
+        self.assertEqual(before, {str(path.relative_to(run)): path.read_bytes() for path in run.rglob("*") if path.is_file()})
+        self.assertNotIn(str(self.root), json.dumps(item))
+
+    def test_legal_common_scalar_direction_limit_is_read_as_formal_account(self):
+        self.formal_account_fixture(direction_limit=.01)
+        item = self.list_evidence()["validations"][0]
+        self.assertEqual(item["status"], "candidate_passed", item)
+        self.assertTrue(item["account_verified"])
+
+    def large_account_replay(self, days, *, index=0):
+        """Real synchronized replay with normal 15m marks, without market access."""
+        from research_portfolio import replay_portfolio
+        from validation_account import fingerprint, freeze_coverage
+
+        step = 900000
+        start = 1704067200000 + (index // 12) * 60 * 86400000
+        end = start + days * 86400000
+        data = {"BTCUSDT": [dict(open_time=time, close_time=time + step - 1,
+            open=100, high=100, low=100, close=100, volume=1) for time in range(start, end, step)]}
+        execution = dict(initial_equity=10000, risk_fraction=.01, max_positions=1,
+            max_risk_fraction=.01, direction_risk_fraction=dict(long=.01, short=.01),
+            fee_rate=.001, slippage_bps=2, max_hold_bars=96, reward_risk=2,
+            stop_mode="structure_atr", return_model="linear_usdm_v1")
+        result = replay_portfolio(data, [], {"BTCUSDT": dict(start=start, end=end,
+            complete=True, records=[])}, **execution, finalize=True)
+        contract = dict(execution=execution, funding_evidence={"binance": {
+            "BTCUSDT": dict(sha256="f" * 64)}})
+        contract_sha = fingerprint(contract)
+        coverage = {"binance": freeze_coverage("binance", [{"symbol": "BTCUSDT"}], data,
+            [dict(symbol="BTCUSDT", bars=len(data["BTCUSDT"]))])}
+        binding = dict(data_sha256="a" * 64, signal_inputs_sha256="b" * 64,
+            events_sha256="c" * 64, strategy_sha256=hashlib.sha256(str(index).encode()).hexdigest(),
+            code_sha256={f"source_{i}.py": "e" * 64 for i in range(8)},
+            contract_sha256=contract_sha, exchange="binance", coverage=coverage["binance"],
+            fee_multiplier=1, slippage_multiplier=1, funding_sha256={"BTCUSDT": "f" * 64},
+            start=start, end=end)
+        result["validation_binding"] = binding
+        name = f"account_replays/binance_{start}_{end}_{fingerprint(binding)[:16]}.json"
+        path = self.root / name
+        path.parent.mkdir(exist_ok=True)
+        write_json(path, result)
+        hashes_path = self.root / "artifact_hashes.json"
+        hashes = json.loads(hashes_path.read_text()) if hashes_path.exists() else {}
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        write_json(hashes_path, hashes)
+        metrics = dict(account_verified=True, funding_complete=True, coverage_complete=True,
+            funding_included=True, notional_fees_included=True, independent_slippage_included=True,
+            total_trades=0, expectancy=0., max_drawdown=0., account_max_drawdown=0.,
+            total_return=0., account_total_return=0., fee_multiplier=1, slippage_multiplier=1,
+            account_scope="synchronized_linear_perpetual_account_v1",
+            account_contract_sha256=contract_sha, account_input_sha256=fingerprint(binding),
+            account_result_sha256=fingerprint(result), account_artifact_path=name)
+        return metrics, (contract, contract_sha, coverage, (start, end))
+
+    def test_real_145_day_holdout_is_verified_with_bounded_memory(self):
+        import tracemalloc
+
+        from research_evidence import EvidenceIssue, _account_metrics, _Reader
+
+        metrics, protocol = self.large_account_replay(145)
+        self.assertGreater((self.root / metrics["account_artifact_path"]).stat().st_size, 3 * 1024 * 1024)
+        reader = _Reader(self.root)
+        tracemalloc.start()
+        try:
+            try:
+                verified = _account_metrics(reader, metrics, protocol, "binance")
+            except EvidenceIssue as issue:
+                self.fail(f"legal full-size account was rejected: {issue.detail}")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertTrue(verified["account_verified"])
+        self.assertEqual(verified["account_total_return"], 0.)
+        self.assertLess(peak, 8 * 1024 * 1024, "account marks must be reduced without retaining the full replay")
+        self.assertLess(sum(map(len, reader.files.values())), 2 * 1024 * 1024)
+
+    def test_default_two_year_fold_matrix_does_not_consume_summary_budget(self):
+        from research_evidence import EvidenceIssue, _account_metrics, _Reader
+
+        # Default twelve frozen candidates by five 60-day validation windows.
+        fixtures = [self.large_account_replay(60, index=index) for index in range(60)]
+        reader = _Reader(self.root)
+        for metrics, protocol in fixtures:
+            try:
+                verified = _account_metrics(reader, metrics, protocol, "binance")
+            except EvidenceIssue as issue:
+                self.fail(f"legal account matrix was rejected: {issue.detail}")
+            self.assertTrue(verified["account_verified"])
+        # Small summaries remain bounded independently of the 81 MB replay matrix.
+        (self.root / "manifest.json").write_text(" " * (3 * 1024 * 1024))
+        with self.assertRaises(EvidenceIssue):
+            reader.json("manifest.json")
+
+    def test_streamed_result_fingerprint_matches_json_across_number_chunk_boundary(self):
+        from research_evidence import _Reader
+        from validation_account import fingerprint
+
+        name = "account_replays/chunk_boundary.json"
+        path = self.root / name
+        path.parent.mkdir()
+        prefix = b'{"signals":['
+        # The first chunk ends inside an exponent-form number; UTF-8 is also
+        # deliberately different from the canonical escaped JSON encoding.
+        raw = prefix + b" " * (65535 - len(prefix)) + b'1.25e-6],"note":"' + "中文".encode() + b'"}'
+        path.write_bytes(raw)
+        write_json(self.root / "artifact_hashes.json", {name: hashlib.sha256(raw).hexdigest()})
+        fields, counts, canonical = _Reader(self.root).replay(name, lambda *_: None)
+        self.assertEqual(canonical, fingerprint(json.loads(raw)))
+        self.assertEqual(fields["note"], "中文")
+        self.assertEqual(counts["signals"], 1)
+
+    def test_streamed_arrays_reject_nonfinite_duplicate_oversized_and_invalid_json(self):
+        from research_evidence import EvidenceIssue, _Reader
+
+        name = "account_replays/rejected.json"
+        path = self.root / name
+        path.parent.mkdir()
+        for raw in (b'{"signals":[NaN]}', b'{"signals":[1e309]}',
+                    b'{"signals":[{"x":1,"x":2}]}', b'{"signals":[],"signals":[]}',
+                    b'{"signals":[1,]}', b'{"signals":[],}', b'{"signals":[]} trailing',
+                    b'{"signals":["' + b"x" * (600 * 1024) + b'"]}'):
+            with self.subTest(prefix=raw[:40]):
+                path.write_bytes(raw)
+                write_json(self.root / "artifact_hashes.json", {name: hashlib.sha256(raw).hexdigest()})
+                with self.assertRaises(EvidenceIssue):
+                    _Reader(self.root).replay(name, lambda *_: None)
+
+    def test_streamed_account_keeps_hash_symlink_and_work_budget_guards(self):
+        from research_evidence import EvidenceIssue, _Reader
+
+        name = "account_replays/bounded.json"
+        path = self.root / name
+        path.parent.mkdir()
+        raw = b'{"signals":[1,2,3]}'
+        path.write_bytes(raw)
+        write_json(self.root / "artifact_hashes.json", {name: "0" * 64})
+        with self.assertRaises(EvidenceIssue):
+            _Reader(self.root).replay(name, lambda *_: None)
+
+        write_json(self.root / "artifact_hashes.json", {name: hashlib.sha256(raw).hexdigest()})
+        with patch("research_evidence.MAX_REPLAY_ROWS", 2), self.assertRaises(EvidenceIssue):
+            _Reader(self.root).replay(name, lambda *_: None)
+        reader = _Reader(self.root)
+        reader.replay_remaining = len(raw)
+        reader.replay(name, lambda *_: None)
+        with self.assertRaises(EvidenceIssue):
+            reader.replay(name, lambda *_: None)
+        target = self.root / "outside.json"
+        path.rename(target)
+        path.symlink_to(target)
+        with self.assertRaises(EvidenceIssue):
+            _Reader(self.root).replay(name, lambda *_: None)
+        path.unlink()
+        with path.open("wb") as handle:
+            handle.truncate(65 * 1024 * 1024)
+        with self.assertRaises(EvidenceIssue):
+            _Reader(self.root).replay(name, lambda *_: None)
+
+    def test_account_scan_budget_is_shared_across_archives(self):
+        import shutil
+
+        run = self.formal_account_fixture()
+        older = self.root / "strategy_validation_000older"
+        shutil.copytree(run, older)
+        summary = json.loads((run / "test_summary.json").read_text())
+        records = [summary[key] for key in ("baseline", "candidate", "double_cost")]
+        records += [summary["okx"][key] for key in ("baseline", "candidate")]
+        with (run / "fold_metrics.csv").open(newline="") as handle:
+            records += list(csv.DictReader(handle))
+        budget = sum((run / "account_replays" / Path(row["account_artifact_path"]).name).stat().st_size
+                     for row in records)
+        with patch("research_evidence.MAX_SCAN_REPLAY_BYTES", budget, create=True):
+            items = {item["id"]: item for item in self.list_evidence()["validations"]}
+        self.assertEqual(items[run.name]["status"], "candidate_passed")
+        self.assertEqual(items[older.name]["status"], "unverified")
+        self.assertIn("本次扫描预算", items[older.name]["conclusion"])
+
+    def test_account_protocol_rejects_shared_numeric_bound_violations(self):
+        import shutil
+
+        from research_evidence import EvidenceIssue, _account_protocol, _Reader
+
+        original = self.formal_account_fixture()
+        for index, (key, value) in enumerate((('risk_fraction', 1.01), ('max_risk_fraction', 1.01),
+                ('direction_risk_fraction', 1.01), ('fee_rate', 1.), ('slippage_bps', 10000.),
+                ('max_hold_bars', 1.5), ('risk_fraction', True), ('risk_fraction', '0.1'))):
+            with self.subTest(key=key, value=value):
+                run = self.root / f"numeric_{index}"
+                shutil.copytree(original, run)
+                contract = json.loads((run / 'account_contract.json').read_text())
+                contract['execution'][key] = value
+                write_json(run / 'account_contract.json', contract)
+                manifest = json.loads((run / 'manifest.json').read_text())
+                manifest['execution_metadata']['account_execution'] = contract['execution']
+                manifest['execution_metadata']['account_contract_sha256'] = hashlib.sha256((run / 'account_contract.json').read_bytes()).hexdigest()
+                write_json(run / 'manifest.json', manifest)
+                self.rehash(run)
+                with self.assertRaises(EvidenceIssue):
+                    _account_protocol(_Reader(run), manifest, json.loads((run / 'data_config_hashes.json').read_text()))
+
+    def test_account_mode_false_screen_gate_preserves_baseline_without_final_holdout(self):
+        run = self.formal_account_fixture()
+        path = run / 'candidate_comparison.csv'
+        with path.open(newline='') as handle:
+            rows = list(csv.DictReader(handle))
+        rows[0].update(account_gate_ready='False', validation_gate='False')
+        with path.open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        self.update_summary(run, lambda value: value.update(selected_candidate=None, status='baseline_retained'))
+        item = self.list_evidence()['validations'][0]
+        self.assertEqual(item['status'], 'baseline_retained', item)
+        self.assertTrue(item['account_verified'])
+
+    def test_formal_claims_cannot_override_contract_coverage_replay_or_metric_drift(self):
+        import shutil
+
+        from validation_account import fingerprint
+
+        original = self.formal_account_fixture()
+        for variant in ("contract", "coverage", "window", "replay_bytes", "replay_metrics", "summary_metric", "missing_replay", "symlink_directory", "bad_cost"):
+            with self.subTest(variant=variant):
+                run = self.root / ("strategy_validation_" + variant)
+                shutil.copytree(original, run)
+                summary = json.loads((run / "test_summary.json").read_text())
+                artifact_name = "account_replays/" + Path(summary["candidate"]["account_artifact_path"]).name
+                artifact = run / artifact_name
+                if variant == "contract":
+                    contract = json.loads((run / "account_contract.json").read_text())
+                    contract["execution"]["risk_fraction"] *= 2
+                    write_json(run / "account_contract.json", contract)
+                elif variant == "coverage":
+                    coverage = json.loads((run / "coverage_gate.json").read_text())
+                    coverage["binance"]["requested"].pop()
+                    write_json(run / "coverage_gate.json", coverage)
+                elif variant == "window":
+                    manifest = json.loads((run / "manifest.json").read_text())
+                    manifest["end"] = "2025-01-01T00:15:00+00:00"
+                    write_json(run / "manifest.json", manifest)
+                elif variant == "missing_replay":
+                    artifact.unlink()
+                elif variant == "symlink_directory":
+                    target = self.root / "outside_replays"
+                    shutil.move(str(run / "account_replays"), target)
+                    (run / "account_replays").symlink_to(target, target_is_directory=True)
+                elif variant == "bad_cost":
+                    self.update_summary(run, lambda value: value["double_cost"].update(slippage_multiplier=1))
+                elif variant == "summary_metric":
+                    self.update_summary(run, lambda value: value["candidate"].update(expectancy=value["candidate"]["expectancy"]+.001))
+                else:
+                    result = json.loads(artifact.read_text())
+                    result["equity"][-1]["equity"] += 1
+                    write_json(artifact, result)
+                    if variant == "replay_metrics":
+                        # Updating all byte/binding digests still cannot replace derived metrics.
+                        self.update_summary(run, lambda value, result=result: value["candidate"].update(account_result_sha256=fingerprint(result)))
+                if variant not in ("replay_bytes", "symlink_directory"):
+                    self.rehash(run)
+                item = next(value for value in self.list_evidence()["validations"] if value["id"] == run.name)
+                self.assertIn(item["status"], ("unverified", "incomplete"), item)
+                self.assertFalse(item.get("account_verified", False))
+
+    def test_pure_account_helper_or_gate_source_shape_change_fails_closed(self):
+        from research_evidence import _final_gate
+
+        _final_gate.cache_clear()
+        try:
+            _final_gate()  # The current two pure functions must be explicitly supported.
+            with patch("research_evidence.Path.read_text", return_value="def account_evidence_valid(metrics):\n    return True\n"):
+                _final_gate.cache_clear()
+                with self.assertRaises((ValueError, StopIteration)):
+                    _final_gate()
+        finally:
+            _final_gate.cache_clear()
+
+    def test_unchanged_reviewed_pure_gates_load_and_keep_numeric_and_evidence_limits(self):
+        from research_evidence import ACCOUNT_SCOPE, _final_gate
+
+        _final_gate.cache_clear()
+        self.addCleanup(_final_gate.cache_clear)
+        try:
+            gate = _final_gate()
+        except ValueError as error:
+            self.fail(f"Unchanged reviewed predicates must load on the supported interpreter: {error}")
+        common = dict(account_verified=True, account_scope=ACCOUNT_SCOPE,
+            funding_complete=True, coverage_complete=True, funding_included=True,
+            notional_fees_included=True, independent_slippage_included=True,
+            account_max_drawdown=-.1, account_total_return=.02,
+            account_contract_sha256="a"*64, account_input_sha256="b"*64,
+            account_result_sha256="c"*64, fee_multiplier=1, slippage_multiplier=1,
+            expectancy=.001, total_trades=100)
+        baseline = dict(common)
+        candidate = dict(common, expectancy=.002)
+        double = dict(common, expectancy=.001, fee_multiplier=2, slippage_multiplier=2)
+        kwargs = dict(okx_direction_consistent=True, max_symbol_profit_share=.2)
+        self.assertTrue(gate(baseline, candidate, double, **kwargs))
+        self.assertFalse(gate(baseline, dict(candidate, total_trades=99), double, **kwargs))
+        self.assertFalse(gate(baseline, candidate, dict(double, expectancy=0.), **kwargs))
+        self.assertFalse(gate(baseline, dict(candidate, funding_complete=False), double, **kwargs))
+
+    def test_either_reviewed_predicate_logic_or_signature_change_is_rejected(self):
+        from research_evidence import _final_gate
+
+        read_text = Path.read_text
+        for filename, name in (("validation_account.py", "account_evidence_valid"),
+                               ("strategy_validation.py", "passes_final_candidate_gates")):
+            original = read_text(Path(__file__).resolve().parents[1] / filename)
+            for mutation in ("constant_pass", "extra_parameter"):
+                with self.subTest(function=name, mutation=mutation):
+                    tree = ast.parse(original)
+                    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+                    if mutation == "constant_pass":
+                        function.body = [ast.Return(value=ast.Constant(value=True))]
+                    else:
+                        function.args.args.append(ast.arg(arg="unreviewed_parameter"))
+                    altered = ast.unparse(ast.fix_missing_locations(tree))
+
+                    def source(path, *args, altered=altered, filename=filename, **kwargs):
+                        return altered if path.name == filename else read_text(path, *args, **kwargs)
+
+                    _final_gate.cache_clear()
+                    try:
+                        with patch("research_evidence.Path.read_text", autospec=True, side_effect=source):
+                            with self.assertRaisesRegex(ValueError, "unsupported gate source shape"):
+                                _final_gate()
+                    finally:
+                        _final_gate.cache_clear()
+
+    def test_nonempty_type_parameters_cannot_use_the_reviewed_empty_field_compatibility(self):
+        from research_evidence import _final_gate
+
+        read_text = Path.read_text
+        for filename, name in (("validation_account.py", "account_evidence_valid"),
+                               ("strategy_validation.py", "passes_final_candidate_gates")):
+            original = read_text(Path(__file__).resolve().parents[1] / filename)
+            altered = original.replace(f"def {name}(", f"def {name}[Unreviewed](", 1)
+            self.assertNotEqual(original, altered)
+
+            def source(path, *args, altered=altered, filename=filename, **kwargs):
+                return altered if path.name == filename else read_text(path, *args, **kwargs)
+
+            with self.subTest(function=name):
+                _final_gate.cache_clear()
+                try:
+                    with patch("research_evidence.Path.read_text", autospec=True, side_effect=source):
+                        # 3.11 does not parse generic function syntax; 3.12
+                        # parses it but its nonempty AST is not approved.
+                        with self.assertRaises((ValueError, SyntaxError)):
+                            _final_gate()
+                finally:
+                    _final_gate.cache_clear()
 
     def test_validation_flag_cannot_override_missing_or_failed_fold_robustness(self):
         run = self.fixture(passed=True)

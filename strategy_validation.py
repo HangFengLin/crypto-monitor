@@ -44,6 +44,7 @@ from project_signal_backtest import (
 )
 from strategy import DEFAULT_CONFIG, HIGHER_TREND_INTERVAL, ProjectSignalEngine, StrategyConfig
 from strategy_universe import STABLE_BASE_ASSETS
+from validation_account import account_evidence_valid, freeze_coverage, load_contract, load_funding, run_account_window
 
 BINANCE_FUTURES_EXCHANGE_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_FUTURES_TICKERS = "https://fapi.binance.com/fapi/v1/ticker/24hr"
@@ -83,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reports-dir", default="reports")
     parser.add_argument("--universe-snapshot", default=None, help="复用既有universe_snapshot.json")
     parser.add_argument("--candidate-overrides", default=None, help="额外候选YAML；只允许strategy字段")
+    parser.add_argument("--account-contract", default=None, help="显式冻结研究账户/成本及按交易所资金费源SHA合同；缺失时仅诊断不可晋级")
     parser.add_argument("--skip-okx", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="仅运行BTC最近7天网络/产物冒烟验证")
     return parser.parse_args()
@@ -93,11 +95,23 @@ def validation_execution_metadata(args: argparse.Namespace) -> dict[str, Any]:
     convention = getattr(args, "holding_limit_convention", "entry_bar_is_first")
     if convention not in {"entry_bar_is_first", "legacy_inclusive_end"}:
         raise ValueError("unsupported holding-limit convention")
+    account_contract = load_contract(args) if getattr(args, "account_contract", None) else None
     metadata = execution_metadata(
         getattr(args, "return_model", LINEAR_USDM_V1),
         getattr(args, "max_hold_bars", 96),
         convention == "legacy_inclusive_end",
     )
+    if account_contract is not None:
+        contract, sha, _directory = account_contract
+        return {**metadata, "execution_scope": "synchronized_linear_perpetual_account_v1",
+                "equity_boundary": "shared_cash_plus_bar_close_open_position_mtm",
+                "timestamp_boundary": "signal_close_known_at_then_next_actual_open",
+                "fill_boundary": "shared_portfolio_actual_notional_and_explicit_slippage",
+                "stop_mode": "structure_atr", "funding_included": True,
+                "independent_slippage_included": True,
+                "cost_pressure_boundary": "shared_account_replay_double_notional_fee_and_slippage",
+                "account_contract_sha256": sha, "account_execution": contract["execution"],
+                "mark_frequency": "bar_close"}
     return {**metadata, "execution_scope": "multi_symbol_signal_validation",
             "stop_mode": "structure_atr",
             "cost_pressure_boundary": "fixed_full_exit_trades_extra_notional_fees_only"}
@@ -502,7 +516,16 @@ def run_window(
     *,
     fee_rate: float | None = None,
     executor: concurrent.futures.Executor | None = None,
-) -> tuple[list[SignalTrade], pd.DataFrame, dict[str, float]]:
+    exchange: str = "binance",
+    fee_multiplier: int = 1,
+    slippage_multiplier: int = 1,
+) -> tuple[list[SignalTrade], pd.DataFrame, dict[str, Any]]:
+    if getattr(args, "account_contract", None):
+        if fee_rate is not None:
+            raise ValueError("account costs must use explicit frozen multipliers")
+        return run_account_window(datasets, config, score_start, score_end, args,
+                                  exchange=exchange, fee_multiplier=fee_multiplier,
+                                  slippage_multiplier=slippage_multiplier)
     metadata = validation_execution_metadata(args)
     interval_delta = pd.Timedelta(milliseconds=interval_ms(args.interval))
     warmup = 250 * interval_delta
@@ -548,6 +571,8 @@ def run_window(
         bootstrap_iterations=args.bootstrap_iterations,
         bootstrap_seed=getattr(args, "seed", DEFAULT_SEED),
     )
+    metrics.update(account_verified=False, account_scope="trade_sequence_diagnostic_only",
+                   account_blocker="MISSING_EXPLICIT_ACCOUNT_CONTRACT")
     return all_trades, pd.DataFrame(symbol_rows), metrics
 
 
@@ -661,8 +686,8 @@ def compare_candidates(
         fold_positive = float((aligned["expectancy_candidate"] > aligned["expectancy_baseline"]).mean()) if not aligned.empty else 0.0
         max_drawdown_ratio = 0.0
         if not aligned.empty:
-            baseline_dd = float(aligned["max_drawdown_baseline"].abs().max())
-            candidate_dd = float(aligned["max_drawdown_candidate"].abs().max())
+            baseline_dd = float(aligned.get("account_max_drawdown_baseline", pd.Series([math.nan])).abs().max())
+            candidate_dd = float(aligned.get("account_max_drawdown_candidate", pd.Series([math.nan])).abs().max())
             max_drawdown_ratio = candidate_dd / baseline_dd if baseline_dd else (0.0 if candidate_dd == 0 else math.inf)
 
         candidate_symbols = symbols_by_candidate.get(name, pd.DataFrame())
@@ -688,6 +713,12 @@ def compare_candidates(
                 "fold_positive_ratio": fold_positive,
                 "symbol_nonworse_ratio": symbol_nonworse,
                 "max_drawdown_ratio": max_drawdown_ratio,
+                "account_gate_ready": bool(not aligned.empty and baseline_folds.index.is_unique
+                    and candidate_folds.index.is_unique and set(candidate_folds.index) == set(baseline_folds.index) and
+                    all(account_evidence_valid(row) for row in baseline_folds.to_dict("records")) and
+                    all(account_evidence_valid(row) for row in candidate_folds.to_dict("records")) and
+                    len(set(baseline_folds.get("account_contract_sha256", [])) |
+                        set(candidate_folds.get("account_contract_sha256", []))) == 1),
             }
         )
     frame = pd.DataFrame(rows)
@@ -698,6 +729,7 @@ def compare_candidates(
     frame["fdr_reject"] = [item["reject"] for item in corrections]
     frame["validation_gate"] = (
         frame["fdr_reject"]
+        & frame["account_gate_ready"]
         & (frame["delta"] > 0)
         & (frame["fold_positive_ratio"] >= 0.70)
         & (frame["symbol_nonworse_ratio"] > 0.50)
@@ -751,11 +783,21 @@ def passes_final_candidate_gates(
     max_symbol_profit_share: float,
 ) -> bool:
     """Apply the predeclared holdout gates without weakening missing evidence."""
-    baseline_drawdown_limit = abs(baseline_metrics["max_drawdown"]) * 1.10
+    if not all(account_evidence_valid(metrics) for metrics in
+               (baseline_metrics, candidate_metrics, double_cost_metrics)):
+        return False
+    if (len({metrics["account_contract_sha256"] for metrics in
+             (baseline_metrics, candidate_metrics, double_cost_metrics)}) != 1
+            or any(metrics.get("fee_multiplier") != 1 or metrics.get("slippage_multiplier") != 1
+                   for metrics in (baseline_metrics, candidate_metrics))
+            or double_cost_metrics.get("fee_multiplier") != 2
+            or double_cost_metrics.get("slippage_multiplier") != 2):
+        return False
+    baseline_drawdown_limit = abs(baseline_metrics["account_max_drawdown"]) * 1.10
     return bool(
         candidate_metrics["total_trades"] >= 100
         and candidate_metrics["expectancy"] > baseline_metrics["expectancy"]
-        and abs(candidate_metrics["max_drawdown"]) <= baseline_drawdown_limit
+        and abs(candidate_metrics["account_max_drawdown"]) <= baseline_drawdown_limit
         and double_cost_metrics["expectancy"] > 0
         and okx_direction_consistent
         and max_symbol_profit_share <= 0.25
@@ -783,6 +825,8 @@ def build_data_config_manifest(cache_dir: Path, snapshot_path: Path, candidates:
     production_config_path = Path("config.yaml")
     code_files = [
         Path("strategy_validation.py"),
+        Path("validation_account.py"),
+        Path("research_portfolio.py"),
         Path("historical_market_data.py"),
         Path("backtest_statistics.py"),
         Path("project_signal_backtest.py"),
@@ -867,6 +911,9 @@ def render_report(
     group_stats: pd.DataFrame,
 ) -> Path:
     charts = render_chart(comparison, output_dir)
+    account_mode = manifest.get("execution_metadata", {}).get("execution_scope") == "synchronized_linear_perpetual_account_v1"
+    metric_definition = ("账户回撤来自统一资金、风险预算与并发持仓约束下每根收盘盯市净值；包含实际成交名义手续费、显式滑点及结算资金费；收盘盯市不代表盘中最坏回撤。" if account_mode else "逐笔退出复合曲线仅作信号诊断，不含持仓盯市、账户资金分配和结算资金费，不能用于正式账户门禁。")
+    cost_definition = ("双倍成本使用相同账户合同完整重放：名义手续费率和独立滑点各乘二，资金费结算源保持冻结。" if account_mode else "诊断费用扰动不属于完整账户成本压力证据。")
     status = test_summary.get("status", "baseline_retained")
     selected = test_summary.get("selected_candidate") or "无"
     selected_display = {
@@ -884,7 +931,7 @@ def render_report(
         validation_win_rate = 0.0
         validation_max_drawdown = 0.0
     if status == "candidate_passed":
-        summary_text = "候选通过全部样本外与稳健性门槛，已生成独立候选覆盖文件；生产配置未修改。"
+        summary_text = "候选通过冻结研究筛选门槛与账户口径检查，已生成研究候选文件；RESEARCH_ONLY，不授权交易。"
     elif status == "smoke_only":
         summary_text = "官方数据、时间对齐、候选回放和报告产物冒烟完成；一周样本不用于参数晋级判断。"
     else:
@@ -903,7 +950,7 @@ def render_report(
             values = okx.get(key)
             if isinstance(values, dict):
                 test_rows.append({"phase": label, **values})
-    test_evidence = html_table(pd.DataFrame(test_rows), ["phase", "total_trades", "win_rate", "expectancy", "max_drawdown"], {"win_rate", "expectancy", "max_drawdown"}, 10)
+    test_evidence = html_table(pd.DataFrame(test_rows), ["phase", "total_trades", "win_rate", "expectancy", "account_max_drawdown", "account_verified"], {"win_rate", "expectancy", "account_max_drawdown"}, 10)
     gate_rows: list[dict[str, Any]] = []
     baseline_test = test_summary.get("baseline") if isinstance(test_summary.get("baseline"), dict) else {}
     candidate_test = test_summary.get("candidate") if isinstance(test_summary.get("candidate"), dict) else {}
@@ -912,7 +959,7 @@ def render_report(
     okx_candidate = okx.get("candidate") if isinstance(okx, dict) and isinstance(okx.get("candidate"), dict) else {}
     selected_row = comparison[comparison["candidate"] == selected].head(1) if not comparison.empty and selected != "无" else pd.DataFrame()
     if candidate_test:
-        drawdown_limit = abs(float(baseline_test.get("max_drawdown", 0.0))) * 1.10
+        drawdown_limit = abs(float(baseline_test.get("account_max_drawdown", math.inf))) * 1.10
         validation_passed = bool(selected_row.iloc[0].get("validation_gate")) if not selected_row.empty else False
         okx_direction = (
             float(okx_candidate.get("expectancy", -math.inf)) >= float(okx_baseline.get("expectancy", math.inf))
@@ -920,10 +967,11 @@ def render_report(
         )
         concentration = float(test_summary.get("max_symbol_profit_share", math.inf))
         gate_rows = [
+            {"gate": "完整冻结账户与资金费证据", "threshold": "账户、费用、滑点、资金费、覆盖全部完整", "observed": "通过" if all(account_evidence_valid(m) for m in (baseline_test,candidate_test,double_cost,okx_baseline,okx_candidate)) else "未通过", "passed": all(account_evidence_valid(m) for m in (baseline_test,candidate_test,double_cost,okx_baseline,okx_candidate))},
             {"gate": "验证期FDR联合门槛", "threshold": "通过", "observed": "通过" if validation_passed else "未通过", "passed": validation_passed},
             {"gate": "最终测试交易数", "threshold": ">= 100", "observed": int(candidate_test.get("total_trades", 0)), "passed": float(candidate_test.get("total_trades", 0)) >= 100},
             {"gate": "最终测试期望优于基线", "threshold": f"> {float(baseline_test.get('expectancy', 0)):.3%}", "observed": f"{float(candidate_test.get('expectancy', 0)):.3%}", "passed": float(candidate_test.get("expectancy", 0)) > float(baseline_test.get("expectancy", 0))},
-            {"gate": "最大回撤", "threshold": f"<= {drawdown_limit:.2%}", "observed": f"{abs(float(candidate_test.get('max_drawdown', 0))):.2%}", "passed": abs(float(candidate_test.get("max_drawdown", 0))) <= drawdown_limit},
+            {"gate": "最大回撤", "threshold": f"<= {drawdown_limit:.2%}", "observed": f"{abs(float(candidate_test.get('account_max_drawdown', math.inf))):.2%}", "passed": abs(float(candidate_test.get("account_max_drawdown", math.inf))) <= drawdown_limit},
             {"gate": "双倍成本期望", "threshold": "> 0", "observed": f"{float(double_cost.get('expectancy', 0)):.3%}", "passed": float(double_cost.get("expectancy", 0)) > 0},
             {"gate": "OKX方向一致", "threshold": "候选>=基线且>0", "observed": f"{float(okx_candidate.get('expectancy', 0)):.3%} vs {float(okx_baseline.get('expectancy', 0)):.3%}", "passed": okx_direction},
             {"gate": "单一品种盈利贡献", "threshold": "<= 25%", "observed": f"{concentration:.2%}", "passed": concentration <= 0.25},
@@ -940,6 +988,10 @@ def render_report(
         output_dir / "report_source_notes.json",
         {
             "delivery_mode": "html",
+            "execution_metadata": manifest.get("execution_metadata", {}),
+            "coverage_gate": manifest.get("coverage_gate", {}),
+            "sample_authority": manifest.get("sample_authority"),
+            "account_artifacts": sorted(str(path.relative_to(output_dir)) for path in (output_dir/"account_replays").glob("*.json")),
             "audience": "technical",
             "section_contract": [
                 "title",
@@ -958,7 +1010,7 @@ def render_report(
                     "family": "comparison-and-ranking",
                     "type": "diverging horizontal bar",
                     "fields": ["candidate", "delta", "validation_gate"],
-                    "claim": "Only the microstructure-required candidate passed the joint validation gate.",
+                    "claim": "Blue marks candidates passing the frozen joint validation gate; no fresh OOS or trading authorization is implied.",
                     "palette_policy": "single blue root plus neutral comparator fills",
                     "artifact": charts[0].name if charts else None,
                 }
@@ -968,6 +1020,8 @@ def render_report(
                 "manifest.json",
                 "data_config_hashes.json",
                 "data_coverage.csv",
+                "coverage_gate.json",
+                "candidate_registry.json",
                 "fold_metrics.csv",
                 "candidate_comparison.csv",
                 "test_summary.json",
@@ -991,41 +1045,74 @@ main{{max-width:1120px;margin:0 auto;padding:48px 28px 80px}} h1{{font-size:32px
 code{{background:#F4F5F7;padding:2px 5px;border-radius:4px}}
 </style></head><body><main>
 <header data-contract-section="title"><h1>抗过拟合策略验证报告</h1></header>
-<section data-contract-section="technical-summary"><h2>技术摘要</h2><div class="summary"><strong>{html.escape(summary_text)}</strong><p>验证期入选候选：<code>{html.escape(selected_display)}</code>。最终结论由永久测试集及全部稳健性门槛决定。</p>
+<section data-contract-section="technical-summary"><h2>技术摘要</h2><div class="summary"><strong>{html.escape(summary_text)}</strong><p>验证期入选候选：<code>{html.escape(selected_display)}</code>。研究结论由冻结时间窗口及全部稳健性门槛决定；已曝光历史重放不构成新的样本外证据。</p>
 <div class="kpis"><div class="kpi"><strong>{'保留基线' if status == 'baseline_retained' else '候选通过' if status == 'candidate_passed' else '仅冒烟'}</strong><span>最终决策</span></div><div class="kpi"><strong>{html.escape(selected_display)}</strong><span>验证期入选候选</span></div><div class="kpi"><strong>{manifest.get('binance_symbols',0)}</strong><span>Binance研究品种</span></div><div class="kpi"><strong>{validation_trades}</strong><span>基线验证交易</span></div><div class="kpi"><strong>{validation_win_rate:.2%}</strong><span>基线验证胜率</span></div><div class="kpi"><strong>{validation_expectancy:.3%}</strong><span>基线验证期望</span></div><div class="kpi"><strong>{validation_max_drawdown:.2%}</strong><span>最差fold回撤</span></div><div class="kpi"><strong>{manifest.get('okx_symbols_evaluated',0)}</strong><span>OKX已复核品种</span></div></div></div></section>
-<section data-contract-section="key-findings"><h2>{'最终测试否决候选，继续使用基线' if status == 'baseline_retained' else '候选通过全部最终门槛' if status == 'candidate_passed' else '网络与产物链路完成冒烟'}</h2><p>门槛必须同时成立；任何一项失败都会保留基线。下表直接列出最终测试、成本压力、跨交易所方向和盈利集中度证据。</p><div class="scroll">{gate_evidence}</div><h3>最终测试与跨交易所指标</h3><div class="scroll">{test_evidence}</div><h3>验证期候选收益增量</h3><p>图中横轴是候选相对基线的每笔净收益增量；蓝色只表示通过验证期联合门槛，不表示已经通过永久测试集。</p>{chart_html}<div class="scroll">{html_table(comparison,['candidate','family','delta','ci_low','ci_high','p_value','q_value','fold_positive_ratio','symbol_nonworse_ratio','max_drawdown_ratio','validation_gate'],{'delta','ci_low','ci_high','fold_positive_ratio','symbol_nonworse_ratio'})}</div></section>
-<section data-contract-section="scope-data-and-metric-definitions"><h2>研究范围与指标定义</h2><p>研究区间为 {html.escape(str(manifest.get('start')))} 至 {html.escape(str(manifest.get('end')))}，使用 {html.escape(str(manifest.get('interval','15m')))} K线；冻结池含 {manifest.get('binance_symbols',0)} 个 Binance USD-M 永续，OKX复核含 {manifest.get('okx_symbols_evaluated',0)} 个 SWAP。期望收益是每笔交易扣除往返成本后的算术均值；回撤由逐笔退出时复合记账的曲线计算，不含持仓盯市、资金分配与并发持仓约束，不代表账户回撤；胜率区间使用 Wilson 95% 区间。</p><p>资金费率和OI只取信号K线实际收盘前已发布的最后值。OI比率是最新15分钟值除以前19个值的均值；OKX的OI明确使用 Binance USD-M 对应合约作为代理。</p></section>
-<section data-contract-section="methodology"><h2>固定候选与时间样本外设计</h2><p>最后20%时间永久保留为一次性测试集；前80%采用240天训练、60天验证、每60天滚动一次，并在分段间隔离96根15分钟K线。候选只改变一个参数族，不在训练窗内连续拟合。验证期增量使用UTC周分块的 {manifest.get('bootstrap_iterations',2000)} 次bootstrap和固定种子 {manifest.get('bootstrap_seed',20260620)}，随后执行BH-FDR 0.10校正。</p><div class="scroll">{html_table(fold_metrics,['candidate','fold','validation_start','validation_end','total_trades','win_rate','expectancy','max_drawdown'],{'win_rate','expectancy','max_drawdown'},50)}</div><h3>探索性分组只用于提出假设</h3><p>下表仅包含至少 {manifest.get('min_group_trades',30)} 笔的单维或预声明二维分组；完整8维联合表仅作为原始诊断，不参与候选生成或晋级。</p><div class="scroll">{html_table(group_stats,['group_dimensions','group_value','trades','win_rate','win_rate_ci_low','win_rate_ci_high','avg_return'],{'win_rate','win_rate_ci_low','win_rate_ci_high','avg_return'},40)}</div></section>
-<section data-contract-section="limitations-uncertainty-and-robustness-checks"><h2>稳健性与仍然存在的限制</h2><ul><li>候选验证增量经过周分块bootstrap与FDR校正，但最终候选只有 {int(candidate_test.get('total_trades',0)) if candidate_test else 0} 笔；低于100笔门槛时不作晋级解释。</li><li>OKX使用自身K线与官方历史资金费率；OI使用 Binance USD-M 代理，不能视为OKX原生持仓结构。</li><li>品种池按研究日快照冻结，因此仍存在幸存者、上市时间与当前市值选择偏差。</li><li>不同上市日期导致单品种历史长度不同；覆盖报告保留每个品种的首尾时间和缺失比例。</li><li>生产 <code>config.yaml</code> 运行前后哈希一致，未部署、未重启服务。</li></ul></section>
+<section data-contract-section="key-findings"><h2>{'最终测试否决候选，继续使用基线' if status == 'baseline_retained' else '候选通过全部最终门槛' if status == 'candidate_passed' else '网络与产物链路完成冒烟'}</h2><p>门槛必须同时成立；任何一项失败都会保留基线。下表直接列出最终测试、成本压力、跨交易所方向和盈利集中度证据。</p><div class="scroll">{gate_evidence}</div><h3>最终测试与跨交易所指标</h3><div class="scroll">{test_evidence}</div><h3>验证期候选收益增量</h3><p>图中横轴是候选相对基线的每笔净收益增量；蓝色只表示通过验证期联合门槛，不表示获得新的样本外有效性或交易授权。</p>{chart_html}<div class="scroll">{html_table(comparison,['candidate','family','delta','ci_low','ci_high','p_value','q_value','fold_positive_ratio','symbol_nonworse_ratio','max_drawdown_ratio','validation_gate'],{'delta','ci_low','ci_high','fold_positive_ratio','symbol_nonworse_ratio'})}</div></section>
+<section data-contract-section="scope-data-and-metric-definitions"><h2>研究范围与指标定义</h2><p>研究区间为 {html.escape(str(manifest.get('start')))} 至 {html.escape(str(manifest.get('end')))}，使用 {html.escape(str(manifest.get('interval','15m')))} K线；冻结池含 {manifest.get('binance_symbols',0)} 个 Binance USD-M 永续，OKX复核含 {manifest.get('okx_symbols_evaluated',0)} 个 SWAP。期望收益是每笔接受交易扣除成本与资金费后的算术均值。{metric_definition} 胜率区间使用 Wilson 95% 区间。{cost_definition}</p><p>资金费率和OI按源事件时间在信号K线收盘前作as-of匹配；实际发布时间与可得时间仍需独立核验。OI比率是最新15分钟值除以前19个值的均值；OKX的OI明确使用 Binance USD-M 对应合约作为代理。</p></section>
+<section data-contract-section="methodology"><h2>固定候选与时间样本外设计</h2><p>最后20%时间定义为冻结最终测试窗口；是否尚未曝光须由独立协议证明，恢复旧报告始终属于已曝光诊断；前80%采用240天训练、60天验证、每60天滚动一次，并在分段间隔离96根15分钟K线。候选只改变一个参数族，不在训练窗内连续拟合。验证期增量使用UTC周分块的 {manifest.get('bootstrap_iterations',2000)} 次bootstrap和固定种子 {manifest.get('bootstrap_seed',20260620)}，随后执行BH-FDR 0.10校正。</p><div class="scroll">{html_table(fold_metrics,['candidate','fold','validation_start','validation_end','total_trades','win_rate','expectancy','max_drawdown'],{'win_rate','expectancy','max_drawdown'},50)}</div><h3>探索性分组只用于提出假设</h3><p>下表仅包含至少 {manifest.get('min_group_trades',30)} 笔的单维或预声明二维分组；完整8维联合表仅作为原始诊断，不参与候选生成或晋级。</p><div class="scroll">{html_table(group_stats,['group_dimensions','group_value','trades','win_rate','win_rate_ci_low','win_rate_ci_high','avg_return'],{'win_rate','win_rate_ci_low','win_rate_ci_high','avg_return'},40)}</div></section>
+<section data-contract-section="limitations-uncertainty-and-robustness-checks"><h2>稳健性与仍然存在的限制</h2><ul><li>RESEARCH_ONLY：未设定真实客户资金和绝对经济目标，不因筛选通过而授权交易；新样本外有效性需另行冻结与补证。</li><li>所有请求、已评估、失败品种在 coverage_gate.json 冻结；缺失账户、资金费、完整覆盖均阻断正式筛选。</li><li>候选验证增量经过周分块bootstrap与FDR校正，但最终候选只有 {int(candidate_test.get('total_trades',0)) if candidate_test else 0} 笔；低于100笔门槛时不作晋级解释。</li><li>OKX使用自身K线与官方历史资金费率；OI使用 Binance USD-M 代理，不能视为OKX原生持仓结构。</li><li>品种池按研究日快照冻结，因此仍存在幸存者、上市时间与当前市值选择偏差。</li><li>不同上市日期导致单品种历史长度不同；覆盖报告保留每个品种的首尾时间和缺失比例。</li><li>生产 <code>config.yaml</code> 运行前后哈希一致，未部署、未重启服务。</li></ul></section>
 <section data-contract-section="recommended-next-steps"><h2>建议下一步</h2><p>{'候选只能进入后续模拟盘一致性验证，不能直接实盘。' if status == 'candidate_passed' else '执行完整两年多品种验证。' if status == 'smoke_only' else '继续积累新样本；不要因本次未晋级而放宽统计门槛。'}</p></section>
-<section data-contract-section="further-questions"><h2>仍需持续观察</h2><p>后续实盘/模拟盘只用于检查滑点、延迟、执行价和边界抖动是否与回测一致，不用于根据少量新交易重新调阈值。</p></section>
+<section data-contract-section="further-questions"><h2>仍需持续观察</h2><p>下一阶段须先冻结未曝光样本与客户经济目标，并补足两交易所资金费原始来源与覆盖证据；工程回放结果不授权下单或启动服务。</p></section>
 </main></body></html>"""
     path = output_dir / "report.html"
     path.write_text(report, encoding="utf-8")
     return path
 
 
-def main() -> None:
-    args = parse_args()
+def run_validation(args: argparse.Namespace) -> Path:
+    if not args.smoke:
+        if not getattr(args, "account_contract", None):
+            raise ValueError("formal validation requires an explicit account contract")
+        if args.skip_okx:
+            raise ValueError("formal coverage gate requires the frozen OKX universe")
     accounting_metadata = validation_execution_metadata(args)
     production_config_path = Path("config.yaml")
     production_config_hash_before = sha256_file(production_config_path) if production_config_path.exists() else None
     start, end = default_window(args)
     run_label = datetime.now(timezone.utc).strftime("strategy_validation_%Y%m%dT%H%M%SZ") + ("_smoke" if args.smoke else "")
     output_dir = Path(args.reports_dir) / run_label
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=False)
+    args._account_output_dir = str(output_dir)
+    if getattr(args, "account_contract", None):
+        # Preserve the exact supplied protocol. Keep relative funding resolution at
+        # the original directory; every replay pins the protocol and source SHA.
+        (output_dir / "account_contract.json").write_bytes(Path(args.account_contract).read_bytes())
     cache_dir = Path(args.cache_dir)
     config = load_config()
     min_quote_volume = args.min_quote_volume
     if min_quote_volume is None:
         min_quote_volume = float(config_value(config, "bot", "min_quote_volume", 10_000_000))
-    candidates = load_candidates(args.candidate_overrides)
+    candidates = getattr(args, "_frozen_candidates", None) or load_candidates(args.candidate_overrides)
+    write_json(output_dir / "candidate_registry.json", {
+        "candidates": candidates, "base_config_sha256": strategy_hash(DEFAULT_CONFIG),
+        "candidate_set_sha256": hashlib.sha256(json.dumps(candidates, ensure_ascii=False, sort_keys=True,
+                                                        separators=(",", ":")).encode()).hexdigest()})
     snapshot = load_or_build_snapshot(args, output_dir, min_quote_volume)
 
     fetch_start = start - pd.Timedelta(days=50)
     datasets, coverage_rows = prepare_snapshot_datasets(
         "binance", list(snapshot.get("binance", [])), args, fetch_start, end, cache_dir
     )
+    args._coverage_by_exchange = {
+        "binance": freeze_coverage("binance", list(snapshot.get("binance", [])), datasets, coverage_rows)
+    }
+    okx_datasets = {}
+    if not args.smoke:
+        okx_datasets, okx_coverage = prepare_snapshot_datasets(
+            "okx", list(snapshot.get("okx", [])), args, fetch_start, end, cache_dir)
+        coverage_rows.extend(okx_coverage)
+        args._coverage_by_exchange["okx"] = freeze_coverage(
+            "okx", list(snapshot.get("okx", [])), okx_datasets, okx_coverage)
+    write_json(output_dir / "coverage_gate.json", args._coverage_by_exchange)
+    pd.DataFrame(coverage_rows).to_csv(output_dir / "data_coverage.csv", index=False)
+    if not args.smoke and not all(value["complete"] for value in args._coverage_by_exchange.values()):
+        raise ValueError("incomplete frozen requested/evaluated/failed coverage; see coverage_gate.json")
+    if not args.smoke:
+        contract, _sha, directory = load_contract(args)
+        # Cross-venue source evidence is mandatory before candidate screening,
+        # even if no candidate is eventually selected for the held-out replay.
+        for venue, source_data in (("binance", datasets), ("okx", okx_datasets)):
+            load_funding(contract, directory, venue, sorted(source_data))
 
     if not datasets:
         pd.DataFrame(coverage_rows).to_csv(output_dir / "data_coverage.csv", index=False)
@@ -1049,30 +1136,23 @@ def main() -> None:
 
     test_summary: dict[str, Any] = {"status": "smoke_only" if args.smoke else "baseline_retained", "selected_candidate": selected_name}
     final_test_trades: list[SignalTrade] = []
-    okx_symbols_evaluated = 0
+    okx_symbols_evaluated = len(okx_datasets)
     if selected_name:
         selected = next(candidate for candidate in candidates if candidate["name"] == selected_name)
         baseline_test, _baseline_symbols, baseline_metrics = run_window(datasets, DEFAULT_CONFIG, test_start, end, args)
         candidate_test, candidate_symbols, candidate_metrics = run_window(datasets, config_with_overrides(selected["overrides"]), test_start, end, args)
-        double_cost = apply_extra_roundtrip_cost(candidate_test, args.fee_rate)
-        double_metrics = calculate_metrics(
-            double_cost,
-            trade_equity(double_cost),
-            bootstrap_iterations=args.bootstrap_iterations,
-            bootstrap_seed=args.seed,
-        )
+        _double_trades, _double_symbols, double_metrics = run_window(
+            datasets, config_with_overrides(selected["overrides"]), test_start, end, args,
+            fee_multiplier=2, slippage_multiplier=2)
         okx_delta_ok = False
         okx_metrics: dict[str, Any] = {"skipped": True} if args.skip_okx else {}
         if not args.skip_okx:
-            okx_datasets, okx_coverage = prepare_snapshot_datasets(
-                "okx", list(snapshot.get("okx", [])), args, fetch_start, end, cache_dir
-            )
-            coverage_rows.extend(okx_coverage)
-            okx_symbols_evaluated = len(okx_datasets)
-            okx_baseline, _a, okx_baseline_metrics = run_window(okx_datasets, DEFAULT_CONFIG, test_start, end, args)
-            okx_candidate, _b, okx_candidate_metrics = run_window(okx_datasets, config_with_overrides(selected["overrides"]), test_start, end, args)
+            okx_baseline, _a, okx_baseline_metrics = run_window(okx_datasets, DEFAULT_CONFIG, test_start, end, args, exchange="okx")
+            okx_candidate, _b, okx_candidate_metrics = run_window(okx_datasets, config_with_overrides(selected["overrides"]), test_start, end, args, exchange="okx")
             okx_metrics = {"baseline": okx_baseline_metrics, "candidate": okx_candidate_metrics}
-            okx_delta_ok = okx_candidate_metrics["expectancy"] >= okx_baseline_metrics["expectancy"] and okx_candidate_metrics["expectancy"] > 0
+            okx_delta_ok = (account_evidence_valid(okx_baseline_metrics) and account_evidence_valid(okx_candidate_metrics)
+                           and okx_candidate_metrics["expectancy"] >= okx_baseline_metrics["expectancy"]
+                           and okx_candidate_metrics["expectancy"] > 0)
         contribution = profit_concentration(candidate_test)
         test_passed = passes_final_candidate_gates(
             baseline_metrics,
@@ -1134,6 +1214,11 @@ def main() -> None:
         "deployed": False,
         "arguments": vars(args),
         "execution_metadata": accounting_metadata,
+        "coverage_gate": args._coverage_by_exchange,
+        "account_verified": bool(not fold_metrics.empty and
+                                  all(account_evidence_valid(row) for row in fold_metrics.to_dict("records"))),
+        "prior_report": getattr(args, "_prior_report", None),
+        "sample_authority": "exposed_historical_diagnostic" if getattr(args, "_prior_report", None) else "requires_independent_unexposed_oos_protocol",
         "test_summary": test_summary,
     }
     write_json(output_dir / "manifest.json", manifest)
@@ -1141,9 +1226,14 @@ def main() -> None:
     write_json(output_dir / "data_config_hashes.json", build_data_config_manifest(cache_dir, output_dir / "universe_snapshot.json", candidates))
     report_path = render_report(output_dir, manifest, fold_metrics, comparison, test_summary, group_stats)
     # Freeze artifact hashes after all report files are present.
-    hashes = {path.name: sha256_file(path) for path in sorted(output_dir.iterdir()) if path.is_file()}
+    hashes = {str(path.relative_to(output_dir)): sha256_file(path) for path in sorted(output_dir.rglob("*")) if path.is_file()}
     write_json(output_dir / "artifact_hashes.json", hashes)
     print(f"验证完成: {report_path.resolve()}")
+    return report_path
+
+
+def main() -> None:
+    run_validation(parse_args())
 
 
 if __name__ == "__main__":
