@@ -2,14 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchWithTimeout, validateState } from "./api-client.mjs";
+import { startLiveStateUpdates } from "./refresh-loop.mjs";
 import { createWatchlistSync, finiteMetric, prepareWatchlist, selectMarketRows, viewFromHash } from "./dashboard-interactions.mjs";
 import ResearchHistory from "./research-history";
 import { researchModelLabel, researchPercent, researchConfidenceInterval, quickResearchConclusion } from "./research-evidence.mjs";
 import RuntimeSettings from "./runtime-settings";
-import PaperLedger from "./paper-ledger";
+import PaperLedger, { StatBlock, type TradeStats } from "./paper-ledger";
 import FeishuNotifications from "./feishu-notifications";
+import JindanMonitor from "./jindan-monitor";
 
-type View = "overview" | "markets" | "paper" | "research" | "settings";
+type View = "overview" | "markets" | "paper" | "research" | "jindan" | "settings";
 type Direction = "up" | "down" | "none" | string;
 
 type WatchItem = {
@@ -84,7 +86,7 @@ type LianqiState = {
   indicator_signals?: Record<string, Record<string, IntervalSignal>>;
   support_levels?: Record<string, Record<string, Support>>;
   events?: EventRecord[];
-  strategy_stats?: Record<string, number>;
+  strategy_stats?: TradeStats;
   strategy_trades?: StrategyTrade[];
   discord_status?: { configured?: boolean; running?: boolean; label?: string; last_error?: string; last_ok_at?: number };
   signal_tracking?: {
@@ -123,6 +125,7 @@ const NAV: Array<{ id: View; label: string; caption: string }> = [
   { id: "markets", label: "行情与信号", caption: "监控与触发记录" },
   { id: "paper", label: "模拟交易", caption: "本地交易账本" },
   { id: "research", label: "策略研究", caption: "实验与报告" },
+  { id: "jindan", label: "金丹v1.0", caption: "背离前瞻观察" },
   { id: "settings", label: "运行状态", caption: "服务与异常" },
 ];
 
@@ -215,6 +218,7 @@ export function LianqiDashboard() {
   const mainRef = useRef<HTMLElement>(null);
   const marketListRef = useRef<HTMLDivElement>(null);
   const stateRequest = useRef<Promise<void> | null>(null);
+  const stateAbort = useRef<AbortController | null>(null);
   const latestSnapshotAt = useRef<number | null>(null);
   const watchlistSync = useRef(createWatchlistSync());
   const [refreshing, setRefreshing] = useState(false);
@@ -260,28 +264,36 @@ export function LianqiDashboard() {
     setError(next.last_error || "");
   }, []);
 
-  const loadState = useCallback(() => {
+  const loadState = useCallback((signal?: AbortSignal) => {
     if (stateRequest.current) return stateRequest.current;
+    const controller = new AbortController();
+    stateAbort.current = controller;
+    const cancelled = () => controller.signal.aborted || signal?.aborted;
     const request = (async () => {
       const started = performance.now();
       const generation = watchlistSync.current.generation();
       setRefreshing(true);
       setRefreshMessage("正在刷新实时数据…");
       try {
-        const response = await fetchWithTimeout("/api/state", { cache: "no-store" });
+        const response = await fetchWithTimeout("/api/state?detail=compact", { cache: "no-store", signal: signal ?? controller.signal });
         if (!response.ok) throw new Error(`数据服务返回 ${response.status}`);
         const payload = await response.json() as LianqiState;
+        if (cancelled()) return;
         setLatency(Math.round(performance.now() - started));
         applyState(payload, generation);
         setConnection("online");
         setRefreshMessage("实时数据已刷新");
       } catch (caught) {
+        if (cancelled()) return;
         setConnection("offline");
         setError(caught instanceof Error ? caught.message : "暂时无法连接数据服务");
         setRefreshMessage("刷新失败，可点击刷新重试");
       } finally {
-        setRefreshing(false);
-        stateRequest.current = null;
+        if (!cancelled()) setRefreshing(false);
+        if (stateAbort.current === controller) {
+          stateRequest.current = null;
+          stateAbort.current = null;
+        }
       }
     })();
     stateRequest.current = request;
@@ -289,23 +301,24 @@ export function LianqiDashboard() {
   }, [applyState]);
 
   useEffect(() => {
-    const initialLoad = window.setTimeout(() => void loadState(), 0);
-    const polling = window.setInterval(() => void loadState(), 30000);
-    const stream = new EventSource("/api/events");
-    stream.onerror = () => setConnection("offline");
-    stream.onmessage = (message) => {
-      try {
-        applyState(JSON.parse(message.data) as LianqiState);
-        setConnection("online");
-      } catch (caught) {
-        setConnection("offline");
+    const updates = startLiveStateUpdates(loadState, {
+      timers: window,
+      createStream: (url: string) => new EventSource(url),
+      onSnapshot: (payload: LianqiState) => {
+        stateAbort.current?.abort();
+        setRefreshing(false);
+        applyState(payload);
+      },
+      onConnection: (status: "online" | "offline") => setConnection(status),
+      onError: (caught: unknown) => {
         setError(caught instanceof Error ? caught.message : "实时数据解析失败");
-      }
-    };
+      },
+    });
     return () => {
-      window.clearTimeout(initialLoad);
-      window.clearInterval(polling);
-      stream.close();
+      updates.stop();
+      stateAbort.current?.abort();
+      stateAbort.current = null;
+      stateRequest.current = null;
     };
   }, [applyState, loadState]);
 
@@ -460,14 +473,14 @@ export function LianqiDashboard() {
           </div>
           <div className="top-actions">
             <div className="updated"><span>数据更新时间</span><strong>{time(state?.updated_at)}</strong></div>
-            <button className="refresh-button" disabled={refreshing} onClick={loadState} aria-label={refreshing ? "正在刷新实时数据" : "刷新实时数据"} aria-busy={refreshing}><i aria-hidden="true">↻</i> <span>{refreshing ? "刷新中…" : "刷新"}</span></button>
+            <button className="refresh-button" disabled={refreshing} onClick={() => loadState()} aria-label={refreshing ? "正在刷新实时数据" : "刷新实时数据"} aria-busy={refreshing}><i aria-hidden="true">↻</i> <span>{refreshing ? "刷新中…" : "刷新"}</span></button>
           </div>
         </header>
         <span className="sr-only" role="status">{refreshMessage}</span>
         {saveMessage && !managing && <div className="feedback-strip" role="status">{saveMessage}</div>}
         {dirty && view !== "markets" && <div className="draft-notice" role="status"><span>监控列表有未保存的修改</span><button className="text-action" onClick={() => navigate("markets")}>返回编辑</button></div>}
 
-        {error && <div className="error-strip" role="alert"><strong>数据提醒</strong><span>{error}</span><button className="retry-action" disabled={refreshing} onClick={loadState}>重试连接</button><button onClick={() => setError("")} aria-label="关闭提醒">×</button></div>}
+        {error && <div className="error-strip" role="alert"><strong>数据提醒</strong><span>{error}</span><button className="retry-action" disabled={refreshing} onClick={() => loadState()}>重试连接</button><button onClick={() => setError("")} aria-label="关闭提醒">×</button></div>}
 
         {view === "overview" && (
           <section className="view-stack" aria-label="炼气总览">
@@ -511,12 +524,7 @@ export function LianqiDashboard() {
             <div className="split-grid">
               <section className="content-panel">
                 <div className="section-heading"><div><p className="overline">STRATEGY LEDGER</p><h2>保留样本统计</h2></div><span>{number(stats.closed_trades, 0)} 笔已结束</span></div>
-                <div className="stat-grid">
-                  <div><span>累计信号</span><strong>{number(stats.total_trades, 0)}</strong></div>
-                  <div><span>模拟胜率</span><strong className={metricTone(stats.win_rate)}>{stats.closed_trades ? percent(stats.win_rate) : "暂无样本"}</strong></div>
-                  <div><span>平均结果</span><strong className={metricTone(stats.expectancy)}>{percent(stats.expectancy)}</strong></div>
-                  <div><span>逐笔收益合计</span><strong className={metricTone(stats.total_return)}>{percent(stats.total_return)}</strong></div>
-                </div>
+                <StatBlock stats={stats} />
               </section>
               <section className="content-panel compact-events">
                 <div className="section-heading"><div><p className="overline">LATEST SIGNALS</p><h2>最近触发</h2></div><button className="text-action" onClick={() => navigate("markets")}>全部记录 →</button></div>
@@ -588,6 +596,8 @@ export function LianqiDashboard() {
         )}
 
         {view === "paper" && <PaperLedger />}
+
+        {view === "jindan" && <JindanMonitor />}
 
         {view === "settings" && (
           <section className="view-stack">

@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from email.message import EmailMessage
@@ -20,9 +21,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 import feishu_notifications
-from automatic_notifications import Outbox, SenderLease
+from api_payloads import PayloadDetail, project_paper_trades, project_state
+from automatic_notifications import MODULE_FAULT_LABELS, Outbox, SenderLease
 from config import ENV_FILE, config_value, load_config, load_env_file
 from data_client import (
+    async_fetch_binance_usdm_point_quote,
     async_fetch_funding_rate,
     async_fetch_klines,
     async_fetch_tickers,
@@ -32,9 +35,13 @@ from data_client import (
     fetch_klines,
     fetch_open_interest_ratio,
     market_data_source,
+    recoverable_http_errors,
     test_external_dependencies,
 )
 from indicators import atr, calculate_indicators, macd, rolling_average
+from jindan_web import register_jindan_routes
+from monitor_faults import FaultTracker
+from observation_support import advance_support
 from paper_universe import PaperUniverse
 from position_manager import (
     LEGACY_RATIO_V1,
@@ -78,6 +85,8 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
+
+    from http_transport import WebsiteGZipMiddleware
 except ModuleNotFoundError:
     uvicorn = None
     FastAPI = None
@@ -89,26 +98,39 @@ except ModuleNotFoundError:
 
 
 automatic_notification_status = {"enabled": False, "running": False, "pending": 0, "error": None}
+NOTIFICATION_OBSERVATION_INTERVAL_S = 0.5
+NOTIFICATION_MIN_SEND_INTERVAL_S = 0.7
 
 
 def automatic_notification_inputs():
     with state_lock:
         trades = [dict(trade) for trade in state.strategy_trades]
         events = [dict(event) for event in reversed(state.events)
-                  if event.get("type") in {"indicator", "support"} and event.get("event_key")]
+                  if event.get("type") in {"indicator", "support"} and event.get("event_key")
+                  and not event.get("observation_round_id")]
         faults = [state.published_fault] if state.published_fault else []
+        paper_fault = dict(state.paper_data_fault)
+    last_observed = paper_fault.get("last_observed_at")
+    if (paper_fault.get("armed") and isinstance(last_observed, (int, float))
+            and time.time() - last_observed > 30):
+        # Notification ticks cannot prove recovery while monitor rounds stall.
+        faults.append(MODULE_FAULT_LABELS["paper_data"])
     monitor = site_monitor_snapshot()
-    if monitor.get("enabled") and monitor.get("ok") is False:
+    if monitor.get("enabled") and (
+        monitor.get("alert_active") or any(result.get("alert_active") for result in monitor.get("results", []))
+    ):
         faults.append("站点巡检")
     alerts = []
     for event in events:
         title, body = format_alert_text(event)
-        alerts.append({"key": event["event_key"], "title": title, "body": body})
-    return trades, list_report_files(), "、".join(faults) or None, alerts
+        alerts.append({"key": event["event_key"], "title": title, "body": body,
+                       "created_at": event.get("created_at")})
+    return trades, list_report_files(), "、".join(faults) or None, alerts, EVENT_LOG_FILE
 
 
 async def automatic_notification_loop(stop_event, box):
     while not stop_event.is_set():
+        delay = NOTIFICATION_OBSERVATION_INTERVAL_S
         try:
 
             def scan():
@@ -116,23 +138,38 @@ async def automatic_notification_loop(stop_event, box):
                 settings = RUNTIME_SETTINGS.get()["values"]["notifications"]
                 enabled = settings["enabled"] and not env_bool("NOTIFICATIONS_FORCE_OFF", False)
                 automatic_notification_status["enabled"] = enabled
+                allowed = {key for key in feishu_notifications.CHANNELS if settings[key]} if enabled else set()
+                batch = {"attempted": 0, "accepted": 0, "failed": 0, "stopped": False}
                 if enabled:
-                    box.deliver(
-                        feishu_notifications.send, {key for key in feishu_notifications.CHANNELS if settings[key]}
+                    batch = box.deliver(
+                        feishu_notifications.send, allowed, should_stop=stop_event.is_set,
                     )
+                return batch, box.next_due_delay(allowed), allowed
 
-            await asyncio.to_thread(scan)
+            batch, next_due, allowed = await asyncio.to_thread(scan)
+            if next_due is not None:
+                # Give the loop a cancellation point between bounded batches;
+                # a ready backlog must not incur the former five-second pause.
+                delay = min(delay, max(0.01, next_due))
             automatic_notification_status.update(
                 running=True,
                 pending=len(box.data["pending"]),
-                error=None,
+                error=box.data.get("observation_error"),
                 last_checked_at=time.time(),
                 last_delivery=box.data.get("last_delivery"),
+                delivery_timing=box.delivery_timing(allowed),
+                scheduler={
+                    "observation_interval_s": NOTIFICATION_OBSERVATION_INTERVAL_S,
+                    "min_send_interval_s": box.min_send_interval_s,
+                    "next_scan_delay_s": delay,
+                    "last_batch_attempted": batch["attempted"],
+                },
             )
         except Exception as exc:
             automatic_notification_status.update(running=False, error=f"通知任务异常（{type(exc).__name__}）")
+            delay = 5
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=5)
+            await asyncio.wait_for(stop_event.wait(), timeout=delay)
         except TimeoutError:
             pass
 
@@ -261,6 +298,8 @@ class MonitorState:
     last_error: str | None = None
     signal_error: str | None = None
     module_errors: dict[str, str | None] = field(default_factory=dict)
+    paper_data_details: list[dict[str, Any]] = field(default_factory=list)
+    paper_data_fault: dict[str, Any] = field(default_factory=dict)
     published_fault: str | None = None
     summary_error: str | None = None
     discord_last_ok_at: float | None = None
@@ -268,6 +307,12 @@ class MonitorState:
     updated_at: float | None = None
     last_summary_at: float | None = None
     sent_alerts: set[str] = field(default_factory=set)
+    support_alert_states: dict[str, dict[str, Any]] = field(default_factory=dict)
+    indicator_alert_keys: dict[str, str] = field(default_factory=dict)
+    observation_round: dict[str, Any] | None = None
+    observation_pending_rounds: list[dict[str, Any]] = field(default_factory=list)
+    observation_saved_payload: str | None = None
+    observation_checkpoint_ok: bool = True
     site_monitor: dict[str, Any] = field(default_factory=dict)
 
 
@@ -276,6 +321,7 @@ state_lock = threading.Lock()
 SIGNAL_ENGINES: dict[tuple[str, ...], ProjectSignalEngine] = {}
 _signal_engines_lock = threading.Lock()
 PAPER_QUOTE_MAX_AGE_MS = 30_000
+FAULT_TRACKER: FaultTracker | None = None
 RESEARCH_ARCHIVE = ResearchArchive(
     Path(os.getenv("RESEARCH_RUNS_DIR", str(STRATEGY_TRADES_FILE.parent / "research-runs")))
 )
@@ -321,6 +367,7 @@ def code_fingerprint() -> str:
             "binance_strategy_bot.py",
             "position_manager.py",
             "runtime_utils.py",
+            "monitor_faults.py",
             "paper_universe.py",
             "strategy_universe.py",
         ),
@@ -580,6 +627,8 @@ async def maybe_run_site_monitor_async() -> None:
             "targets": targets,
             "failure_threshold": site_monitor_failure_threshold(),
             "interval_seconds": site_monitor_interval_seconds(),
+            "task_failures": 0,
+            "alert_active": any(result.get("alert_active") for result in results),
         }
 
     for notification in notifications:
@@ -847,14 +896,16 @@ def save_strategy_trades(trades: list[dict[str, Any]]) -> None:
             state.module_errors["ledger"] = "策略交易账本写入失败"
 
 
-def append_event_to_disk(event: dict[str, Any]) -> None:
+def append_event_to_disk(event: dict[str, Any]) -> bool:
     try:
         append_jsonl(EVENT_LOG_FILE, event)
         with state_lock:
             state.module_errors["events"] = None
+        return True
     except OSError:
         with state_lock:
             state.module_errors["events"] = "事件日志写入失败"
+        return False
 
 
 def record_event(event: dict[str, Any], event_key: str | None = None) -> None:
@@ -864,12 +915,193 @@ def record_event(event: dict[str, Any], event_key: str | None = None) -> None:
         stored_event["event_key"] = event_key
 
     with state_lock:
+        if stored_event.get("type") in {"indicator", "support"} and state.observation_round is not None:
+            stored_event["observation_round_id"] = state.observation_round["id"]
+            state.observation_round["events"].append(dict(stored_event))
         if event_key:
             state.sent_alerts.add(event_key)
         state.events.insert(0, stored_event)
         state.events = state.events[:50]
 
     append_event_to_disk(stored_event)
+
+
+def observation_checkpoint_path() -> Path:
+    return EVENT_LOG_FILE.with_name(EVENT_LOG_FILE.name + ".observations.json")
+
+
+def save_observation_checkpoint() -> None:
+    with state_lock:
+        if not state.observation_checkpoint_ok:
+            return
+        if (not state.support_alert_states and not state.indicator_alert_keys
+                and not state.observation_pending_rounds and not (state.observation_round or {}).get("events")
+                and state.observation_saved_payload is None):
+            return
+        payload = json.dumps({
+            "support_states": state.support_alert_states,
+            "indicator_keys": state.indicator_alert_keys,
+            "active_round": state.observation_round if (state.observation_round or {}).get("events") else None,
+            "pending_rounds": state.observation_pending_rounds,
+        }, ensure_ascii=False)
+        previous = state.observation_saved_payload
+    try:
+        if payload != previous or not observation_checkpoint_path().exists():
+            atomic_write_text(observation_checkpoint_path(), payload)
+        with state_lock:
+            state.observation_saved_payload = payload
+            state.module_errors["observations"] = None
+    except OSError:
+        with state_lock:
+            state.module_errors["observations"] = "观察提醒状态写入失败"
+
+
+def restore_observation_checkpoint(events: list[dict[str, Any]]) -> None:
+    path = observation_checkpoint_path()
+    try:
+        if path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            support_states = saved.get("support_states")
+            indicator_keys = saved.get("indicator_keys")
+            pending = saved.get("pending_rounds")
+            if not isinstance(support_states, dict) or not isinstance(indicator_keys, dict) or not isinstance(pending, list):
+                raise ValueError("invalid observation checkpoint")
+            for key, structure in support_states.items():
+                if (not isinstance(key, str) or not isinstance(structure, dict)
+                        or structure.get("status") not in {"near", "far", "broken"}
+                        or any(isinstance(structure.get(name), bool)
+                               or not isinstance(structure.get(name), (int, float))
+                               or not math.isfinite(structure[name])
+                               for name in ("support", "tolerance_pct"))
+                        or structure["support"] <= 0 or structure["tolerance_pct"] < 0):
+                    raise ValueError("invalid support state")
+            if any(not isinstance(key, str) or not isinstance(value, str) for key, value in indicator_keys.items()):
+                raise ValueError("invalid indicator state")
+            active = saved.get("active_round")
+            if active is not None:
+                pending = [*pending, active]
+            for item in pending:
+                if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                        or not isinstance(item.get("created_at"), (int, float))
+                        or not isinstance(item.get("events"), list)):
+                    raise ValueError("invalid pending observation round")
+                for event in item["events"]:
+                    if (not isinstance(event, dict) or event.get("type") not in {"support", "indicator"}
+                            or not isinstance(event.get("symbol"), str) or not isinstance(event.get("event_key"), str)):
+                        raise ValueError("invalid pending observation event")
+        else:
+            support_states, indicator_keys, pending = {}, {}, []
+            # Seed existing structures without presenting old touches as new alerts.
+            for event in events:
+                if event.get("type") == "support" and event.get("symbol") and event.get("interval"):
+                    key = f"{event['symbol']}:{event['interval']}"
+                    structure, _ = advance_support(None, {**event, "tolerance_pct": event.get("tolerance_pct", .4)})
+                    if structure is not None:
+                        support_states[key] = structure
+                elif event.get("type") == "indicator" and event.get("event_key"):
+                    key = f"{event.get('symbol')}:{event.get('interval')}:{event.get('indicator', 'ma')}"
+                    indicator_keys[key] = event["event_key"]
+        committed = {event.get("event_key", "").removeprefix("observation-round:")
+                     for event in events if event.get("type") == "observation_batch"}
+        rounds = {item["id"]: item for item in pending}
+        for event in events:
+            round_id = event.get("observation_round_id")
+            if (not isinstance(round_id, str) or event.get("type") not in {"support", "indicator"}
+                    or not event.get("symbol") or not event.get("event_key")
+                    or (round_id in committed and round_id not in rounds)):
+                continue
+            # The raw append may have survived an interruption before the next
+            # checkpoint. Recover that journal tail before suppressing raw sends.
+            recovered = rounds.setdefault(round_id, {
+                "id": round_id, "created_at": event.get("created_at", time.time()),
+                "events": [], "complete": False,
+            })
+            if event["event_key"] not in {item["event_key"] for item in recovered["events"]}:
+                recovered["events"].append(event)
+                if event["type"] == "support":
+                    structure, _ = advance_support(None, event)
+                    if structure is not None:
+                        support_states[f"{event['symbol']}:{event.get('interval')}"] = structure
+                else:
+                    key = f"{event['symbol']}:{event.get('interval')}:{event.get('indicator', 'ma')}"
+                    indicator_keys[key] = event["event_key"]
+        pending = list(rounds.values())
+        with state_lock:
+            state.support_alert_states = support_states
+            state.indicator_alert_keys = indicator_keys
+            state.sent_alerts.update(indicator_keys.values())
+            state.observation_round = None
+            state.observation_pending_rounds = pending
+            state.observation_checkpoint_ok = True
+        # Establish the outbox baseline before committing recovered groups.
+        save_observation_checkpoint()
+    except (OSError, ValueError, TypeError, AttributeError):
+        with state_lock:
+            state.observation_checkpoint_ok = False
+            state.module_errors["observations"] = "观察提醒状态损坏或不可读，已暂停观察提醒"
+
+
+def observation_batch(round_data: dict[str, Any]) -> dict[str, Any]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for event in round_data["events"]:
+        groups.setdefault(event["symbol"], []).append(event)
+    alerts = []
+    for symbol, events in groups.items():
+        lines = []
+        for event in events:
+            interval = event.get("interval", "")
+            if event.get("type") == "indicator":
+                detail = event.get("indicator_label") or event.get("indicator_name", "指标交叉")
+                lines.append(f"{interval}：{detail}，参考价 {format_decimal(event.get('price'))}")
+            else:
+                label = {"broken": "报价跌破原支撑区", "retest": "再次接近支撑", "level_changed": "接近新支撑"}.get(
+                    event.get("support_transition"), "首次接近支撑"
+                )
+                lines.append(f"{interval}：{label} {format_decimal(event.get('support'))}，"
+                             f"当前价 {format_decimal(event.get('price'))}，"
+                             f"距离 {format_signed_percent(event.get('distance_pct'))}")
+        if not round_data.get("complete"):
+            lines.insert(0, "本轮检查未完成，以下为已取得的观察信息。")
+        lines.append("观察信息，不代表开仓信号。")
+        timestamps = [event["created_at"] for event in events if isinstance(event.get("created_at"), (int, float))]
+        alerts.append({
+            "key": f"observation:{round_data['id']}:{symbol}", "title": f"{symbol} 观察提醒",
+            "body": "\n".join(lines), "created_at": min(timestamps) if timestamps else None,
+            "source_event_keys": [event["event_key"] for event in events],
+        })
+    return {"type": "observation_batch", "event_key": f"observation-round:{round_data['id']}",
+            "created_at": round_data["created_at"], "complete": bool(round_data.get("complete")), "alerts": alerts}
+
+
+def commit_observation_rounds() -> list[dict[str, Any]]:
+    """Persist complete groups before exposing them to the separate Feishu sender."""
+    delivered = []
+    while True:
+        with state_lock:
+            pending = state.observation_pending_rounds[0] if state.observation_pending_rounds else None
+        if pending is None:
+            break
+        batch = observation_batch(pending)
+        if not append_event_to_disk(batch):
+            break
+        with state_lock:
+            state.observation_pending_rounds.pop(0)
+        delivered.extend(batch["alerts"])
+    save_observation_checkpoint()
+    return delivered
+
+
+async def finish_observation_round_async(complete: bool) -> None:
+    with state_lock:
+        active = state.observation_round
+        state.observation_round = None
+        if active and active["events"]:
+            active["complete"] = complete
+            state.observation_pending_rounds.append(active)
+    save_observation_checkpoint()
+    alerts = commit_observation_rounds()
+    for alert in alerts:
+        await send_alert_notifications_async({"type": "observation_summary", **alert})
 
 
 def normalize_watchlist(items: Any) -> list[dict[str, Any]]:
@@ -1187,46 +1419,91 @@ def evaluate_open_strategy_trade_with_bars(
 
 
 def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
-    closed = [trade for trade in trades if trade.get("status") == "closed"]
-    open_trades = [trade for trade in trades if trade.get("status") == "open"]
-    wins = [trade for trade in closed if trade.get("outcome") == "win"]
-    losses = [trade for trade in closed if trade.get("outcome") == "loss"]
-    breakevens = [trade for trade in closed if trade.get("outcome") == "breakeven"]
-    returns = [parse_float(trade.get("return_pct")) or 0.0 for trade in closed]
-    protection_wins = [
-        trade
-        for trade in closed
-        if trade.get("exit_reason") in {"protection_reached", "protected_stop", "trailing_stop"}
-    ]
-    stop_losses = [trade for trade in closed if trade.get("exit_reason") == "stop_loss"]
+    """Report retained trades separately by their recorded return model.
+
+    Historical outcomes remain untouched; net wins use finite recorded returns.
+    Missing results and unrecognized accounting must never become zero returns.
+    """
+    performance_fields = (
+        "wins", "losses", "breakevens", "win_rate", "expectancy", "total_return",
+        "avg_win", "avg_loss", "payoff_ratio", "profit_factor",
+        "stop_loss_rate", "protection_rate",
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
     return_models: dict[str, int] = {}
-    for trade in closed:
-        model = str(trade.get("return_model", LEGACY_RATIO_V1))
-        return_models[model] = return_models.get(model, 0) + 1
-    model_stats = {}
-    for model in return_models:
-        model_returns = [parse_float(trade.get("return_pct")) or 0.0 for trade in closed
-                         if trade.get("return_model", LEGACY_RATIO_V1) == model]
-        model_stats[model] = {"closed_trades": len(model_returns),
-                              "expectancy": sum(model_returns) / len(model_returns)}
-    return {
+    for trade in trades:
+        model = str(trade["return_model"]) if "return_model" in trade else LEGACY_RATIO_V1
+        grouped.setdefault(model, []).append(trade)
+        if trade.get("status") == "closed":
+            return_models[model] = return_models.get(model, 0) + 1
+
+    model_stats: dict[str, dict[str, Any]] = {}
+    for model, records in grouped.items():
+        closed = [trade for trade in records if trade.get("status") == "closed"]
+        returns = []
+        for trade in closed:
+            value = trade.get("return_pct")
+            if isinstance(value, bool):
+                continue
+            try:
+                parsed = parse_float(value)
+            except OverflowError:
+                parsed = None
+            if parsed is not None and math.isfinite(parsed):
+                returns.append(parsed)
+        recognized = model in {LEGACY_RATIO_V1, LINEAR_USDM_V1}
+        group = {
+            "recognized": recognized,
+            "total_trades": len(records),
+            "open_trades": sum(trade.get("status") == "open" for trade in records),
+            "closed_trades": len(closed),
+            "valid_return_count": len(returns),
+            "missing_return_count": len(closed) - len(returns),
+            **dict.fromkeys(performance_fields),
+        }
+        if recognized:
+            wins = [value for value in returns if value > 1e-12]
+            losses = [-value for value in returns if value < -1e-12]
+            avg_win = sum(wins) / len(wins) if wins else None
+            avg_loss = sum(losses) / len(losses) if losses else None
+            group.update(
+                wins=len(wins), losses=len(losses), breakevens=len(returns) - len(wins) - len(losses),
+                win_rate=len(wins) / len(returns) if returns else None,
+                expectancy=sum(returns) / len(returns) if returns else None,
+                total_return=sum(returns) if returns else None,
+                avg_win=avg_win, avg_loss=avg_loss,
+                payoff_ratio=avg_win / avg_loss if avg_win is not None and avg_loss is not None else None,
+                profit_factor=sum(wins) / sum(losses) if losses else None,
+                stop_loss_rate=(sum(trade.get("exit_reason") == "stop_loss" for trade in closed) / len(closed)
+                                if closed else None),
+                protection_rate=(sum(trade.get("exit_reason") in {"protection_reached", "protected_stop", "trailing_stop"}
+                                     for trade in closed) / len(closed) if closed else None),
+            )
+        model_stats[model] = group
+
+    closed_count = sum(group["closed_trades"] for group in model_stats.values())
+    single_known_model = len(model_stats) == 1 and next(iter(model_stats.values()))["recognized"]
+    summary_scope = ("NO_CLOSED_RECORDS" if not closed_count else
+                     "SINGLE_RETURN_MODEL" if single_known_model else "SPLIT_BY_RETURN_MODEL")
+    stats = {
         "total_trades": len(trades),
-        "open_trades": len(open_trades),
-        "closed_trades": len(closed),
-        "wins": len(wins),
-        "losses": len(losses),
-        "breakevens": len(breakevens),
-        "win_rate": len(wins) / len(closed) if closed else 0.0,
-        "expectancy": sum(returns) / len(returns) if returns else 0.0,
-        "total_return": sum(returns),
-        "stop_loss_rate": len(stop_losses) / len(closed) if closed else 0.0,
-        "protection_rate": len(protection_wins) / len(closed) if closed else 0.0,
+        "open_trades": sum(group["open_trades"] for group in model_stats.values()),
+        "closed_trades": closed_count,
+        "valid_return_count": sum(group["valid_return_count"] for group in model_stats.values()),
+        "missing_return_count": sum(group["missing_return_count"] for group in model_stats.values()),
+        **dict.fromkeys(performance_fields),
         "return_models": return_models,
         "mixed_return_models": len(return_models) > 1,
         "return_model_stats": model_stats,
-        "comparability_note": ("记录包含不同收益口径，请按收益版本分别比较；总体指标只用于展示。"
-                               if len(return_models) > 1 else "收益按记录固定的版本计算；逐笔比例不代表账户净值。"),
+        "summary_scope": summary_scope,
+        "comparability_note": ("收益和净胜率仅按收益版本分别统计；不同口径及未知口径不合并，未知口径不计算绩效。"
+                               if not single_known_model and model_stats else
+                               "净胜率按有效收益的正负计算；缺失收益不作零，逐笔比例不代表账户净值。"),
     }
+    if summary_scope == "SINGLE_RETURN_MODEL":
+        group = next(iter(model_stats.values()))
+        stats.update({field: group[field] for field in performance_fields})
+    return stats
 
 
 def register_strategy_signal(signal: dict[str, Any]) -> bool:
@@ -1297,6 +1574,7 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
         )
 
     data_errors: dict[tuple[str, str], str] = {}
+    data_details: list[dict[str, Any]] = []
     async def load_bars(symbol: str, interval: str) -> tuple[tuple[str, str], list[dict[str, Any]]]:
         try:
             bars = await async_fetch_klines(symbol, interval, KLINE_LIMIT)
@@ -1322,6 +1600,10 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
             ValueError,
         ) as error:
             data_errors[(symbol, interval)] = f"{symbol}:{interval} K线不可用 ({type(error).__name__})"
+            data_details.append({
+                "symbol": symbol, "interval": interval, "kind": "kline_unavailable",
+                "error_type": type(error).__name__,
+            })
             return (symbol, interval), []
 
     bars_by_key = (
@@ -1330,6 +1612,26 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
         else {}
     )
 
+    # History loading can outlive a quote's source-clock budget. Refresh only
+    # rejected quotes after that wait; never re-date a stale exchange response.
+    paper_quotes = dict(prices)
+    quote_refresh_errors: dict[str, str] = {}
+    if market_data_source() == "binance_usdm":
+        refresh_symbols = sorted({symbol for symbol, _ in open_keys
+                                  if qualified_paper_quote(paper_quotes.get(symbol)) is None})
+
+        async def refresh_quote(symbol):
+            try:
+                return symbol, await async_fetch_binance_usdm_point_quote(symbol), None
+            except (*recoverable_http_errors(), RuntimeError, TypeError) as error:
+                return symbol, None, type(error).__name__
+
+        for symbol, quote, error in await asyncio.gather(*(refresh_quote(symbol) for symbol in refresh_symbols)):
+            if quote is not None:
+                paper_quotes[symbol] = quote
+            if error:
+                quote_refresh_errors[symbol] = error
+
     with state_lock:
         for trade in state.strategy_trades:
             if trade.get("status") != "open":
@@ -1337,11 +1639,26 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
             before = dict(trade)
             symbol = str(trade.get("symbol", "")).upper()
             interval = normalize_interval(trade.get("interval", DEFAULT_SIGNAL_INTERVAL))
-            ticker = prices.get(symbol)
+            ticker = paper_quotes.get(symbol)
             current_price = qualified_paper_quote(ticker)
             bars = bars_by_key.get((symbol, interval), [])
-            if current_price is None and ticker:
-                data_errors[(symbol, interval)] = f"{symbol}:{interval} 缺少有效新鲜报价"
+            if current_price is None and (prices.get(symbol) or not bars):
+                source_time = parse_float((ticker or {}).get("closeTime"))
+                source_age = (time.time() * 1000 - source_time
+                              if source_time is not None and math.isfinite(source_time) and source_time > 0 else None)
+                age_label = "unknown" if source_age is None else "future" if source_age < 0 else f"{int(source_age)}ms"
+                refresh_error = quote_refresh_errors.get(symbol, "invalid")
+                data_errors[(symbol, interval)] = (
+                    f"{symbol}:{interval} 缺少有效新鲜报价 (source_age={age_label}, refresh={refresh_error})"
+                )
+                data_details.append({
+                    "symbol": symbol, "interval": interval,
+                    "kind": ("quote_request_failed" if symbol in quote_refresh_errors else
+                             "stale_trade" if source_age is not None and source_age > PAPER_QUOTE_MAX_AGE_MS
+                             else "invalid_quote"),
+                    "source_age_ms": int(source_age) if source_age is not None else None,
+                    "refresh_error": refresh_error,
+                })
             try:
                 if bars and evaluate_open_strategy_trade_with_bars(trade, bars, current_price):
                     changed = True
@@ -1349,8 +1666,13 @@ async def update_strategy_trades_with_prices_async(prices: dict[str, dict[str, A
                     changed = True
             except ValueError as error:
                 data_errors[(symbol, interval)] = f"{symbol}:{interval} {error}"
+                data_details.append({
+                    "symbol": symbol, "interval": interval, "kind": "invalid_data",
+                    "error_type": type(error).__name__,
+                })
             changed = changed or before != trade
         state.module_errors["paper_data"] = "; ".join(data_errors.values()) or None
+        state.paper_data_details = data_details
         state.strategy_stats = calculate_strategy_stats(state.strategy_trades)
         trades_snapshot = [dict(item) for item in state.strategy_trades]
 
@@ -2250,14 +2572,49 @@ async def paper_universe_loop(stop_event):
             pass
 
 
+def publish_monitor_faults() -> None:
+    """Count completed monitor rounds, independently of notification polling."""
+    with state_lock:
+        details = list(state.paper_data_details)
+        raw_error = state.module_errors.get("paper_data")
+    tracking = {}
+    journal_error = None
+    if FAULT_TRACKER is not None:
+        try:
+            tracking = FAULT_TRACKER.observe(
+                "paper_data", details or ([{"kind": "invalid_data"}] if raw_error else []),
+                observation_id=str(time.monotonic_ns()),
+            )
+            journal_error = tracking.get("journal_error")
+        except (OSError, ValueError, TypeError) as error:
+            journal_error = type(error).__name__
+    with state_lock:
+        state.paper_data_fault = tracking
+        # A failed journal remains visible and never suppresses a real outage.
+        if FAULT_TRACKER is not None:
+            state.module_errors["fault_history"] = (
+                f"故障记录不可用（{journal_error}）" if journal_error else None
+            )
+        state.published_fault = (
+            "、".join(
+                [name for name, error in (("行情", state.last_error), ("市场摘要", state.summary_error)) if error]
+                + [MODULE_FAULT_LABELS.get(module, f"监控模块({module})")
+                   for module, error in state.module_errors.items()
+                   if error and (module != "paper_data" or not tracking
+                                 or journal_error or tracking.get("alert_active"))]
+            ) or None
+        )
+
+
 async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
     stop_event = stop_event or asyncio.Event()
     while not stop_event.is_set():
         with state_lock:
             watchlist = list(state.watchlist)
             tracked_symbols = {trade["symbol"] for trade in state.strategy_trades if trade.get("status") == "open"}
+            state.observation_round = {"id": uuid.uuid4().hex, "created_at": time.time(), "events": []}
         symbols = sorted({item["symbol"] for item in watchlist} | set(HOURLY_SUMMARY_SYMBOLS) | tracked_symbols)
-
+        observation_complete = False
         try:
             prices = await async_fetch_tickers(symbols)
             with state_lock:
@@ -2269,6 +2626,7 @@ async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
             await evaluate_chanlun_signals_async(watchlist)
             await evaluate_indicator_signals_async(watchlist)
             with state_lock:
+                observation_complete = not any(state.module_errors.get(name) for name in ("support", "indicators"))
                 state.signal_error = (
                     "; ".join(f"{module}: {error}" for module, error in state.module_errors.items() if error) or None
                 )
@@ -2286,32 +2644,30 @@ async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
             TypeError,
         ) as exc:
             with state_lock:
-                state.last_error = str(exc)
+                state.last_error = str(exc) or f"行情监控异常（{type(exc).__name__}）"
+                if tracked_symbols:
+                    state.module_errors["paper_data"] = f"本轮持仓行情未完成更新（{type(exc).__name__}）"
+                    state.paper_data_details = [{
+                        "symbol": symbol, "kind": "market_unavailable", "error_type": type(exc).__name__,
+                    } for symbol in sorted(tracked_symbols)]
+        finally:
+            await finish_observation_round_async(observation_complete)
         try:
             await maybe_run_site_monitor_async()
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
             with state_lock:
                 previous = dict(state.site_monitor)
+                failures = int(previous.get("task_failures") or 0) + 1
                 state.site_monitor = {
                     **previous,
                     "enabled": site_monitor_enabled(),
                     "ok": False,
-                    "last_error": str(exc),
+                    "last_error": str(exc) or f"巡检任务异常（{type(exc).__name__}）",
                     "last_run_at": time.time(),
+                    "task_failures": failures,
+                    "alert_active": failures >= site_monitor_failure_threshold(),
                 }
-        with state_lock:
-            state.published_fault = (
-                "、".join(
-                    name
-                    for name, error in (
-                        ("行情", state.last_error),
-                        ("信号计算", state.signal_error),
-                        ("市场摘要", state.summary_error),
-                    )
-                    if error
-                )
-                or None
-            )
+        await asyncio.to_thread(publish_monitor_faults)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=10)
         except TimeoutError:
@@ -2413,12 +2769,12 @@ async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> N
             IndexError,
             OSError,
         ) as exc:
-            return (symbol, interval), None, str(exc)
+            return (symbol, interval), None, f"{symbol}:{interval}: {type(exc).__name__}"
 
     loaded = await asyncio.gather(*(load_signal(symbol, interval) for symbol, interval in tasks)) if tasks else []
     results: dict[tuple[str, str], dict[str, Any]] = {}
     for key, signal, error in loaded:
-        if error:
+        if error is not None:
             indicator_error = error
             continue
         if signal is not None:
@@ -2446,7 +2802,7 @@ async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> N
                     f"indicator:{symbol}:{interval}:{indicator_name}:{direction}:{signal.get('kline_close_time')}"
                 )
                 with state_lock:
-                    already_sent = alert_key in state.sent_alerts
+                    already_sent = alert_key in state.sent_alerts or not state.observation_checkpoint_ok
                 if already_sent:
                     continue
 
@@ -2459,6 +2815,8 @@ async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> N
                     "email": email_by_symbol.get(symbol, ""),
                 }
                 record_event(message, alert_key)
+                with state_lock:
+                    state.indicator_alert_keys[f"{symbol}:{interval}:{indicator_name}"] = alert_key
                 await send_alert_notifications_async(message)
 
         next_indicator_signals[symbol] = symbol_signals
@@ -2466,6 +2824,7 @@ async def evaluate_indicator_signals_async(watchlist: list[dict[str, Any]]) -> N
     with state_lock:
         state.indicator_signals = next_indicator_signals
         state.module_errors["indicators"] = indicator_error
+    save_observation_checkpoint()
 
 
 async def evaluate_support_alerts_async(watchlist: list[dict[str, Any]], prices: dict[str, dict[str, Any]]) -> None:
@@ -2491,14 +2850,14 @@ async def evaluate_support_alerts_async(watchlist: list[dict[str, Any]], prices:
             IndexError,
             OSError,
         ) as exc:
-            return (item["symbol"], interval), None, str(exc)
+            return (item["symbol"], interval), None, f"{item['symbol']}:{interval}: {type(exc).__name__}"
 
     loaded = (
         await asyncio.gather(*(load_level(item, interval, price) for item, interval, price in tasks)) if tasks else []
     )
     results: dict[tuple[str, str], dict[str, Any]] = {}
     for key, level, error in loaded:
-        if error:
+        if error is not None:
             support_error = error
             continue
         if level is not None:
@@ -2512,37 +2871,29 @@ async def evaluate_support_alerts_async(watchlist: list[dict[str, Any]], prices:
             if level is None:
                 continue
             symbol_levels[interval] = level
-            support = level.get("support")
-            alert_key = f"support:{symbol}:{interval}:touch:{level.get('kline_close_time')}"
-            reset_key = f"support:{symbol}:{interval}:active"
-            reset_distance = level.get("tolerance_pct", 0.4) * 2
-            distance_pct = level.get("distance_pct")
-
-            if distance_pct is not None and distance_pct > reset_distance:
-                with state_lock:
-                    state.sent_alerts.discard(reset_key)
-                continue
-            if not item.get("support_alert", True) or not level.get("touched") or support is None:
+            structure_key = f"{symbol}:{interval}"
+            if not item.get("support_alert", True):
                 continue
             with state_lock:
-                already_sent = reset_key in state.sent_alerts or alert_key in state.sent_alerts
-            if already_sent:
-                continue
-
-            message = {
-                **level,
-                "email": item.get("email", ""),
-            }
-            with state_lock:
-                state.sent_alerts.add(reset_key)
-            record_event(message, alert_key)
-            await send_alert_notifications_async(message)
+                if not state.observation_checkpoint_ok:
+                    continue
+                previous = state.support_alert_states.get(structure_key)
+                current, messages = advance_support(previous, level)
+                if current is not None:
+                    state.support_alert_states[structure_key] = current
+            for message in messages:
+                message = {**message, "email": item.get("email", "")}
+                alert_key = (f"support:{symbol}:{interval}:{message['support_transition']}:"
+                             f"{level.get('kline_close_time')}:{uuid.uuid4().hex}")
+                record_event(message, alert_key)
+                await send_alert_notifications_async(message)
 
         next_support_levels[symbol] = symbol_levels
 
     with state_lock:
         state.support_levels = next_support_levels
         state.module_errors["support"] = support_error
+    save_observation_checkpoint()
 
 
 async def send_hourly_market_summary_async(prices: dict[str, dict[str, Any]]) -> None:
@@ -2651,10 +3002,16 @@ def send_alert_notifications(alert: dict[str, Any]) -> None:
 
 
 async def send_alert_notifications_async(alert: dict[str, Any]) -> None:
+    if alert.get("type") in {"indicator", "support"}:
+        with state_lock:
+            if state.observation_round is not None:
+                return
     await asyncio.to_thread(send_alert_notifications, alert)
 
 
 def format_alert_text(alert: dict[str, Any]) -> tuple[str, str]:
+    if alert.get("type") == "observation_summary":
+        return alert["title"], alert["body"]
     if alert.get("type") == "site_monitor":
         check = alert.get("check") or "site monitor"
         status = alert.get("status")
@@ -2678,8 +3035,11 @@ def format_alert_text(alert: dict[str, Any]) -> tuple[str, str]:
 
     if alert.get("type") == "support":
         title = f"{alert['symbol']} {alert.get('interval', '')} 支撑提醒"
+        action = {"broken": "报价跌破原支撑区", "retest": "再次接近支撑", "level_changed": "接近新支撑"}.get(
+            alert.get("support_transition"), "接近支撑"
+        )
         body = (
-            f"{alert['symbol']} {alert.get('interval', '')} 触及支撑点位 {format_decimal(alert.get('support'))}，"
+            f"{alert['symbol']} {alert.get('interval', '')} {action} {format_decimal(alert.get('support'))}，"
             f"当前价 {format_decimal(alert.get('price'))}，"
             f"距离 {format_signed_percent(alert.get('distance_pct'))}，"
             f"容差 {format_decimal(alert.get('tolerance_pct'), 2)}%。\n\n"
@@ -2845,6 +3205,7 @@ def snapshot() -> dict[str, Any]:
             "last_error": settings_error or state.last_error or state.signal_error or state.summary_error,
             "runtime_settings": runtime,
             "module_errors": dict(state.module_errors),
+            "paper_data_fault": dict(state.paper_data_fault),
             "last_summary_at": state.last_summary_at,
             "smtp_configured": False,
             "discord_configured": discord_configured,
@@ -2874,18 +3235,84 @@ def initialize_state() -> None:
         raise
     with state_lock:
         state.watchlist = load_watchlist()
-        state.events = list(reversed(all_events[-50:]))
-        state.sent_alerts = {event["event_key"] for event in state.events if isinstance(event.get("event_key"), str)}
+        display_events = [event for event in all_events if event.get("type") != "observation_batch"]
+        state.events = list(reversed(display_events[-50:]))
+        state.sent_alerts = {event["event_key"] for event in display_events if isinstance(event.get("event_key"), str)}
         state.strategy_trades = strategy_trades
         state.strategy_stats = calculate_strategy_stats(strategy_trades)
     with state_lock:
         state.module_errors["ledger"] = None
+    restore_observation_checkpoint(all_events)
 
 
-async def state_event_stream():
+def initialize_fault_history() -> None:
+    global FAULT_TRACKER
+    path = Path(os.getenv("MONITOR_FAULT_FILE", str(STRATEGY_TRADES_FILE.parent / "monitor-faults.json")))
+    try:
+        FAULT_TRACKER = FaultTracker(path)
+        restored = FAULT_TRACKER.summary()
+        paper_fault = restored["modules"].get("paper_data", {})
+        with state_lock:
+            state.paper_data_fault = paper_fault
+            state.module_errors["fault_history"] = (
+                "故障记录仍有未恢复的写入错误" if restored.get("journal_error") else None
+            )
+            if paper_fault.get("active"):
+                state.paper_data_details = paper_fault["details"]
+                state.module_errors["paper_data"] = "重启前持仓行情异常，等待新监控轮确认"
+            if paper_fault.get("armed"):
+                # Startup is not recovery evidence; retain an announced fault
+                # until a new completed monitor observation replaces it.
+                names = set((state.published_fault or "").split("、")) - {""}
+                state.published_fault = "、".join(sorted(names | {MODULE_FAULT_LABELS["paper_data"]}))
+    except (OSError, ValueError, TypeError) as error:
+        FAULT_TRACKER = None
+        with state_lock:
+            state.module_errors["fault_history"] = f"故障记录初始化失败（{type(error).__name__}）"
+
+
+def fault_diagnostics() -> dict[str, Any]:
+    """Safe current/recent paper failures without credentials or raw exceptions."""
+    with state_lock:
+        error = state.module_errors.get("fault_history")
+    if FAULT_TRACKER is None:
+        return {"available": False, "error": error, "modules": {}, "recent_events": []}
+    events = FAULT_TRACKER.events(limit=50)
+    return {"available": True, **FAULT_TRACKER.summary(), "recent_events": events,
+            "quote_max_age_ms": PAPER_QUOTE_MAX_AGE_MS}
+
+
+async def state_event_stream(detail: PayloadDetail = "full", delta: bool = False):
+    last_data = None
+    last_state = None
+    sequence = 0
+    last_frame_at = time.monotonic()
     while True:
-        data = json.dumps(snapshot(), ensure_ascii=False)
-        yield f"data: {data}\n\n"
+        current_state = project_state(snapshot(), detail)
+        data = json.dumps(current_state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        now = time.monotonic()
+        if data != last_data:
+            if delta:
+                if last_state is None:
+                    frame = {"protocol": "lianqi-delta-v1", "type": "snapshot", "seq": 0, "state": current_state}
+                else:
+                    sequence += 1
+                    changed = {key: value for key, value in current_state.items()
+                               if key not in last_state or json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                                                      separators=(",", ":")) != last_state[key]}
+                    frame = {"protocol": "lianqi-delta-v1", "type": "patch", "seq": sequence,
+                             "set": changed, "remove": sorted(last_state.keys() - current_state.keys())}
+                last_state = {key: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                              for key, value in current_state.items()}
+                outgoing = json.dumps(frame, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            else:
+                outgoing = data
+            last_data = data
+            last_frame_at = now
+            yield f"data: {outgoing}\n\n"
+        elif now - last_frame_at >= 15:
+            last_frame_at = now
+            yield ": heartbeat\n\n"
         await asyncio.sleep(3)
 
 
@@ -2900,6 +3327,7 @@ def create_app():
     @asynccontextmanager
     async def lifespan(_app):
         initialize_state()
+        initialize_fault_history()
         monitor_stop_event = asyncio.Event()
         automatic_task = None
         automatic_lease = None
@@ -2907,7 +3335,9 @@ def create_app():
         try:
             outbox_path = os.getenv("FEISHU_OUTBOX_FILE", str(ROOT / "runtime" / "feishu-outbox.json"))
             automatic_lease = SenderLease(outbox_path)
-            box = Outbox(outbox_path)
+            box = Outbox(outbox_path, min_send_interval_s=NOTIFICATION_MIN_SEND_INTERVAL_S)
+            box.observe(*automatic_notification_inputs())
+            commit_observation_rounds()
             box.observe(*automatic_notification_inputs())
             automatic_task = asyncio.create_task(
                 automatic_notification_loop(monitor_stop_event, box), name="feishu-notifications"
@@ -2944,6 +3374,7 @@ def create_app():
 
     app = FastAPI(title="Chanlun Crypto Monitor", lifespan=lifespan)
     app.state.research_jobs = research_jobs
+    register_jindan_routes(app)
 
     @app.middleware("http")
     async def local_admin_only(request: Request, call_next):
@@ -2963,10 +3394,15 @@ def create_app():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(WebsiteGZipMiddleware)
 
     @app.get("/api/state")
-    async def api_state() -> dict[str, Any]:
-        return snapshot()
+    async def api_state(detail: PayloadDetail = "full") -> dict[str, Any]:
+        return project_state(snapshot(), detail)
+
+    @app.get("/api/diagnostics/faults")
+    async def api_fault_diagnostics() -> dict[str, Any]:
+        return await asyncio.to_thread(fault_diagnostics)
 
     @app.get("/api/health")
     async def api_health() -> dict[str, Any]:
@@ -3087,21 +3523,28 @@ def create_app():
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/paper-trades")
-    async def api_paper_trades():
+    async def api_paper_trades(detail: PayloadDetail = "full"):
         universe = paper_universe_snapshot()
         with state_lock:
             stats = calculate_strategy_stats(state.strategy_trades)
             mixed = stats["mixed_return_models"]
             comparability_note = stats["comparability_note"]
-            return {
+            if stats["summary_scope"] == "NO_CLOSED_RECORDS":
+                comparison_status = "NO_CLOSED_RECORDS"
+            elif any(not group["recognized"] for group in stats["return_model_stats"].values()):
+                comparison_status = "UNRECOGNIZED_RETURN_MODEL"
+            else:
+                comparison_status = "MIXED_RETURN_MODELS" if mixed else stats["summary_scope"]
+            payload = {
                 "mode": "paper",
                 "universe": universe,
                 "trades": list(state.strategy_trades),
                 "stats": stats,
-                "comparison_status": "MIXED_RETURN_MODELS" if mixed else "SINGLE_RETURN_MODEL" if stats["return_models"] else "NO_CLOSED_RECORDS",
+                "comparison_status": comparison_status,
                 "comparability_note": comparability_note,
                 "retention_note": "展示本地保留的交易记录；收益为逐笔比例，不代表账户净值。" + comparability_note,
             }
+        return project_paper_trades(payload, detail)
 
     @app.get("/api/okx-demo-ledger")
     async def api_okx_demo_ledger():
@@ -3167,9 +3610,9 @@ def create_app():
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/api/events")
-    async def api_events():
+    async def api_events(detail: PayloadDetail = "full", delta: bool = False):
         return StreamingResponse(
-            state_event_stream(),
+            state_event_stream(detail, delta=delta),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

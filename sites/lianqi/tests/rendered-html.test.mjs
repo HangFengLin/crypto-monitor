@@ -57,8 +57,8 @@ test("server-renders the 炼气 strategy terminal", async () => {
   assert.match(html, /炼气/);
   assert.match(html, /实时策略监控/);
   assert.match(html, /总览/);
-  for (const label of ["行情与信号", "模拟交易", "策略研究", "运行状态"]) assert.ok(html.includes(label));
-  assert.equal((html.match(/class="nav-button(?: active)?"/g)||[]).length, 5);
+  for (const label of ["行情与信号", "模拟交易", "策略研究", "金丹v1.0", "运行状态"]) assert.ok(html.includes(label));
+  assert.equal((html.match(/class="nav-button(?: active)?"/g)||[]).length, 6);
   assert.match(html, /模拟跟踪/);
   assert.match(html, /最近信号与模拟退出/);
   assert.match(html, /信号模拟记录，不提交订单/);
@@ -107,7 +107,7 @@ async function renderPaperComponent(name, props) {
 
 // Run the real component's request effect without mounting a browser or starting
 // its polling timer. Only the network and hook scheduler are controlled here.
-async function renderPaperAfterRequests(responses) {
+async function renderPaperAfterRequests(responses, modelFilter) {
   const sourceUrl = new URL("../app/paper-ledger.tsx", import.meta.url);
   const require = createRequire(sourceUrl);
   const ts = require("typescript");
@@ -128,7 +128,7 @@ async function renderPaperAfterRequests(responses) {
   let requestPass = 0;
   const fixtureRequire = name => name === "react" ? hooks : name === "./api-client.mjs" ? {
     async fetchWithTimeout(url) {
-      const response = responses[requestPass][url];
+      const response = responses[requestPass][url] ?? responses[requestPass][url.split('?')[0]];
       if (response instanceof Error) throw response;
       if (!response) throw Error(`Missing request fixture: ${url}`);
       return response;
@@ -148,6 +148,18 @@ async function renderPaperAfterRequests(responses) {
   for (requestPass = 0; requestPass < responses.length; requestPass++) {
     cleanups.push(effects[0]());
     await new Promise(resolve => setImmediate(resolve));
+  }
+  if (modelFilter !== undefined) {
+    cursor = 0;
+    const tree = loaded.exports.default();
+    const find = node => {
+      if (Array.isArray(node)) return node.flatMap(find);
+      if (!node || typeof node !== "object") return [];
+      return [...(node.type === "label" && Array.isArray(node.props.children) && node.props.children[0] === "收益口径 " ? [node] : []), ...find(node.props?.children)];
+    };
+    const labels = find(tree);
+    assert.equal(labels.length, 1, "the real model selector must be present");
+    labels[0].props.children.find(child => child?.type === "select").props.onChange({ target: { value: modelFilter } });
   }
   const html = render();
   for (const cleanup of cleanups) cleanup();
@@ -218,7 +230,7 @@ test("paper accounting renders mixed model warning and separate realized samples
                                         linear_usdm_v1: { closed_trades: 4, expectancy: .02 } } };
   const html = await renderPaperComponent("StatBlock", { stats });
   assert.match(html, /fixture：请按收益版本分别比较。/);
-  assert.match(html, /混合口径逐笔合计/);
+  assert.doesNotMatch(html, /混合口径逐笔合计|50\.00%|10\.80%/);
   assert.match(html, /历史比例（旧版）/);
   assert.match(html, /线性 USDT 合约/);
   assert.match(html, /闭仓数/);
@@ -229,4 +241,51 @@ test("paper accounting renders mixed model warning and separate realized samples
   assert.match(html, /2\.00%/);
   const okxHtml = await renderPaperComponent("StatBlock", { stats, okx: true });
   assert.doesNotMatch(okxHtml, /按收益版本|混合口径逐笔合计|单笔期望/);
+});
+
+test("paper groups show net payoff and missing observations without inventing zero returns", async () => {
+  const html = await renderPaperComponent("StatBlock", { stats: {
+    total_trades: 7, open_trades: 1, closed_trades: 6, summary_scope: "SPLIT_BY_RETURN_MODEL",
+    return_model_stats: {
+      legacy_ratio_v1: { recognized: true, closed_trades: 2, open_trades: 0,
+        valid_return_count: 2, missing_return_count: 0, win_rate: .5, avg_win: .02,
+        avg_loss: .04, payoff_ratio: .5, profit_factor: .5, expectancy: -.01 },
+      linear_usdm_v1: { recognized: true, closed_trades: 4, open_trades: 1,
+        valid_return_count: 3, missing_return_count: 1, win_rate: 0, avg_win: null,
+        avg_loss: .01, payoff_ratio: null, profit_factor: 0, expectancy: 0 },
+    },
+  } });
+  for (const label of ["有效收益", "缺失收益", "平均盈利", "平均亏损", "盈亏比", "利润因子"]) assert.ok(html.includes(label));
+  assert.match(html, /-4\.00%/);
+  assert.match(html, /0\.00%/);
+  assert.match(html, />0\.5</);
+  assert.match(html, /<td[^>]*>--<\/td>/);
+});
+
+test("explicit unknown paper models never display unverified numeric performance", async () => {
+  const html = await renderPaperComponent("StatBlock", { stats: {
+    total_trades: 1, closed_trades: 1, win_rate: .9876, expectancy: .1234, total_return: .1234,
+    return_models: { mystery: 1 }, return_model_stats: { mystery: {
+      recognized: false, closed_trades: 1, valid_return_count: 1, missing_return_count: 0,
+      win_rate: .9876, expectancy: .1234, avg_win: .1234, profit_factor: 12.34,
+    } },
+  } });
+  assert.match(html, /未识别口径/);
+  assert.doesNotMatch(html, /98\.76%|12\.34/);
+});
+
+test("paper model selector separates missing legacy records from linear and explicit unknown models", async () => {
+  const base = { interval: "15m", direction: "long", status: "closed", entry_price: 100,
+    exit_price: 101, return_pct: .008, opened_at: 1, exit_reason: "protection_reached" };
+  const trades = [{ ...base, id: "old", symbol: "OLDUSDT" },
+    { ...base, id: "new", symbol: "NEWUSDT", return_model: "linear_usdm_v1" },
+    { ...base, id: "unknown", symbol: "UNKNOWNUSDT", return_model: null }];
+  const responses = [{ "/api/paper-trades": { ok: true, async json() { return { trades }; } },
+    "/api/okx-demo-ledger": { ok: false } }];
+  const legacy = await renderPaperAfterRequests(responses, "legacy_ratio_v1");
+  assert.match(legacy, /OLDUSDT/);
+  assert.doesNotMatch(legacy, /NEWUSDT|UNKNOWNUSDT/);
+  const linear = await renderPaperAfterRequests(responses, "linear_usdm_v1");
+  assert.match(linear, /NEWUSDT/);
+  assert.doesNotMatch(linear, /OLDUSDT|UNKNOWNUSDT/);
 });

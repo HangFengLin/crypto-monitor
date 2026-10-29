@@ -1,0 +1,13 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+# The verified runtime supplies aiohttp. The observer never contains the
+# monitor application's code, configuration or credentials.
+RUN rm -rf /app && mkdir -p /app /state && chown 1000:1000 /app /state
+WORKDIR /app
+COPY --chown=1000:1000 jindan_live /app/jindan_live
+COPY --chown=1000:1000 prospective-plan.json /app/prospective-plan.json
+COPY --chown=1000:1000 record-catalog.json /app/record-catalog.json
+USER 1000:1000
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+CMD ["python", "-m", "jindan_live", "--state-dir", "/state", "--activation", "/state/activation.json"]

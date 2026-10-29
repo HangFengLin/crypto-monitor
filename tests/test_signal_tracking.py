@@ -18,6 +18,7 @@ class SignalTrackingTest(unittest.TestCase):
             patch.object(app, "state", app.MonitorState()),
             patch.object(app, "STRATEGY_TRADES_FILE", self.ledger),
             patch.object(app, "PAPER_UNIVERSE_ENABLED", False),
+            patch.object(app, "async_fetch_binance_usdm_point_quote", new=AsyncMock(side_effect=TimeoutError())),
         ):
             replacement.start()
             self.addCleanup(replacement.stop)

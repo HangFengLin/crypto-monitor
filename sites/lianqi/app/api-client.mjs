@@ -7,11 +7,27 @@ export function validateState(payload) {
 
 export async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const onCallerAbort = () => controller.abort(options.signal.reason);
+  const aborted = new Promise((_, reject) => {
+    controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+  });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  if (options.signal?.aborted) onCallerAbort();
+  else options.signal?.addEventListener('abort', onCallerAbort, { once: true });
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await Promise.race([fetch(url, { ...options, signal: controller.signal }), aborted]);
+    // These finite API requests need a deadline for the entire download. Read a
+    // clone so the returned native Response retains its URL/status/headers and
+    // its original body remains available to existing json()/text() consumers.
+    await Promise.race([response.clone().arrayBuffer(), aborted]);
+    return response;
   } catch (error) {
-    if (controller.signal.aborted) throw new Error('请求超时，请检查后端连接或减少回测 K 线数量后重试。');
+    if (timedOut) throw new Error('请求超时，请检查后端连接或减少回测 K 线数量后重试。');
+    if (options.signal?.aborted) throw options.signal.reason;
     throw new Error(`无法连接数据服务：${error instanceof Error ? error.message : error}`);
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', onCallerAbort);
+  }
 }

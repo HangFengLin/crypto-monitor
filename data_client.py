@@ -29,6 +29,7 @@ load_env_file()
 
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/24hr"
 BINANCE_USDM_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+BINANCE_USDM_PRICE_TICKER_URL = "https://fapi.binance.com/fapi/v2/ticker/price"
 BINANCE_USDM_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
@@ -103,8 +104,8 @@ def _retry_delay(error: Exception, attempt: int) -> float:
         except (TypeError, ValueError, OverflowError):
             pass
     if retry_after is None or not math.isfinite(retry_after):
-        retry_after = 0.75 * 2 ** min(attempt, 6)
-    return min(30.0, max(0.0, retry_after))
+        return min(30.0, 0.75 * 2 ** min(attempt, 6))
+    return max(0.0, retry_after)
 
 
 def read_json_url(url: str, timeout: float = 20, attempts: int = 3, *, max_elapsed: float = 60) -> Any:
@@ -133,7 +134,9 @@ def read_json_url(url: str, timeout: float = 20, attempts: int = 3, *, max_elaps
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        delay = min(_retry_delay(last_error, attempt), remaining)
+        delay = _retry_delay(last_error, attempt)
+        if delay >= remaining:
+            break
         if delay > 0:
             time.sleep(delay)
     if last_error:
@@ -946,7 +949,9 @@ async def async_read_json_url(url: str, timeout: float = 20, attempts: int = 3, 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        delay = min(_retry_delay(last_error, attempt), remaining)
+        delay = _retry_delay(last_error, attempt)
+        if delay >= remaining:
+            break
         if delay > 0:
             await _async_sleep(delay)
     if last_error:
@@ -956,6 +961,19 @@ async def async_read_json_url(url: str, timeout: float = 20, attempts: int = 3, 
 
 async def _async_sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
+
+
+async def async_fetch_binance_usdm_point_quote(symbol: str) -> dict[str, Any]:
+    """Fetch one latest trade price, retaining its exchange transaction clock."""
+    params = urllib.parse.urlencode({"symbol": symbol})
+    payload = await async_read_json_url(
+        f"{BINANCE_USDM_PRICE_TICKER_URL}?{params}", timeout=3, attempts=1, max_elapsed=3
+    )
+    if not isinstance(payload, dict) or payload.get("symbol") != symbol:
+        raise ValueError("invalid point quote response")
+    return normalize_ticker({
+        "symbol": symbol, "lastPrice": payload.get("price"), "closeTime": payload.get("time")
+    })
 
 
 async def async_fetch_tickers(symbols: list[str]) -> dict[str, dict[str, Any]]:

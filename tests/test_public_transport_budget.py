@@ -137,11 +137,23 @@ class TransportBudgetCases:
         self.assertEqual(transport.clock.elapsed, 0)
         self.assertEqual(transport.clock.sleeps, [])
 
-    def test_rate_limit_backoff_is_capped_and_success_is_returned(self):
-        transport = self.transport([])
-        transport.outcomes = iter([transport.rate_limit("3600"), {"ok": True}])
-        self.assertEqual(transport.read(attempts=2), {"ok": True})
-        self.assertEqual(transport.clock.sleeps, [30.0])
+    def test_long_retry_after_within_budget_is_fully_respected(self):
+        for header in ("45", formatdate(1_800_000_045, usegmt=True)):
+            with self.subTest(header=header):
+                transport = self.transport([])
+                transport.outcomes = iter([transport.rate_limit(header), {"ok": True}])
+                self.assertEqual(transport.read(attempts=2), {"ok": True})
+                self.assertEqual(transport.clock.sleeps, [45.0])
+
+    def test_retry_after_exceeding_or_exhausting_budget_fails_without_waiting(self):
+        for header in ("60", "120", formatdate(1_800_000_120, usegmt=True)):
+            with self.subTest(header=header):
+                transport = self.transport([])
+                transport.outcomes = iter([transport.rate_limit(header), {"ok": True}])
+                with self.assertRaises((urllib.error.HTTPError, data_client.aiohttp.ClientResponseError)):
+                    transport.read(attempts=2)
+                self.assertEqual(len(transport.timeouts), 1)
+                self.assertEqual(transport.clock.sleeps, [])
 
     def test_http_date_retry_after_is_honored(self):
         transport = self.transport([])
@@ -190,6 +202,7 @@ class TransportBudgetCases:
             transport.read(attempts=8, max_elapsed=1)
         self.assertLessEqual(transport.clock.elapsed, 1.0)
         self.assertEqual(len(transport.timeouts), 1)
+        self.assertEqual(transport.clock.sleeps, [])
 
     def test_nonpositive_or_nonfinite_budgets_reject_before_request(self):
         for value in (0, -1, float("nan"), float("inf")):

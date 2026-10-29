@@ -205,14 +205,33 @@ function renderBacktestSymbolOptions(watchlist) {
 function renderStrategyStats(stats, trades) {
   const openCount = Number(stats.open_trades || 0);
   const closedCount = Number(stats.closed_trades || 0);
+  const groups = Object.entries(stats.return_model_stats || {});
+  const models = [...new Set([...Object.keys(stats.return_models || {}), ...groups.map(([model]) => model)])];
+  const recognized = (model, group = {}) => group.recognized !== false && ["legacy_ratio_v1", "linear_usdm_v1"].includes(model);
+  const label = (model) => model === "legacy_ratio_v1" ? "历史比例（旧版）" : model === "linear_usdm_v1" ? "线性 USDT 合约（新版）" : `未识别口径（${model}）`;
+  const split = stats.summary_scope === "SPLIT_BY_RETURN_MODEL" || stats.mixed_return_models || models.length > 1 ||
+    models.some((model) => !recognized(model)) || groups.some(([model, group]) => !recognized(model, group));
+  const metric = (value) => value === null || value === undefined || typeof value === "boolean" ||
+    (typeof value === "string" && !value.trim()) || !Number.isFinite(Number(value)) ? null : Number(value);
+  const percent = (value) => metric(value) === null ? "--" : formatPercent(metric(value));
+  const number = (value) => metric(value) === null ? "--" : formatNumber(metric(value), 2);
   strategyStatusEl.textContent = `${closedCount} 笔已结束 · ${openCount} 笔跟踪中`;
   strategySummaryEl.innerHTML = `
     <div class="metric"><span>累计信号</span><strong>${formatNumber(stats.total_trades, 0)}</strong></div>
-    <div class="metric"><span>模拟胜率</span><strong class="${stats.win_rate >= 0.45 ? "up" : stats.win_rate >= 0.35 ? "warn" : "down"}">${formatPercent(stats.win_rate)}</strong></div>
-    <div class="metric"><span>成功/保本/失败</span><strong>${formatNumber(stats.wins, 0)} / ${formatNumber(stats.breakevens, 0)} / ${formatNumber(stats.losses, 0)}</strong></div>
-    <div class="metric"><span>平均结果</span><strong class="${stats.expectancy >= 0 ? "up" : "down"}">${formatPercent(stats.expectancy)}</strong></div>
-    <div class="metric"><span>止损失败</span><strong>${formatPercent(stats.stop_loss_rate)}</strong></div>
-    <div class="metric"><span>推保护成功</span><strong>${formatPercent(stats.protection_rate)}</strong></div>
+    ${split ? '<div class="metric"><span>统计方式</span><strong>按口径分别查看</strong></div>' : `
+      <div class="metric"><span>模拟胜率</span><strong>${closedCount ? percent(stats.win_rate) : "暂无样本"}</strong></div>
+      <div class="metric"><span>平均结果</span><strong>${closedCount ? percent(stats.expectancy) : "暂无样本"}</strong></div>
+    `}
+    ${groups.map(([model, group]) => {
+      const value = (key) => recognized(model, group) ? group[key] : null;
+      const loss = metric(value("avg_loss"));
+      return `<div class="metric"><span>${escapeHtml(label(model))}</span><strong>闭仓 ${number(group.closed_trades)}</strong>
+        <small>有效收益 ${number(group.valid_return_count)} · 缺失收益 ${number(group.missing_return_count)}</small>
+        <small>胜率 ${percent(value("win_rate"))} · 单笔期望 ${percent(value("expectancy"))}</small>
+        <small>平均盈利 ${percent(value("avg_win"))} · 平均亏损 ${percent(loss === null ? null : -Math.abs(loss))}</small>
+        <small>盈亏比 ${number(value("payoff_ratio"))} · 利润因子 ${number(value("profit_factor"))}</small></div>`;
+    }).join("")}
+    <p>${escapeHtml(stats.comparability_note || "新旧口径分别统计；逐笔收益不代表账户净值。")}</p>
   `;
 
   if (!trades.length) {
@@ -220,11 +239,18 @@ function renderStrategyStats(stats, trades) {
     return;
   }
 
-  strategyTradesEl.innerHTML = trades
+  const tradeGroups = new Map();
+  for (const trade of trades) {
+    const model = Object.hasOwn(trade, "return_model") ? String(trade.return_model) : "legacy_ratio_v1";
+    if (!tradeGroups.has(model)) tradeGroups.set(model, []);
+    tradeGroups.get(model).push(trade);
+  }
+  strategyTradesEl.innerHTML = [...tradeGroups].map(([model, records]) => `<h3>${escapeHtml(label(model))}</h3>` + records
     .map((trade) => {
-      const statusText = trade.status === "open" ? "跟踪中" : trade.outcome === "win" ? "模拟盈利" : trade.outcome === "breakeven" ? "保本" : "模拟亏损";
-      const statusClass = trade.status === "open" ? "warn" : trade.outcome === "win" ? "up" : trade.outcome === "breakeven" ? "" : "down";
       const resultValue = trade.status === "open" ? trade.unrealized_pct : trade.return_pct;
+      const result = metric(resultValue);
+      const statusText = trade.status === "open" ? "跟踪中" : result === null ? "收益缺失" : result > 0 ? "模拟盈利" : result === 0 ? "保本" : "模拟亏损";
+      const statusClass = trade.status === "open" ? "warn" : result === null || result === 0 ? "" : result > 0 ? "up" : "down";
       return `
         <div class="tradeItem">
           <span>
@@ -232,11 +258,11 @@ function renderStrategyStats(stats, trades) {
             <small>${escapeHtml(trade.interval || "15m")} · 入场 ${formatNumber(trade.entry_price)} · 止损 ${formatNumber(trade.stop_loss)} · 目标 ${formatNumber(trade.target_price)}${trade.status === "closed" ? ` · 退出 ${formatNumber(trade.exit_price)} · ${escapeHtml(trade.exit_reason || "")}` : ""}</small>
           </span>
           <em class="${statusClass}">${statusText}</em>
-          <strong class="${Number(resultValue || 0) >= 0 ? "up" : "down"}">${formatPercent(resultValue)}</strong>
+          <strong class="${result === null || result === 0 ? "" : result > 0 ? "up" : "down"}">${percent(resultValue)}</strong>
         </div>
       `;
     })
-    .join("");
+    .join("")).join("");
 }
 
 function renderBotStatus(status) {

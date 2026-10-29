@@ -47,7 +47,7 @@ test('blank or duplicate draft rows cannot disappear silently on save', () => {
 
 test('view hashes restore known views and fall back safely for unrelated anchors', () => {
   assert.equal(typeof interactions.viewFromHash, 'function');
-  for (const view of ['overview', 'markets', 'paper', 'research', 'settings']) assert.equal(interactions.viewFromHash(`#${view}`), view);
+  for (const view of ['overview', 'markets', 'paper', 'research', 'jindan', 'settings']) assert.equal(interactions.viewFromHash(`#${view}`), view);
   for (const hash of ['', '#unknown', '#%invalid', '#main-content']) assert.equal(interactions.viewFromHash(hash), 'overview');
 });
 

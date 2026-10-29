@@ -424,3 +424,22 @@ input, select { min-width: 0; height: 44px; font-size: 16px; }
 .research-checks { margin: 16px 0; }
 .research-checks > summary { cursor: pointer; color: var(--muted); padding: 10px 0; min-height: 44px; }
 .research-checks[open] > summary { color: var(--text); }
+
+/* Jindan uses the existing terminal panels and keeps evidence states distinct. */
+.jindan-monitor { display: grid; gap: 24px; }
+.jindan-intro, .jindan-note { color: var(--muted); line-height: 1.8; font-size: 13px; }
+.jindan-note { color: var(--faint); font-size: 12px; }
+.jindan-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 20px 0; }
+.jindan-stats strong.jindan-label { font: 14px/1.8 var(--font-mono), monospace; overflow-wrap: anywhere; }
+.jindan-table-wrap { overflow-x: auto; margin-top: 20px; }
+.jindan-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.jindan-table th, .jindan-table td { padding: 13px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+.jindan-table thead th { color: var(--faint); font-size: 10px; font-weight: 500; }
+.jindan-table tbody th { color: var(--text); font-weight: 500; }
+.jindan-table td { color: var(--muted); font-family: var(--font-mono), monospace; }
+.jindan-inline { display: flex; flex-wrap: wrap; gap: 14px 28px; margin-top: 20px; color: var(--muted); font-size: 12px; }
+.jindan-errors { padding-left: 18px; color: var(--gold); font-size: 12px; line-height: 1.9; }
+.jindan-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.jindan-dates dt { color: var(--faint); font-size: 11px; }
+.jindan-dates dd { margin: 6px 0 0; font: 12px/1.7 var(--font-mono), monospace; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .jindan-stats { grid-template-columns: repeat(2, minmax(0,1fr)); } .jindan-dates { grid-template-columns: 1fr; } }

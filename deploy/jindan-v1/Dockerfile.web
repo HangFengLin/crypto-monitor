@@ -1,0 +1,7 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+COPY --chown=1000:1000 app.py /app/app.py
+COPY --chown=1000:1000 jindan_web.py /app/jindan_web.py
+COPY --chown=1000:1000 public/site /app/public/site
+USER appuser

@@ -1,0 +1,34 @@
+services:
+  jindan-collector:
+    image: jindan-observer:1.0-20261029
+    container_name: jindan-v1-collector
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    command: ["python", "-m", "jindan_live", "--state-dir", "/state", "--activation", "/state/activation.json", "--max-state-bytes", "8589934592", "--min-free-bytes", "4294967296"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.50
+    mem_limit: 192m
+    pids_limit: 64
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - /opt/crypto-project/runtime/jindan-v1:/state
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,time,pathlib; d=json.loads(pathlib.Path('/state/status.json').read_text()); raise SystemExit(0 if time.time()-d.get('updated_at',0)<75 and d.get('mode')=='observation_only' and d.get('operational_status')=='RUNNING' else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 75s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"

@@ -30,8 +30,19 @@ checkpoint 身份包含品种、周期、命名空间、实际执行版本与执
 开盘退出不会把退出后的 close/high/low 计入持仓路径。
 
 实时点价必须有来源 `closeTime`、有限正价，且不在未来、距本地 now 不超过 30 秒。
+持仓 K 线加载完成后，如输入报价已过期或缺失，Binance USD-M 路径会按品种补取一次
+`/fapi/v2/ticker/price`，每个请求最多 3 秒、无自动重试。该接口的来源交易时刻 `time`
+映射为 `closeTime`，仍须通过同一新鲜度检查，不以本地接收时间替代。参见
+[Binance 官方点价接口文档](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data#symbol-price-ticker-v2)。
+有效输入报价不增加补取请求；补取失败仍允许有效的已收盘 K 线按原生命周期处理，
+错误摘要仅保留品种、源报价年龄和安全错误类别。
 K 线接口失败且报价陈旧或缺少源时刻时，仅记录 paper 数据故障，不成交、不扣费、
 不推进 closed bar。合格点价可按其实际观测价格退出，不能以本地接收时间冒充源时间。
+
+报价保护与飞书告警分开：单轮无新鲜报价立即保留诊断和安全故障历史，只有连续至少
+3 轮且持续至少 60 秒失败才通知。历史中的 `stale_trade` 表示来源成交时间过旧，
+`quote_request_failed` / `kline_unavailable` 表示请求失败，不能把无新成交直接解释为
+网络中断。恢复事件保留此前错误明细；取证入口为 `/api/diagnostics/faults`。
 
 paper 入场仍为 `signal_reference_price`，研究账户为信号确认后下一真实开盘；paper
 与研究的持有期限也各有原合同。共享退出逻辑不证明两个完整执行系统等价。合成恢复

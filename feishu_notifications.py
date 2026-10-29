@@ -63,30 +63,38 @@ def status():
 
 def send(channel, title, body):
     if channel not in CHANNELS:
-        return {"ok": False, "error": "未知通知渠道"}
-    url = webhook(channel)
-    result = {"ok": False, "sent_at": time.time()}
-    if not valid_webhook(url):
-        result["error"] = "飞书通知地址未配置或格式错误"
-    else:
-        prefix = ""
-        if title.startswith(("💵", "❌", "✅")):
-            prefix, title = title[0] + " ", title[1:].lstrip()
-        payload = {"msg_type": "text", "content": {"text": f"{prefix}炼气｜{title}\n{body}"[:15000]}}
-        request = urllib.request.Request(
-            url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST"
-        )
-        try:
+        return {"ok": False, "error": "未知通知渠道", "error_class": "UnknownChannel"}
+    started_at = time.time()
+    started_monotonic = time.monotonic()
+    result = {"ok": False, "sent_at": started_at, "attempt_started_at": started_at,
+              "accepted_at": None, "failed_at": None, "error_class": None}
+    try:
+        url = webhook(channel)
+        if not valid_webhook(url):
+            result.update(error="飞书通知地址未配置或格式错误", error_class="ConfigurationError")
+        else:
+            prefix = ""
+            if title.startswith(("💵", "❌", "✅")):
+                prefix, title = title[0] + " ", title[1:].lstrip()
+            payload = {"msg_type": "text", "content": {"text": f"{prefix}炼气｜{title}\n{body}"[:15000]}}
+            request = urllib.request.Request(
+                url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST"
+            )
             with urllib.request.urlopen(request, timeout=12) as response:
                 reply = json.loads(response.read())
             code = reply.get("code", reply.get("StatusCode"))
-            if code == 0:
+            if isinstance(code, int) and not isinstance(code, bool) and code == 0:
                 result["ok"] = True
+            elif isinstance(code, int) and not isinstance(code, bool):
+                result.update(error=f"飞书拒绝消息，错误码 {code}", error_class="FeishuRejected")
             else:
-                result["error"] = f"飞书拒绝消息，错误码 {code}"
-        except Exception as exc:
-            # Transport exceptions may include the secret URL: never expose them.
-            result["error"] = f"飞书发送失败（{type(exc).__name__}）"
+                result.update(error="飞书响应格式错误", error_class="InvalidResponse")
+    except Exception as exc:
+        # Transport exceptions may include the secret URL: never expose them.
+        result.update(error=f"飞书发送失败（{type(exc).__name__}）", error_class=type(exc).__name__)
+    finished_at = time.time()
+    result["accepted_at" if result["ok"] else "failed_at"] = finished_at
+    result["send_duration_s"] = time.monotonic() - started_monotonic
     with _lock:
         _results[channel] = dict(result)
     return result

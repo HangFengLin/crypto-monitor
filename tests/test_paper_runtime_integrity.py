@@ -25,6 +25,7 @@ class PaperRuntimeIntegrityTest(unittest.TestCase):
             patch.object(app, "RUNTIME_SETTINGS", self.settings),
             patch.object(app, "SIGNAL_ENGINES", {}),
             patch.object(app, "PAPER_UNIVERSE_ENABLED", False),
+            patch.object(app, "async_fetch_binance_usdm_point_quote", new=AsyncMock(side_effect=TimeoutError())),
             patch.object(app, "PUBLIC_DIR", self.directory),
             patch.object(app, "REPORTS_DIR", self.directory),
             patch.object(app, "load_all_event_history", return_value=[]),

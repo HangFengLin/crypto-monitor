@@ -43,7 +43,7 @@ export function prepareWatchlist(items) {
 
 export function viewFromHash(hash) {
   const view = hash.replace(/^#/, '');
-  return ['overview', 'markets', 'paper', 'research', 'settings'].includes(view) ? view : 'overview';
+  return ['overview', 'markets', 'paper', 'research', 'jindan', 'settings'].includes(view) ? view : 'overview';
 }
 
 // The scan clock is not a watchlist revision. A successful current-generation

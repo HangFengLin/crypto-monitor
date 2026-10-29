@@ -10,6 +10,16 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501", "B905", "UP017", "UP038"]
 
+# These six deployed collector files are bound byte-for-byte to the active
+# Jindan v1.0 activation hash; formatting them would invalidate the receipt.
+[tool.ruff.lint.per-file-ignores]
+"jindan_live/__init__.py" = ["E701", "E702", "E721", "I001", "F401", "B904", "UP041"]
+"jindan_live/__main__.py" = ["E701", "E702", "E721", "I001", "F401", "B904", "UP041"]
+"jindan_live/collector.py" = ["E701", "E702", "E721", "I001", "F401", "B904", "UP041"]
+"jindan_live/config.py" = ["E701", "E702", "E721", "I001", "F401", "B904", "UP041"]
+"jindan_live/detector.py" = ["E701", "E702", "E721", "I001", "F401", "B904", "UP041"]
+"jindan_live/storage.py" = ["E701", "E702", "E721", "I001", "F401", "B904", "UP041"]
+
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true

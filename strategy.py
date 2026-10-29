@@ -921,6 +921,80 @@ class ProjectSignalEngine:
         self.used_strict_candidates: set[tuple[str, int]] = set()
         self.strict_candidate_ready_times: dict[tuple[str, int], int] = {}
 
+    def detect_trend_pullback_reclaim(self, ready_bars: list[dict[str, Any]]) -> dict[str, Any]:
+        """Explicit research-only TPR1 entry; the production ``detect`` path never calls it.
+
+        This long-only hypothesis uses an EMA reclaim after a pullback within
+        a rising, finalized four-hour trend. It does not create MACD divergence
+        metadata or claim a fill at the signal close. Observation, deduplication,
+        warmup and future execution belong to the independent research caller.
+        """
+        step, higher_step = 900_000, 14_400_000
+        result: dict[str, Any] = {
+            "signal": "wait", "reason": "TPR1 requires two finalized 15m bars",
+            "entry_hypothesis": "TPR1", "entry_rule": "next_boundary_after_observation",
+            "price": None, "stop_loss": None, "signal_ready_time": None,
+            "anchor": None, "atr": None, "decision_close": None, "higher_close_time": None,
+        }
+        if not isinstance(ready_bars, list) or len(ready_bars) < 2:
+            return result
+        prior, current = ready_bars[-2:]
+        for bar in (prior, current):
+            if not isinstance(bar, dict):
+                return result
+            opening, close_time = bar.get("open_time"), bar.get("close_time")
+            if (isinstance(opening, bool) or not isinstance(opening, int) or opening < 0
+                    or isinstance(close_time, bool) or not isinstance(close_time, int)
+                    or opening % step or close_time != opening + step - 1
+                    or bar.get("confirmed") is not True or bar.get("is_closed") is not True):
+                result["reason"] = "TPR1 requires finalized aligned 15m bars"
+                return result
+            values = [_finite_float(bar.get(key)) for key in ("open", "high", "low", "close", "ema20")]
+            if any(value is None or value <= 0 for value in values):
+                result["reason"] = "TPR1 required price or EMA feature missing or invalid"
+                return result
+            price_open, high, low, price_close = (float(bar[key]) for key in ("open", "high", "low", "close"))
+            if not low <= min(price_open, price_close) <= max(price_open, price_close) <= high:
+                result["reason"] = "TPR1 invalid OHLC range"
+                return result
+        if current["open_time"] != prior["close_time"] + 1:
+            result["reason"] = "TPR1 input bars are not consecutive"
+            return result
+        decision_close = current["close_time"]
+        higher_close_time = current.get("higher_close_time")
+        # The latest complete UTC 4h interval is determined only by the
+        # decision bar boundary. An incomplete or stale context is rejected.
+        expected_higher_close = ((decision_close + 1) // higher_step) * higher_step - 1
+        if (isinstance(higher_close_time, bool) or not isinstance(higher_close_time, int)
+                or higher_close_time < 0 or higher_close_time != expected_higher_close):
+            result["reason"] = "TPR1 latest finalized 4h context missing or invalid"
+            return result
+        required = {key: _finite_float(current.get(key)) for key in
+                    ("atr", "higher_close", "higher_ema20", "higher_ema60", "higher_prev_ema20")}
+        if any(value is None or value <= 0 for value in required.values()):
+            result["reason"] = "TPR1 required ATR or higher timeframe feature missing or invalid"
+            return result
+        features = {key: float(current[key]) for key in required}
+        price, anchor, atr = float(current["close"]), float(prior["low"]), features["atr"]
+        result.update(price=price, anchor=anchor, atr=atr, decision_close=decision_close,
+                      signal_ready_time=decision_close, higher_close_time=higher_close_time)
+        if not (features["higher_close"] > features["higher_ema20"] > features["higher_ema60"]
+                and features["higher_ema20"] > features["higher_prev_ema20"]):
+            result["reason"] = "TPR1 rising 4h long trend absent"
+            return result
+        if not (float(prior["low"]) <= float(prior["ema20"])
+                and float(prior["close"]) <= float(prior["ema20"])
+                and price > float(current["ema20"]) and price > float(prior["high"])
+                and float(current["low"]) >= anchor):
+            result["reason"] = "TPR1 unbroken pullback and close reclaim absent"
+            return result
+        stop = min(anchor, float(current["low"]), price - 1.5 * atr)
+        if not 0 < stop < price:
+            result["reason"] = "TPR1 initial stop invalid"
+            return result
+        result.update(signal="long", reason="TPR1 rising 4h trend and 15m pullback reclaim", stop_loss=stop)
+        return result
+
     def build_strict_candidate(self, direction: str, window: list[dict[str, Any]],
                                price_peaks: list[tuple[int, float]], price_troughs: list[tuple[int, float]],
                                macd_values: list[float | None], info: dict[str, Any], strength: float,

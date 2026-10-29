@@ -1,0 +1,52 @@
+金丹v1.0: public market-data observer
+
+The collector is a separate service and reads no exchange credentials.
+It writes only /opt/crypto-project/runtime/jindan-v1. The website reads
+the bounded status.json and research.json projections through GET APIs.
+The original prospective plan, V3 protocol and historical evidence stay frozen.
+The activation binds the V0.2 plan clarification and frozen collector code.
+Storage stops at 8 GiB or less than 4 GiB free; no records are auto-deleted.
+The collector CPU ceiling is 0.50 core and memory ceiling is 192 MiB. Initial
+0.30-core commissioning showed cgroup throttling; this ceiling was raised
+without changing signal rules, code, activation or the original web service.
+
+Build both delta images using a locally tagged, verified running-image ID.
+The web build context must be the preserved live-source overlay, never an
+unreviewed local development checkout. The collector build context includes
+only jindan_live/ and the unchanged prospective-plan.json.
+
+Collector service:
+  docker compose -p jindan-v1 -f deploy/jindan-v1/compose.yml up -d --no-build
+
+Website service (run in /opt/crypto-project):
+  docker compose -f docker-compose.yml -f deploy/jindan-v1/web-override.yml up -d --no-build crypto-project
+
+Read-only verification:
+  docker inspect jindan-v1-collector
+  curl -fsS http://127.0.0.1/api/jindan/status
+  curl -fsS http://127.0.0.1/api/health
+
+Do not overwrite activation.json on restart. Do not backdate capture or use
+2026-01-01 through 2026-08-31 historical data for warmup. Raw commissioning
+records before the next complete UTC day are explicitly unscored. The formal
+6+90 day warmup remains unchanged. v1.0 will stop at AWAITING_SCORE_PREFLIGHT
+until outcome-label and score readiness are separately implemented/accepted.
+
+Keep the original paper ledgers, runtime settings, notification state and
+Dockerfile.performance. Do not rsync --delete a development tree onto the VPS.
+Rollback stops only the collector and restores the exact prior web image and
+the backed-up changed web source files. Preserve the collector journal.
+The prior image for this release is:
+  sha256:9391c287e18d854a617ef26f9113fffdef68973faaa8a6dd95c4ecd73d8a8828
+The remote backup is /opt/crypto-project/backups/jindan-v1-20261029.
+Do not restore the entire old runtime/archive over newer paper records during
+rollback. Restore only the intended source paths and choose the prior image.
+
+Patch sources and the exact runtime/source allowlists are preserved in this
+task's outputs/jindan_v1_20261029/web-stage and web_acceptance.json. The remote
+host source has the same patch. The unrelated dirty local New project checkout
+was deliberately not overwritten; reconcile this patch before any future broad
+deployment from that checkout.
+
+Historical parameter trials are a separate, exposed-data research version.
+Their results never change live detector parameters or authorize orders.

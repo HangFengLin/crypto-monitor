@@ -119,6 +119,7 @@ class PaperPoolIntegrationTest(unittest.TestCase):
             with (patch.object(app, "state", app.MonitorState()),
                   patch.object(app, "PAPER_UNIVERSE_ENABLED", True), patch.object(app, "PAPER_UNIVERSE", pool),
                   patch.object(app, "STRATEGY_TRADES_FILE", Path(folder) / "trades.json"),
+                  patch.object(app, "async_fetch_binance_usdm_point_quote", new=AsyncMock(side_effect=TimeoutError())),
                   patch.object(app, "async_fetch_klines", new=AsyncMock(return_value=[
                       dict(close_time=2000, low=94, high=101, close=96)]))):
                 app.register_strategy_signal(dict(symbol="BTCUSDT", interval="15m", signal="long", price=100,

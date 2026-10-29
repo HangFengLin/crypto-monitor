@@ -92,7 +92,22 @@ class ExecutionMetadataTest(unittest.TestCase):
         self.assertEqual(result["stats"].get("comparability_note"), result["comparability_note"])
         self.assertIn("不同", result.get("retention_note", ""))
         self.assertEqual(records, before)
-        self.assertEqual(result["stats"]["total_return"], .08)
+        self.assertIsNone(result["stats"]["total_return"])
+        self.assertIsNone(result["stats"]["win_rate"])
+        self.assertEqual(result["stats"]["summary_scope"], "SPLIT_BY_RETURN_MODEL")
+        self.assertAlmostEqual(result["stats"]["return_model_stats"]["legacy_ratio_v1"]["total_return"], .1)
+        self.assertAlmostEqual(result["stats"]["return_model_stats"]["linear_usdm_v1"]["total_return"], -.02)
+
+    def test_unknown_paper_model_is_not_described_as_comparable(self):
+        records = [{"status": "closed", "return_pct": .1, "return_model": None}]
+        application = app.create_app()
+        endpoint = next(route.endpoint for route in application.routes if getattr(route, "path", None) == "/api/paper-trades")
+        with patch.object(app.state, "strategy_trades", records), \
+             patch.object(app, "paper_universe_snapshot", return_value={}):
+            result = asyncio.run(endpoint())
+        self.assertEqual(result["comparison_status"], "UNRECOGNIZED_RETURN_MODEL")
+        self.assertEqual(result["stats"]["summary_scope"], "SPLIT_BY_RETURN_MODEL")
+        self.assertIsNone(result["stats"]["expectancy"])
 
 
 if __name__ == "__main__":

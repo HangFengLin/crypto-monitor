@@ -17,6 +17,45 @@ FastAPI also serves interactive OpenAPI documentation at `/docs` and the schema 
 
 Treat `/api/state` and the SSE payload as UI contracts rather than a versioned public API. Mutating endpoints return HTTP 4xx with a concrete validation message when input is invalid.
 
+## VPS website transport
+
+The VPS serves the built website from `public/site`; its source is
+`sites/lianqi/vps/main.tsx` and the shared `sites/lianqi/app` components. Build it
+with `pnpm run build:vps` in `sites/lianqi`. A local build does not update the VPS.
+
+Bulk JSON and static responses negotiate gzip. The `/api/events` stream bypasses
+compression so the pinned server middleware cannot buffer live frames. Clients
+that reject gzip continue receiving plain responses.
+
+`GET /api/state`, `/api/paper-trades`, and `/api/events` accept
+`detail=compact|full`; omission selects `full` for existing clients. The VPS
+website requests `compact`, which omits repeated record-level runtime
+configuration and calculation traces. Prices, errors, accounting versions,
+historical universe identity, exits, unknown fields, zeroes and nulls remain.
+`detail=full` retains complete information; neither view changes persisted data.
+Invalid detail values return HTTP 422.
+
+Each SSE connection immediately receives the current snapshot, checks for
+changes every three seconds, and sends a data frame only when its selected view
+changes. Idle connections receive a comment heartbeat every 15 seconds. A new
+connection receives a fresh snapshot even if the previous connection sent it.
+
+Clients may opt into `/api/events?detail=compact&delta=1`. Its first data frame
+is a `lianqi-delta-v1` snapshot with sequence zero; later frames replace the
+listed top-level fields and remove keys named in `remove`. Null, zero and empty
+values are ordinary replacements. Sequence numbers increase by one, and any
+new connection starts with a fresh snapshot. A client that cannot apply a frame
+in sequence must reconnect instead of guessing. Without `delta=1`, the existing
+complete-snapshot contract is unchanged.
+
+While SSE is open the dashboard pauses background state polling; a disconnect
+resumes it. If the browser permanently closes the stream after an HTTP error,
+the dashboard retries a fresh connection after five seconds; native reconnects
+remain in charge while the connection is still retryable. Initial and manual refreshes remain available. Ledger, notification
+and rules refreshes wait for completion before scheduling another request, and
+unmounting aborts pending requests. Finite API deadlines cover the complete
+response download, including time after response headers arrive.
+
 `/api/state` includes `signal_tracking.mode = "paper"`, `enabled`, `updated_at`, and
 all active `positions` from the local strategy ledger. `strategy_trades` contains
 the latest 20 observations and `strategy_stats` aggregates the retained ledger.

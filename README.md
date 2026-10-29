@@ -1,6 +1,8 @@
 # 加密货币策略研究与信号跟踪
 
-当前主入口是原网站 `sites/lianqi`，采用 Binance USDT 合约公开行情与本地模拟信号账本，不需要交易所 API Key。五个入口为总览、行情与信号、模拟交易、策略研究、设置与诊断。
+本项目中提到的“网站”默认指部署在用户 VPS 上的网站。ChatGPT / Sites 托管网站须明确指定；完整约定见 [项目基准约定](AGENTS.md)。
+
+以下为本地开发说明：前端源码位于 `sites/lianqi`，采用 Binance USDT 合约公开行情与本地模拟信号账本，不需要交易所 API Key。五个入口为总览、行情与信号、模拟交易、策略研究、设置与诊断。
 
 ```bash
 .venv/bin/python scripts/dev_product.py
