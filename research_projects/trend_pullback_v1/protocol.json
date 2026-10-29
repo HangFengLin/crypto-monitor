@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "project_id": "trend_pullback_v1",
+  "hypothesis": "TPR1",
+  "research_only": true,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "direction": "long",
+  "duration_weeks": 12,
+  "warmup_bars": 300,
+  "candidate_count": 1,
+  "hypothesis_text": "An unbroken 15-minute pullback and EMA20 reclaim within a rising completed 4-hour trend has positive net value under fixed common execution and costs.",
+  "entry": {
+    "higher_timeframe": "4h",
+    "higher_rule": "Latest completed UTC 4h close > EMA20 > EMA60, and EMA20 > previous completed 4h EMA20.",
+    "lower_timeframe": "15m",
+    "A": "Previous completed bar: low <= EMA20 and close <= EMA20.",
+    "B": "Immediately following completed bar: close > EMA20, close > A.high, and low >= A.low.",
+    "initial_stop": "min(A.low, B.low, B.close - 1.5 * B.ATR14)",
+    "event_identity": "symbol, long, A.close_time; one observation per decision bar",
+    "no_macd_divergence_or_volume_threshold": true,
+    "expiry": "Only the immediately following B qualifies; no waiting, reuse, or discretionary confirmation.",
+    "execution_intent": "First UTC 15m opening boundary strictly after actual local first observation; never the signal close.",
+    "unavailable_or_invalid_feature": "Record rejection; never substitute a future bar or zero."
+  },
+  "execution": {
+    "initial_equity": 10000,
+    "risk_fraction": 0.005,
+    "max_positions": 2,
+    "max_risk_fraction": 0.01,
+    "direction_risk_fraction": 0.01,
+    "reward_risk": 2,
+    "max_hold_bars": 96,
+    "stop_mode": "structure_atr",
+    "return_model": "linear_usdm_v1"
+  },
+  "execution_scope": "Hypothetical research account only; these values are not user account terms or production risk settings. Same existing lifecycle and capacity constraints for candidate and baseline; 1R full exit ordinarily precedes the 2R target. Tail positions are marked rather than silently liquidated.",
+  "scenarios": [
+    {
+      "id": "base",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 0
+    },
+    {
+      "id": "double_cost",
+      "fee_rate": 0.002,
+      "slippage_bps": 4,
+      "delay_bars": 0
+    },
+    {
+      "id": "delay15m",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 1
+    }
+  ],
+  "cost_scope": "Fees are frozen per-fill notional assumptions, not verified actual account rates. Slippage is separate. Actual public historical settlements use signed held quantity, settlement mark price and rate. Missing funding does not become zero.",
+  "baseline": "Original ProjectSignalEngine at initialization, same frozen BTC/ETH inputs, long-only opportunity scope, identical execution and cost scenarios. No retrospective candidate filtering or unrelated portfolio comparison.",
+  "forward_boundary": {
+    "freeze": "SYSTEM time when manifest, exact protocol bytes, sanitized baseline strategy configuration and all execution/source code hashes are frozen.",
+    "warmup": "Initial 300 complete 15m and 4h bars only initialize state. Historical data, including newly downloaded old dates, never becomes a prospective signal.",
+    "new_data": "Only timely, first-observed completed bars after freeze, with prior warmup and full raw source envelopes, can enter confirmation.",
+    "gaps": "Missing observations and late/backfilled bars remain explicit. They cannot be relabeled forward or silently removed to obtain a pass.",
+    "revision": "Previously committed raw completed bars cannot be replaced.",
+    "clock_scope": "Local receive time records first availability to this collector, not an asserted Binance publication timestamp.",
+    "end": "Initialization SYSTEM time plus exactly 12 weeks; fixed horizon, no optional stopping or PnL selection before the end.",
+    "timely_max_delay_ms": 90000,
+    "timely_definition": "Last completed 15m bar has close_time < actual observation <= close_time+90000ms; all source responses were received by that observation."
+  },
+  "primary_evaluation": {
+    "measure": "One synchronized continuous research account per variant/scenario; net marked equity, actual funding, fees, fills, rejections and close-to-close maximum drawdown.",
+    "research_screen": [
+      "TPR1 base account net return > 0",
+      "TPR1 double-cost account net return > 0",
+      "TPR1 base account net return > matched baseline base account net return"
+    ],
+    "threshold_origin": "Predeclared research continuation screen proposed for this task; not a profitability certification or a replacement for the existing project promotion gates.",
+    "inconclusive": "Before deadline, insufficient trades, any unresolved observation/source/price/funding gap, code or protocol drift, or test-clock inputs cannot pass.",
+    "dependence": "BTC and ETH and adjacent/overlapping signals are dependent. Do not use raw trade counts as independent observations or claim significance from these screen inequalities.",
+    "pass_action": "Only consider further independent statistical and execution review; account_verified remains false and automatic promotion is forbidden.",
+    "fail_action": "Retain all outputs; stop this expression without expanding a parameter grid.",
+    "blinding": "Intermediate status reports observation coverage, missingness and signal counts only; no intermediate candidate ranking or PnL.",
+    "insufficient_trades_definition": "No completed candidate trade or no completed matched-baseline trade prevents a relative research screen. No fixed trade count establishes a profitable edge; uncertainty and sparse participation remain reported.",
+    "weekly_uncertainty": {
+      "method": "Paired non-circular moving blocks of two consecutive weeks, resampled jointly for candidate and baseline; descriptive intervals only.",
+      "iterations": 2000,
+      "seed": 20261025,
+      "weekly_origin": "Start of the synchronized scoring calendar; segments do not reset capital.",
+      "confidence_interval": 0.95,
+      "no_significance_or_promotion_claim": true
+    }
+  },
+  "previous_attempts": [
+    "Existing V1 volume sequence, C1 strict candidate lifecycle and C2 net-R/R filtering were already explored and did not establish a profitable strategy.",
+    "T28/T84 weekly trend allocation remains a different frozen research project.",
+    "The latest 34 retained linear-accounting trades and earlier research have been inspected. None belongs to this candidate's new confirmation set."
+  ],
+  "scope_limits": {
+    "universe": "BTC/ETH research coverage only; no extrapolation to the production top-100 pool.",
+    "no_orders": true,
+    "no_production_config_changes": true,
+    "no_deployment_or_service_restart": true,
+    "no_automatic_promotion": true,
+    "existing_validation_and_cross_exchange_gates_unchanged": true,
+    "local_collector": "Runs on this workstation while available; interruption is recorded as missing observation evidence, not hidden by a historical replay."
+  },
+  "primary_data_documentation": "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data",
+  "funding_coverage": {
+    "expected_interval_ms": 28800000,
+    "expected_utc_hours": [
+      0,
+      8,
+      16
+    ],
+    "scope": "Predeclared coverage assumption for the fixed BTC/ETH pool; not a guarantee of future exchange schedules.",
+    "gate": "Every scheduled 8h slot in [scoring_start,scoring_end) must have exactly one valid official symbol-matching record within 60000ms of that slot. Preserve actual source settlement time for cash flow; never round it. Pagination exhaustion alone is insufficient. Duplicate, missing, out-of-tolerance or unexpected settlements block evaluation; missing funding is never zero.",
+    "interval_change": "If the official settlement schedule changes, retain evidence and return INCONCLUSIVE; no post-result schedule substitution.",
+    "slot_match_tolerance_ms": 60000,
+    "tolerance_origin": "Predeclared source-clock tolerance; recent official BTC/ETH records include timestamps a few milliseconds after the UTC slot."
+  }
+}

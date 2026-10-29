@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "research_only": true,
+  "status": "FROZEN_BEFORE_CROSS_PERIOD_PNL",
+  "created_at": "2026-10-25T06:18:13.756375+00:00",
+  "scope": "NOT_USED_IN_T28_SCREEN_BUT_OTHER_RESEARCH_EXPOSED",
+  "fresh_blind_holdout": false,
+  "prospective_oos": false,
+  "selection_footprint": "T28原输入2024May起、评分2024Aug起；金丹等其他研究已用2024全年，非全项目未曝光留出。",
+  "start": "2024-01-08T00:00:00Z",
+  "end": "2024-05-01T00:00:00Z",
+  "warmup_start": "2023-11-01T00:00:00Z",
+  "date_selection": "Monday after knownJan1-8smoke to originalT28 input start; frozen before any new T28 PnL",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "strategies": [
+    "T28_long_cash",
+    "vol_scaled_hold"
+  ],
+  "initial_equity": 10000,
+  "original_protocol_path": "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/protocol.json",
+  "original_source_sha256": {
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/protocol.json": "a79cb6df64e0d3fb15af3d48a6501e15518fbe1a88cc20fd111e6f95a49b770d",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/execution_addendum_20261019.json": "f3fe6672d27b55109aa49b41fb97f37455d39028cfae5920cdb591c8db81bde3",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/target_weight_adapter.py": "e63f37928f493fdbf5831c969a52360f8c755cfb85c0c43b90a5d55d6a6202b7",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/run_study.py": "f19a56f6734e7ba44ae225d6a951e42246412f07a929aa43e3d397f8941bb0b9",
+    "/Users/meta-lin/Documents/New project/research_portfolio.py": "228e68a7f420cf8f8c5fa30b8c1dbeb90a1ed9bcd7c7113577757439ee139212",
+    "/Users/meta-lin/Documents/New project/position_manager.py": "b8ccb89a983b949c8451f936f6b07d3002ffe1f62106644ffb48e1133f8b8cc2",
+    "/Users/meta-lin/Documents/New project/scripts/t28_cost_review.py": "f921c108be6b208748dcd50a9faf8b4f8ba0890e5e3f0ad2448f827de15f5fb8",
+    "/Users/meta-lin/Documents/New project/scripts/t28_cost_stats.py": "6d87f7edcebef320a346edcb3bc03f5e532d13e4659486e9fbd8cee8a4ef7357",
+    "/Users/meta-lin/Documents/New project/research_projects/cost_review_20261025/costs.json": "4efbc805758ca0b27fe1d2086b6a898731149f344a495b449e42c8e14df00b03"
+  },
+  "costs_path": "/Users/meta-lin/Documents/New project/research_projects/cost_review_20261025/costs.json",
+  "cost_scenarios": [
+    {
+      "id": "base",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "USER_REPORT_20261025_BOTH_0.1_PERCENT; baseline slippage estimated"
+    },
+    {
+      "id": "double_cost",
+      "fee_rate": 0.002,
+      "slippage_bps": 4,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "Twofold stress on user-confirmed fee and estimated slippage; not actual charged rate"
+    },
+    {
+      "id": "delay15m",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 1,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "User-confirmed fee with original estimated slippage and additional15m delay"
+    }
+  ],
+  "rule_changes_allowed": [
+    "scoring dates and within-period calendar reporting boundaries only"
+  ],
+  "original_rule_and_risk_unchanged": true,
+  "no_T84_or_other_candidates": true,
+  "account_replay_budget": 6,
+  "cash_benchmark_return": 0,
+  "account_continuity": "One cash10000 account per strategy/cost, no old holdings or resets; tails marked not liquidated",
+  "data_gate": {
+    "complete_15m_calendar": true,
+    "complete_utc_daily_bars": true,
+    "min_61_daily_closes_for_volatility": true,
+    "raw_funding_mark_positive": true,
+    "no_missing_funding": true,
+    "no_proxy_or_zero_funding": true,
+    "warmup_funding_required": false,
+    "warmup_has_no_positions": true,
+    "official_zip_checksum_bound": true
+  },
+  "primary_metrics": [
+    "net_account_return",
+    "max_close_drawdown",
+    "fees",
+    "funding",
+    "symbol_net_contribution_with_tail",
+    "complete_episode_win_payoff_cashPF",
+    "same_path_ETH_removed_accounting_curve_return_and_drawdown",
+    "actual_symbol_exposure",
+    "peak_to_trough_drawdown_symbol_attribution"
+  ],
+  "eth_dependence": {
+    "no_new_weights_or_single_coin_candidates": true,
+    "shares": [
+      "signed_ETH_net_share",
+      "absolute_ETH_net_contribution_share",
+      "positive_profit_share"
+    ],
+    "natural_zero_classification": "Positive account and BTC net<=0 means profit relies on ETH offsetting other contribution; otherwise report exact dominance with no posthoc70/80 cutoff",
+    "subtraction_is_not_BTC_only_replay": true
+  },
+  "economic_screen": {
+    "origin": "Original four diagnostic gates unchanged",
+    "all_required": [
+      "base T28 net>0",
+      "double T28 net>0",
+      "base T28 net>volhold net",
+      "base T28 closeDD<=volhold closeDD"
+    ],
+    "failure": "ECONOMIC_SCREEN_NOT_REPLICATED",
+    "pass": "CROSS_PERIOD_DIAGNOSTIC_SUPPORT_ONLY"
+  },
+  "statistical_interpretation": "Other research exposed and short window; descriptive only, no blind statistical confirmation or fill independence.",
+  "no_new_observation_plan": true,
+  "production_changes": false,
+  "orders": false,
+  "promotion_eligible": false,
+  "strategy_confirmed": false
+}

@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "research_only": true,
+  "scope": "HISTORICAL_EXPLORATORY",
+  "created_at": "2026-10-25T05:59:28.638694+00:00",
+  "start": "2024-08-01T00:00:00Z",
+  "end": "2026-10-25T00:00:00Z",
+  "recent_start": "2026-06-20T00:00:00Z",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "execution": {
+    "initial_equity": 10000,
+    "risk_fraction": 0.005,
+    "max_positions": 2,
+    "max_risk_fraction": 0.01,
+    "direction_risk_fraction": 0.01,
+    "reward_risk": 2,
+    "max_hold_bars": 96,
+    "stop_mode": "structure_atr",
+    "return_model": "linear_usdm_v1"
+  },
+  "entry_cases": [
+    {
+      "id": "D48-legacy1R-h96",
+      "entry": "D48",
+      "exit_policy": "legacy1R",
+      "max_hold_bars": 96,
+      "role": "primary_unchanged_control"
+    },
+    {
+      "id": "B20-legacy1R-h96",
+      "entry": "B20",
+      "exit_policy": "legacy1R",
+      "max_hold_bars": 96,
+      "role": "primary_unchanged_control"
+    },
+    {
+      "id": "S24-legacy1R-h96",
+      "entry": "S24",
+      "exit_policy": "legacy1R",
+      "max_hold_bars": 96,
+      "role": "primary_unchanged_control"
+    },
+    {
+      "id": "EC20_60-legacy1R-h96",
+      "entry": "EC20_60",
+      "exit_policy": "legacy1R",
+      "max_hold_bars": 96,
+      "role": "primary_unchanged_control"
+    },
+    {
+      "id": "D48-target3-h672",
+      "entry": "D48",
+      "exit_policy": "target3",
+      "max_hold_bars": 672,
+      "role": "previously_exposed_descriptive_reference"
+    },
+    {
+      "id": "B20-target3-h288",
+      "entry": "B20",
+      "exit_policy": "target3",
+      "max_hold_bars": 288,
+      "role": "previously_exposed_descriptive_reference"
+    },
+    {
+      "id": "S24-target3-h672",
+      "entry": "S24",
+      "exit_policy": "target3",
+      "max_hold_bars": 672,
+      "role": "previously_exposed_descriptive_reference"
+    }
+  ],
+  "costs_file": "/Users/meta-lin/Documents/New project/research_projects/cost_review_20261025/costs.json",
+  "cost_status": "PENDING_ACCOUNT_FEE_EVIDENCE",
+  "selected_references_source": {
+    "path": "reports/exit_horizon_20261025/run/summary.json",
+    "sha256": "73081dedd27a4983ebc6db7121e317c6aa3a02e2c89b3a40952fc23489c0d69a",
+    "selection_scope": "Selected in prior exposed history; fixed before any new-cost results; no new grid"
+  },
+  "t28": {
+    "strategies": [
+      "T28_long_cash",
+      "vol_scaled_hold"
+    ],
+    "original_protocol": "research_projects/trend_portfolio_v1/protocol.json",
+    "original_end": "2026-06-20T00:00:00Z",
+    "extend_without_reset": true,
+    "no_lookback_or_rule_changes": true
+  },
+  "interpretation": {
+    "already_exposed_history": true,
+    "new_oos": false,
+    "actual_fee_requires_account_evidence": true,
+    "slippage_requires_actual_execution_benchmark": true,
+    "public_fee_is_not_account_fee": true,
+    "account_fee_historical_stationarity_unverified": true,
+    "trading_authorized": false,
+    "production_changes_authorized": false
+  },
+  "metrics": [
+    "net_account_return",
+    "recent_continuous_account_return",
+    "max_close_drawdown",
+    "net_win_rate",
+    "net_payoff_ratio",
+    "cash_profit_factor",
+    "gross_realized_pnl",
+    "tail_unrealized_pnl",
+    "fees",
+    "funding",
+    "closed_positions_or_episodes",
+    "open_tail_positions"
+  ],
+  "uncertainty": "All diagnostics descriptive; prior adaptive trials are not reset and no production promotion"
+}

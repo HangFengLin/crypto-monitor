@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-25T07:17:58.964155+00:00",
+  "status": "FROZEN_BEFORE_NEW_SINGLE_COIN_REPLAY",
+  "scope": "HISTORICAL_EXPOSED_FIXED_SIGNAL_ASSET_MASK_COMPARISON",
+  "research_only": true,
+  "datasets": [
+    {
+      "id": "main",
+      "start": "2024-08-01T00:00:00Z",
+      "end": "2026-10-25T00:00:00Z",
+      "input_manifest": "/Users/meta-lin/Documents/New project/reports/entry_screen_20261025/inputs/manifest.json",
+      "account_directory": "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/legacy_controls/accounts",
+      "summary": "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/legacy_controls/summary.json",
+      "cost_mapping": {
+        "base": "legacy_base",
+        "double_cost": "legacy_double",
+        "delay15m": "legacy_delay15m"
+      },
+      "scope": "Previously exposed main continuous account;2024/2026 partial years",
+      "prepared_directory": "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/prepared",
+      "control_strategy_id": "T28_long_cash"
+    },
+    {
+      "id": "cross",
+      "start": "2024-01-08T00:00:00Z",
+      "end": "2024-05-01T00:00:00Z",
+      "input_manifest": "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/inputs/manifest.json",
+      "account_directory": "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/run/accounts",
+      "summary": "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/run/summary.json",
+      "cost_mapping": {
+        "base": "base",
+        "double_cost": "double_cost",
+        "delay15m": "delay15m"
+      },
+      "scope": "NOT_USED_IN_T28_SCREEN_BUT_OTHER_RESEARCH_EXPOSED;separate account,2024 partial",
+      "prepared_directory": "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/prepared",
+      "control_strategy_id": "T28_long_cash"
+    }
+  ],
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "portfolios": {
+    "both": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "btc_only": [
+      "BTCUSDT"
+    ],
+    "eth_only": [
+      "ETHUSDT"
+    ]
+  },
+  "strategy_id": "T28_long_cash",
+  "costs_path": "/Users/meta-lin/Documents/New project/research_projects/cost_review_20261025/costs.json",
+  "cost_scenarios": [
+    {
+      "id": "base",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "USER_REPORT_20261025_BOTH_0.1_PERCENT; baseline slippage estimated"
+    },
+    {
+      "id": "double_cost",
+      "fee_rate": 0.002,
+      "slippage_bps": 4,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "Twofold stress on user-confirmed fee and estimated slippage; not actual charged rate"
+    },
+    {
+      "id": "delay15m",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 1,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "User-confirmed fee with original estimated slippage and additional15m delay"
+    }
+  ],
+  "initial_equity": 10000,
+  "source_bindings": {
+    "/Users/meta-lin/Documents/New project/reports/entry_screen_20261025/inputs/manifest.json": "7038b13422379a814aa9c85daa7854f04cc143f75a53c5563524df4610a1e11d",
+    "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/legacy_controls/summary.json": "c272de736bb4a683003110ff3025ff7a9cb2571f33ad81576634f6a15b3910eb",
+    "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/prepared/effective_protocol.json": "8e8e93a998f1dac072aeca70aa67b1753bd5901cc7ed6fed99301cca0fec4c56",
+    "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/prepared/targets_before_pnl.json": "e47911e3e841424279744f7ab76db713f2fa35a91a909389f9a80a087905b7dc",
+    "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/prepared/pre_pnl_manifest.json": "f3a6bf419f175555dc095d91118fef16c7cd0f6f111cef1d8c2abcef4641d28a",
+    "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/legacy_controls/accounts/T28_long_cash__legacy_base.json.gz": "f4bbe7f74a891c2b9a4f2e56f31ae2c5f95ac6c7c0898c2b09382e9606e247c3",
+    "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/legacy_controls/accounts/T28_long_cash__legacy_double.json.gz": "ac2bf8ee0fdfb80382bba82b713f4408082c11d06fc57adf3ab0d7b27c6f7ebd",
+    "/Users/meta-lin/Documents/New project/reports/cost_review_20261025/t28/legacy_controls/accounts/T28_long_cash__legacy_delay15m.json.gz": "73a69322c2badbe0ee93e225aff11c78e026ffbd1eb143345849d3dc4062f022",
+    "/Users/meta-lin/Documents/New project/reports/entry_screen_20261025/inputs/BTCUSDT-15m.json": "daa8f95b78f2a9f58b2d4c94936b8d36477151c97204e18f6128bdf50261c656",
+    "/Users/meta-lin/Documents/New project/reports/entry_screen_20261025/inputs/BTCUSDT-funding.json": "e65f40c45c28c867d789fcc57d8b1adf3520abd11cffe911cc2d19417be75496",
+    "/Users/meta-lin/Documents/New project/reports/entry_screen_20261025/inputs/ETHUSDT-15m.json": "6c54ff4a241fa7d2c61878bee92787307f7fc0bc7175863693a1b7cdf0197d28",
+    "/Users/meta-lin/Documents/New project/reports/entry_screen_20261025/inputs/ETHUSDT-funding.json": "0374d8409690374eca66a4064242580e7e0c95d140f4d0791ecc54acd409b873",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/inputs/manifest.json": "456fbc4d4d3af755cf763fb79a52c04533b11267c4628f5868c6aa904aa59a2b",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/run/summary.json": "41f6a7958f1f49b9c99b7fa9adf4ab05243f4ba636a8175dad9fa335f823c6ae",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/prepared/effective_protocol.json": "844d009f180b001d17e083c08303292cc789def6f06eda5ff854eda37afb2cdd",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/prepared/targets_before_pnl.json": "2c02d0e278f1129199f6faf6ffbe02b5d371a44328fb3a1447e4fd8af9dd3519",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/prepared/pre_pnl_manifest.json": "5d3720513a62156d49c65c1aca54fd7b73dca364d49f7e7e0992dd5b6a730e8b",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/run/accounts/T28_long_cash__base.json.gz": "9b2487c7664777ad19e4ea888727733588d084a234d04196b2c96af81dc8b9a1",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/run/accounts/T28_long_cash__double_cost.json.gz": "efd517b30452b9aa1db749f52dbf39c406fadc275c386cf9d0db6a076889f4de",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/run/accounts/T28_long_cash__delay15m.json.gz": "36856fecd2ad64781b78913db681d11def94eda80e2b78e97ca232d1889cb171",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/inputs/BTCUSDT-15m.json": "216c21de7d48dca81e58848aec16994a8936dc48874f3577ed7b5aedb51d21d0",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/inputs/BTCUSDT-funding.json": "94588bc7244d8efca9a35bc1ce72bee96bb11b8da0eb7802827815b5ebe6b821",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/inputs/ETHUSDT-15m.json": "66d02f1dba9170e313afc7bbe235a1cfc0f2f1f768821da99d9b9325f56caeb2",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/inputs/ETHUSDT-funding.json": "4a6fc8e2e8e0fabd7dc4bb8620942aa9438e1dd45a7a928040e9ac2b07ec8132",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/protocol.json": "a79cb6df64e0d3fb15af3d48a6501e15518fbe1a88cc20fd111e6f95a49b770d",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/execution_addendum_20261019.json": "f3fe6672d27b55109aa49b41fb97f37455d39028cfae5920cdb591c8db81bde3",
+    "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/target_weight_adapter.py": "e63f37928f493fdbf5831c969a52360f8c755cfb85c0c43b90a5d55d6a6202b7",
+    "/Users/meta-lin/Documents/New project/research_portfolio.py": "228e68a7f420cf8f8c5fa30b8c1dbeb90a1ed9bcd7c7113577757439ee139212",
+    "/Users/meta-lin/Documents/New project/position_manager.py": "b8ccb89a983b949c8451f936f6b07d3002ffe1f62106644ffb48e1133f8b8cc2",
+    "/Users/meta-lin/Documents/New project/research_projects/cost_review_20261025/costs.json": "4efbc805758ca0b27fe1d2086b6a898731149f344a495b449e42c8e14df00b03",
+    "/Users/meta-lin/Documents/New project/research_projects/t28_segment_review_20261025/protocol.json": "1d7face7c142121199ea7087aa539a7e14a57561733f37dca13821bb7b7543fd",
+    "/Users/meta-lin/Documents/New project/reports/t28_segment_review_20261025/prepared/phase_labels.json": "f7dd6a94365ad666d2f0b5aa56aadac91dbb3841a174831fc43d4cded64ff499",
+    "/Users/meta-lin/Documents/New project/scripts/t28_segment_review.py": "69ef3f616a86e90fe936e546a786937d443569edd42b52bff438f8078555ad22",
+    "/Users/meta-lin/Documents/New project/reports/t28_independent_20261025/cross_period/audit/independent_attribution.py": "efdf7e24a1f1ad4de1a0e8df041f6cdd67fd04b26e42357a0098de6686f65c5f"
+  },
+  "rules": {
+    "signals": "Same original28day momentum and weekly decisions; calculate original features for both assets",
+    "sizing": "Keep original single-asset0.5*min(1,0.20/60day_sample_annualized_vol) target weight if momentum>0, else0; only excluded weight=0; no normalization",
+    "cash": "Excluded notional allocation remains zero-yield idle collateral; no redistribution or added leverage",
+    "retained_weight_exact": true,
+    "retained_quantity": "Re-solve on each variant own post-friction equity; not same historical coin quantities",
+    "original_features_and_strategy_id_unchanged": true,
+    "execution_and_funding": "Original target_weight_adapter, same timings/actual settlements/fees/slippage/tail marking",
+    "price_funding_universe": "Keep full originalBTC+ETH price and funding sources even when a target weight is zero",
+    "cash_accounting": "Perpetual collateral cash plus unrealized PnL; trade notional is not a spot cash debit",
+    "risk_budget_comparability": "Same starting capital and per-asset rules, different actual total exposure; not a risk-parity or equal-vol comparison"
+  },
+  "budget": {
+    "account_replays": 18,
+    "rule": "2dataset*3portfolio*3cost, including6bothcontrols, no extra control reruns",
+    "run_controls_before_singles": true,
+    "new_candidates_or_windows": false
+  },
+  "controls": {
+    "both": "Entire canonical account JSON must exactly equal originalT28 account at same scenario id; gzip SHA additionally reported",
+    "excluded": "No fill or held quantity; fees/funding/net contribution0; actual funding rows may include0holding",
+    "active_weight": "Exact original per-asset percentage at every original target; cap remains0.5 at rebalance, actual marked exposure can drift"
+  },
+  "phase_labels_path": "/Users/meta-lin/Documents/New project/reports/t28_segment_review_20261025/prepared/phase_labels.json",
+  "year_and_phase_rules": "Reuse exact prior frozenUTC calendar and causalBTC60day strict±10% labels. main/cross separate; no year/phase cash or position reset; missing phase null; no stitched phase drawdown",
+  "metrics": [
+    "full_and_year_net_return",
+    "full_and_year_local15m_drawdown",
+    "phase_daily_returns_and_contiguous_episode_drawdown",
+    "actual_gross_exposure_mean_max",
+    "unallocated_notional_budget_fraction_mean",
+    "collateral_cash_balance_separately_if_reported",
+    "underwater_fraction_and_longest_duration",
+    "actual_fees_signed_funding_turnover",
+    "by_symbol_net_contribution_with_marked_tails",
+    "both_vs_eth_only_same_clock_relative_growth_and_drawdown"
+  ],
+  "underwater": {
+    "definition": "Marked equity < running marked peak by more than1e-8USDT",
+    "amount_tolerance_usdt": 1e-08,
+    "clock": "15m observations; local year/spell peak starts at opening equity, full peak starts10000"
+  },
+  "marginal_btc": {
+    "main_comparison": "both versus eth_only",
+    "dollar_identity": "E_both-E_eth_only=C_BTC_both+(C_ETH_both-C_ETH_eth_only), same initial capital; segment difference uses boundary deltas",
+    "identity_interpretation": "First component direct savedBTC contribution, second is ETH quantity/cost/funding changed through shared account capital; not pure causal alpha",
+    "return_drawdown_classification": "both dominates when return>=eth_only andDD<=eth_only with one strict; converse ETH-only dominates; otherwise tradeoff/equal; rate comparison tolerance1e-12",
+    "worst_periods": "At each portfolio own max-drawdown peak/trough, report both andETH-only same-clock segment outcomes; diagnostic, no new strategy",
+    "selection": "Report all years/phases/costs, no posthoc frequency/leverage/window fitting or automatic removal decision"
+  },
+  "interpretation": {
+    "historical_already_exposed": true,
+    "fresh_independent_oos": false,
+    "funding_rates_real_but_holdings_simulated": true,
+    "fee_user_reported": true,
+    "slippage_modelled": true,
+    "strategy_confirmed": false,
+    "automatic_promotion": false
+  },
+  "online_parameters_changed": false,
+  "orders": false,
+  "deployment": false,
+  "new_observation_jobs": false,
+  "new_market_downloads": false
+}

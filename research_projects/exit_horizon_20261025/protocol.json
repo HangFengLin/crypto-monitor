@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "scope": "HISTORICAL_EXPLORATORY",
+  "research_only": true,
+  "entry_ids": ["D48", "B20", "S24", "EC20_60"],
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "direction": "both",
+  "start": "2024-08-01T00:00:00Z",
+  "end": "2026-10-25T00:00:00Z",
+  "recent_start": "2026-06-20T00:00:00Z",
+  "source_entry_run": "reports/entry_screen_20261025/run",
+  "input_manifest": "reports/entry_screen_20261025/inputs/manifest.json",
+  "entry_freeze": "Reuse the exact four event arrays from the previous signals_before_pnl.json. Do not regenerate signals, alter initial stops, timestamps, directions, universe or admission filters. Bind the previous manifest, protocol, input hashes, artifact hashes and each canonical event array before calculating new PnL.",
+  "exit_policies": [
+    {"id": "legacy1R", "stop_mode": "structure_atr", "reward_risk": 2, "description": "Exact previous lifecycle control: stop first, then 2R target, then full 1R protection exit. Same-bar target priority is preserved; not every winner exits at exactly 1R."},
+    {"id": "target2", "stop_mode": "structure_atr_target_only", "reward_risk": 2, "description": "Unchanged initial stop and full quantity; ignore the 1R protection exit and wait for 2R or timeout."},
+    {"id": "target3", "stop_mode": "structure_atr_target_only", "reward_risk": 3, "description": "Unchanged initial stop and full quantity; ignore the 1R protection exit and wait for 3R or timeout."},
+    {"id": "BE_then2", "stop_mode": "structure_atr_breakeven_after_1r", "reward_risk": 2, "description": "At 1R arm a transaction-fee breakeven stop, keep full quantity for 2R or timeout. Preserve existing open-before-range and next-bar arming semantics."}
+  ],
+  "hold_bars": [96, 288, 672],
+  "hold_units": "Completed 15-minute bars; entry bar is bar 1. These are 24, 72 and 168 hours respectively, not hourly bars. With no earlier exit, timeout at entry_index + hold_bars - 1 close.",
+  "execution": {
+    "initial_equity": 10000,
+    "risk_fraction": 0.005,
+    "max_positions": 2,
+    "max_risk_fraction": 0.01,
+    "direction_risk_fraction": 0.01,
+    "reward_risk": 2,
+    "max_hold_bars": 96,
+    "stop_mode": "structure_atr",
+    "return_model": "linear_usdm_v1"
+  },
+  "scenarios": [
+    {"id": "base", "fee_rate": 0.001, "slippage_bps": 2, "delay_bars": 0},
+    {"id": "double_cost", "fee_rate": 0.002, "slippage_bps": 4, "delay_bars": 0},
+    {"id": "delay15m", "fee_rate": 0.001, "slippage_bps": 2, "delay_bars": 1}
+  ],
+  "shared_model": "Use existing research_portfolio.replay_portfolio and position_manager lifecycle. No new execution, PnL, stop adjustment or funding engine. Existing signal_time is already one full 15m bar after modeled close availability; scenario delay is additional.",
+  "cost_and_risk_scope": "Research account and per-fill notional fee/slippage assumptions, not verified user account terms. Actual signed funding settlements use source timestamps, mark prices and held quantities; missing settlements never become zero. A fee-breakeven reference excludes slippage and funding, so its realized net trade can still lose.",
+  "initial_stop_and_target": "Targets recalculate from the identical actual fill entry and frozen initial stop using the selected policy R multiple. Initial price risk and cost-aware risk sizing formula do not change. An invalid nonpositive short 3R target remains a real admission rejection and must be reported.",
+  "tail": "Mark still-open positions at the common data end without artificial liquidation. Report counts, marked equity and closed-only win/payoff separately.",
+  "control_replication": "All 12 legacy1R/96-bar accounts (four entries x three costs) must match the corresponding previous complete account JSON canonical bytes SHA exactly. A mismatch blocks completing this experiment.",
+  "main_metrics": ["net_account_return", "recent_continuous_segment_return", "max_close_drawdown", "net_win_rate", "average_net_win", "average_net_loss", "net_payoff_ratio", "net_cash_profit_factor", "mean_net_R", "fees", "funding", "closed_and_open_count", "holding_hours", "exit_reason_counts", "per_symbol_and_direction"],
+  "comparison_plan": {
+    "common_baseline": "For each entry and cost compare every policy/horizon against legacy1R at 96 bars under that same cost.",
+    "exit_effect": "Within each holding limit and cost compare alternative policies against legacy1R at that same holding limit; do not attribute a joint policy/horizon change solely to taking profit later.",
+    "holding_effect": "Within each policy and cost compare 288 and 672 bars against that policy's 96-bar account.",
+    "portfolio_scope": "Longer-held positions change capacity, cash, quantities, funding and later admissions. The opportunity event stream is frozen, but admitted trade sets need not be identical. Report all rejected and newly admitted counts.",
+    "paired_trade_scope": "Separately match jointly admitted, closed, fully mature trades by symbol/direction/setup_id/signal_time. Verify identical entry_time, entry_price and initial_stop within each same-cost pair. Compare per-initial-notional net_return and net_R, not raw currency PnL across different quantities.",
+    "paired_maturity": "Apply signal_time <= end - (672 + 1) * 900000 to every matched comparison, covering the maximum holding horizon and additional delay. Keep the cutoff the same for all policies/horizons.",
+    "paired_coverage": "Report common, baseline-only and variant-only mature counts. These intersections are conditional evidence and cannot prove the exit effect for all opportunities or for non-admitted trades.",
+    "recent_segment": "The recent period begins 2026-06-20 in the same continuous account with boundary positions and capital retained; no capital reset and no new OOS label."
+  },
+  "continuation_screen": {
+    "all_required": ["full-period base net return > 0", "full-period double-cost net return > 0", "recent-segment base net return > 0", "recent-segment double-cost net return > 0", "both symbols full-period base marked PnL contribution > 0", "full-period base net cash profit factor > 1"],
+    "origin": "Same exploratory continuation conditions as the prior entry screen; not an account approval contract or profitability certification.",
+    "delay": "Always report the full delay stress result; a delayed loss is a material weakness even if other exploratory conditions pass.",
+    "ranking": "Show all 48 policy/horizon expressions and all 144 account results. A best historical row alone does not authorize selection or trading."
+  },
+  "budget": {
+    "fixed_entries": 4,
+    "exit_policies": 4,
+    "holding_limits": 3,
+    "cost_scenarios": 3,
+    "account_replays": 144,
+    "no_result_driven_expansion": true,
+    "prior_trials": "Original strategy, TPR1, four entry expressions, old exit variants and earlier adaptive studies have already been inspected. Total historical adaptation is not fully enumerated."
+  },
+  "uncertainty": {
+    "historical_exposure": "All inputs are previously or potentially exposed historical research, including the recent segment. This protocol is frozen before this batch PnL only; it does not restore a fresh holdout.",
+    "multiple_comparisons": "48 correlated policy/horizon expressions plus prior trials create selection bias. Any intervals are descriptive and do not correct all prior adaptive searches. No statistically verified or universal edge claim.",
+    "path": "Completed OHLCV bars and the shared conservative intrabar funding/stop conventions, not known tick ordering."
+  },
+  "operations": {
+    "single_worker": true,
+    "low_priority": true,
+    "serial_account_persistence_and_release": true,
+    "preserve_original_inputs_events_and_reports": true,
+    "no_production_parameter_changes": true,
+    "no_orders": true,
+    "no_deployment_or_restart": true,
+    "account_verified": false,
+    "statistically_verified": false,
+    "promotion_eligible": false
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "project_id": "t28_independent_20261025",
+  "created_at": "2026-10-25T06:14:08.270342+00:00",
+  "research_only": true,
+  "scope": "PROSPECTIVE_FIXED_RULE_OFFLINE_VALIDATION",
+  "status": "FROZEN_BEFORE_EVALUATION_DATA",
+  "duration_weeks": 52,
+  "duration_basis": "Proposed52-week fixed observation arrangement; not a universal sample sufficiency criterion; optional duration preference requested before observation",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "warmup_start": "2026-07-27T00:00:00Z",
+  "start": "2026-10-26T00:00:00Z",
+  "end": "2027-10-25T00:00:00Z",
+  "primary_strategy": "T28_long_cash",
+  "strategies": [
+    "T28_long_cash",
+    "vol_scaled_hold"
+  ],
+  "idle_benchmark": {
+    "initial_equity": 10000,
+    "net_return": 0,
+    "assumed_yield": 0
+  },
+  "initial_equity": 10000,
+  "original_protocol_path": "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/protocol.json",
+  "original_execution_addendum_path": "/Users/meta-lin/Documents/New project/research_projects/trend_portfolio_v1/execution_addendum_20261019.json",
+  "original_source_sha256": {
+    "research_projects/trend_portfolio_v1/protocol.json": "a79cb6df64e0d3fb15af3d48a6501e15518fbe1a88cc20fd111e6f95a49b770d",
+    "research_projects/trend_portfolio_v1/execution_addendum_20261019.json": "f3fe6672d27b55109aa49b41fb97f37455d39028cfae5920cdb591c8db81bde3",
+    "research_projects/trend_portfolio_v1/target_weight_adapter.py": "e63f37928f493fdbf5831c969a52360f8c755cfb85c0c43b90a5d55d6a6202b7",
+    "research_portfolio.py": "228e68a7f420cf8f8c5fa30b8c1dbeb90a1ed9bcd7c7113577757439ee139212",
+    "position_manager.py": "b8ccb89a983b949c8451f936f6b07d3002ffe1f62106644ffb48e1133f8b8cc2",
+    "research_projects/cost_review_20261025/costs.json": "4efbc805758ca0b27fe1d2086b6a898731149f344a495b449e42c8e14df00b03"
+  },
+  "source_bindings": {
+    "research_projects/trend_portfolio_v1/protocol.json": "a79cb6df64e0d3fb15af3d48a6501e15518fbe1a88cc20fd111e6f95a49b770d",
+    "research_projects/trend_portfolio_v1/execution_addendum_20261019.json": "f3fe6672d27b55109aa49b41fb97f37455d39028cfae5920cdb591c8db81bde3",
+    "research_projects/trend_portfolio_v1/target_weight_adapter.py": "e63f37928f493fdbf5831c969a52360f8c755cfb85c0c43b90a5d55d6a6202b7",
+    "research_portfolio.py": "228e68a7f420cf8f8c5fa30b8c1dbeb90a1ed9bcd7c7113577757439ee139212",
+    "position_manager.py": "b8ccb89a983b949c8451f936f6b07d3002ffe1f62106644ffb48e1133f8b8cc2",
+    "research_projects/cost_review_20261025/costs.json": "4efbc805758ca0b27fe1d2086b6a898731149f344a495b449e42c8e14df00b03"
+  },
+  "costs_path": "/Users/meta-lin/Documents/New project/research_projects/cost_review_20261025/costs.json",
+  "cost_scenarios": [
+    {
+      "id": "base",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "USER_REPORT_20261025_BOTH_0.1_PERCENT; baseline slippage estimated"
+    },
+    {
+      "id": "double_cost",
+      "fee_rate": 0.002,
+      "slippage_bps": 4,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "Twofold stress on user-confirmed fee and estimated slippage; not actual charged rate"
+    },
+    {
+      "id": "delay15m",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 1,
+      "account_fee_verified": false,
+      "user_confirmed_fee": true,
+      "source": "User-confirmed fee with original estimated slippage and additional15m delay"
+    }
+  ],
+  "rule_contract": {
+    "lookback_days": 28,
+    "volatility_window_returns": 60,
+    "ddof": 1,
+    "annualization_days": 365,
+    "per_asset_max_weight": 0.5,
+    "per_asset_volatility_reference": 0.2,
+    "weekly_decision": "Monday00:00UTC using completed daily bars",
+    "base_execution": "Monday00:15UTC raw opening price plus adverse slippage",
+    "redistribute_idle_allocation": false,
+    "short": false,
+    "stop_or_r_target_or_holding_cap": false
+  },
+  "seed_input_manifest": "/Users/meta-lin/Documents/New project/reports/entry_screen_20261025/inputs/manifest.json",
+  "account_continuity": "One cash10000 account initialized at prospective start per strategy and cost; no old positions; no resets at calendar/weekly boundaries",
+  "data_policy": {
+    "only_complete_utc_days": true,
+    "raw_15m_bars_per_day": 96,
+    "exact_funding_mark_required": true,
+    "missing_price_or_funding": "BLOCK_NO_FILL_NO_ZERO_NO_PROXY",
+    "immutable_raw_receipts": true,
+    "record_first_seen_utc": true,
+    "first_seen_limit": "Local first-seen proves retrieval time only; late collection does not prove decision-time availability, real-time routing or actual execution",
+    "source_authority": "SYSTEM_CLOCK_AND_OFFICIAL_PUBLIC_DATA_ONLY",
+    "no_interim_pnl": true,
+    "no_rules_or_candidates_selected_using_confirmation_data": true,
+    "scoreable_price_open_times": "start <= open_time < end",
+    "warmup_may_precede_freeze_but_not_scored": true
+  },
+  "economic_screen": {
+    "origin": "Retain original four diagnostic economic conditions; no promotion gate",
+    "all_required": [
+      "T28 base net_return > 0",
+      "T28 double_cost net_return > 0",
+      "T28 base net_return > vol_scaled_hold base net_return",
+      "T28 base max_close_drawdown <= vol_scaled_hold base max_close_drawdown"
+    ]
+  },
+  "statistics": {
+    "origin": "New fixed confirmation proposal frozen before future observations; not original industry/promotion standard",
+    "method": "Joint noncircular moving-block bootstrap of complete shared UTC week log-equity growth and paired benchmark growth differences",
+    "block_weeks": 8,
+    "iterations": 10000,
+    "seed": 20261025,
+    "co_primary": [
+      "mean T28 weekly log equity growth",
+      "mean paired T28 minus vol_scaled_hold weekly log equity growth"
+    ],
+    "one_sided_lower_quantile": 0.025,
+    "familywise_alpha": 0.05,
+    "adjustment": "Bonferroni2co-primary one-sided97.5% lower bounds; both must exceed0",
+    "insufficient": "Cannot form two8-week blocks, confidence bound crosses0, or dependence uncertainty remains; retain INCONCLUSIVE",
+    "partial_weeks": "Excluded from weekly inference only; all account PnL remains included",
+    "no_year_or_symbol_reselection": true
+  },
+  "eth_dependence": {
+    "symbol_contribution": "realized gross minus actual fees plus signed funding plus marked unrealized; yearly boundary differences of same continuous account",
+    "metrics": [
+      "signed_ETH_share_of_total_net_pnl",
+      "ETH_absolute_net_contribution_share",
+      "ETH_positive_profit_share",
+      "BTC_and_ETH_net_contribution_all_costs",
+      "same_path_accounting_curve_subtract_ETH_contribution_and_its_drawdown",
+      "maximum_close_drawdown_peak_to_trough_symbol_contribution",
+      "per_symbol_actual_exposure_mean_and_peak"
+    ],
+    "interpretation": "No arbitrary70%/80% cutoff; report exact shares. If total profit positive and BTC contribution<=0, profitability relies on ETH offsetting other contribution. Same-path removal is accounting diagnosis, not independently tradable BTC-only replay.",
+    "new_BTC_or_ETH_only_strategy": false
+  },
+  "decision": {
+    "early_evaluate": "REFUSE_BEFORE_END_USING_REAL_CURRENT_UTC_CLOCK",
+    "data_failure": "INCONCLUSIVE_DATA_BLOCK",
+    "economic_failure": "ECONOMIC_SCREEN_NOT_REPLICATED",
+    "statistical_failure": "INCONCLUSIVE_STATISTICAL_SUPPORT",
+    "all_pass": "SUPPORT_WITHIN_THIS_FIXED_FUTURE_SAMPLE_ONLY",
+    "concentration": "Report separately; no global diversification guarantee",
+    "strategy_confirmed": false,
+    "promotion_eligible": false,
+    "orders_authorized": false,
+    "production_changes_authorized": false
+  },
+  "operating_plan": {
+    "collection": "Daily completed-UTC-day observation; coverage/status only until fixed end",
+    "notifications": "Stay quiet on unchanged or normal accumulation; report meaningful quality failure, protocol drift, required user action or final completion; never report interim profitability",
+    "schedule_local_timezone": "Asia/Shanghai",
+    "proposed_collection_time": "09:00 daily",
+    "terminal_evaluation": "Only after fixed end and full verified data; no optional stopping based on profit",
+    "automation_may_archive_thread": false
+  }
+}

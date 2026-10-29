@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "research_only": true,
+  "scope": "HISTORICAL_DIAGNOSTIC",
+  "candidate": "TPR1 frozen 2026-10-25; no entry parameter changes",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "direction": "long",
+  "score_start_inclusive_utc": "2026-06-20T00:00:00Z",
+  "score_end_exclusive_utc": "2026-10-25T00:00:00Z",
+  "raw_15m_start_utc": "2026-06-16T00:00:00Z",
+  "raw_4h_start_utc": "2026-04-15T00:00:00Z",
+  "comparison": "Original ProjectSignalEngine long-only vs explicit TPR1, same synchronized account replay",
+  "execution": "Use frozen TPR1 execution/scenarios. Event known at signal close+1ms; base execution delayed one 15m bar; delay scenario adds another bar.",
+  "trial_budget": "One fixed entry candidate, two variants times three cost/delay scenarios; no post-result changes",
+  "exposure_status": "July-August and September-October historical prices/other strategy outcomes have been used in previous research. This is a historical diagnostic, not certified untouched OOS or a prospective observation.",
+  "original_forward_protocol_unchanged": true,
+  "promotion_eligible": false,
+  "orders_or_deployment_authorized": false,
+  "declared_at": "2026-10-25T05:10:48.900404+00:00"
+}

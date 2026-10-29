@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "research_only": true,
+  "scope": "HISTORICAL_EXPLORATORY",
+  "candidate_ids": ["D48", "B20", "S24", "EC20_60"],
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "direction": "both",
+  "start": "2024-08-01T00:00:00Z",
+  "end": "2026-10-25T00:00:00Z",
+  "recent_start": "2026-06-20T00:00:00Z",
+  "input_warmup_start": "2024-05-01T00:00:00Z",
+  "candidate_definitions": {
+    "D48": {
+      "name": "1h 48-bar channel breakout",
+      "long": "Current completed H1 close > max(high of exactly prior 48 completed H1 bars), with latest completed H4 EMA20 > EMA60.",
+      "short": "Current completed H1 close < min(low of exactly prior 48 completed H1 bars), with latest completed H4 EMA20 < EMA60.",
+      "channel_excludes_current": true
+    },
+    "B20": {
+      "name": "1h Bollinger re-entry in low directional strength",
+      "bands": "20 H1 closes, rolling population standard deviation ddof=0, mean +/- 2 standard deviations; each bar's own band is causal.",
+      "regime": "Latest completed H4 ADX14 < 20; finite positive band width required.",
+      "long": "Immediately previous H1 A.close < A.lower_band, and current H1 B.lower_band < B.close < B.upper_band.",
+      "short": "Immediately previous H1 A.close > A.upper_band, and current H1 B.lower_band < B.close < B.upper_band.",
+      "stop_additional_anchor": "Include A.low for long or A.high for short."
+    },
+    "S24": {
+      "name": "1h failed 24-bar range break",
+      "long": "Current low < min(low of exactly prior 24 completed H1 bars), current close > that prior minimum, and current close > current open.",
+      "short": "Current high > max(high of exactly prior 24 completed H1 bars), current close < that prior maximum, and current close < current open.",
+      "range_excludes_current": true,
+      "doji": "No entry; no later-bar confirmation."
+    },
+    "EC20_60": {
+      "name": "1h EMA20/EMA60 crossover with 4h alignment",
+      "long": "Previous H1 EMA20 <= EMA60 and current H1 EMA20 > EMA60; latest complete H4 EMA20 > EMA60.",
+      "short": "Previous H1 EMA20 >= EMA60 and current H1 EMA20 < EMA60; latest complete H4 EMA20 < EMA60.",
+      "cross_only": "Sustained alignment without a new crossover is not another signal."
+    }
+  },
+  "shared_entry_semantics": {
+    "only_closed_bars": true,
+    "hourly_aggregation": "Exactly four continuous complete UTC 15m bars, decimal OHLCV aggregation; no partial hours.",
+    "higher_timeframe": "Latest complete UTC H4 whose close_time <= H1 decision close; never the current unfinished H4.",
+    "long_stop": "min(current H1 low, current H1 close - 1.5 * H1 ATR14); B20 also includes preceding H1 low.",
+    "short_stop": "max(current H1 high, current H1 close + 1.5 * H1 ATR14); B20 also includes preceding H1 high.",
+    "invalid_or_missing_feature": "Record wait/rejection; never fill with future values or zero.",
+    "event": "One symbol/candidate/direction/decision-close identity; known_at=H1.close_time+1; modeled execution signal_time=known_at+900000ms.",
+    "execution_scope": "Historical availability and one-full-15m-bar latency assumptions, not an assertion of actual live fills. Delay scenario is additional.",
+    "no_extra_filters_or_parameter_grid": true
+  },
+  "execution": {
+    "initial_equity": 10000,
+    "risk_fraction": 0.005,
+    "max_positions": 2,
+    "max_risk_fraction": 0.01,
+    "direction_risk_fraction": 0.01,
+    "reward_risk": 2,
+    "max_hold_bars": 96,
+    "stop_mode": "structure_atr",
+    "return_model": "linear_usdm_v1"
+  },
+  "scenarios": [
+    {"id": "base", "fee_rate": 0.001, "slippage_bps": 2, "delay_bars": 0},
+    {"id": "double_cost", "fee_rate": 0.002, "slippage_bps": 4, "delay_bars": 0},
+    {"id": "delay15m", "fee_rate": 0.001, "slippage_bps": 2, "delay_bars": 1}
+  ],
+  "execution_limits": {
+    "same_shared_account_engine": "research_portfolio.replay_portfolio plus position_manager lifecycle; no new execution or PnL engine.",
+    "nominal_cap": "Existing engine limits total nominal exposure to one times equity.",
+    "exit": "Existing structure_atr generally exits fully at 1R. Maximum holding limit is 96 x 15m = 24 hours, not 96 H1 bars. Same-bar stop first; adverse gaps use actual open; tail positions are marked without artificial liquidation.",
+    "attribution_limit": "This compares fixed entry-timeframe/structure-stop expressions under a common exit, not isolated entry accuracy; failure does not reject all slow trend strategies.",
+    "costs": "Hypothetical per-fill notional fee/slippage assumptions, not verified user account rates; signed real funding cash flows remain separate."
+  },
+  "baseline": "Recalculate original ProjectSignalEngine with both directions on the same BTC/ETH 15m inputs, account, dates and costs. Do not reuse the prior nine-trade long-only baseline. Idle collateral reference is zero modeled return.",
+  "account_continuity": "One continuous account per variant/scenario. Recent-segment return uses marked equity at 2026-06-20 and at final time; do not reset capital, delete boundary positions or relabel the segment OOS.",
+  "metrics": ["net_account_return", "recent_segment_net_return", "max_close_drawdown", "fees", "funding", "closed_trades", "net_win_rate", "average_net_win", "average_net_loss", "net_payoff_ratio", "net_profit_factor", "mean_net_R", "per_symbol_and_direction_diagnostics", "weekly_account_returns"],
+  "continuation_screen": {
+    "origin": "Proposed research prioritization screen; no real-account contract or promotion authority.",
+    "all_required": ["full-period base net return > 0", "full-period double-cost net return > 0", "recent-segment base net return > 0", "recent-segment double-cost net return > 0", "both symbols full-period base marked PnL contribution > 0", "full-period base net profit factor > 1"],
+    "no_trades_or_missing_denominator": "Insufficient evidence; cannot pass.",
+    "interpretation": "Passing only permits a separately frozen next validation; it does not establish statistical or out-of-sample profitability.",
+    "ranking": "Show all candidates; inspect the screen first, then joint net return/win rate/payoff/risk. Never rank by win rate alone."
+  },
+  "uncertainty": {
+    "method": "Paired two-week moving-block bootstrap of full continuous weekly account returns using the existing descriptive helper.",
+    "iterations": 2000,
+    "seed": 20261025,
+    "confidence": 0.95,
+    "scope": "Descriptive intervals, not a corrected significance or promotion test. BTC/ETH, adjacent trades, D48/EC and past adaptive searches are dependent."
+  },
+  "trial_registry": {
+    "new_candidate_count": 4,
+    "account_replay_budget": 15,
+    "budget_rule": "4 candidates plus original baseline, each base/double-cost/delay; no result-driven extra candidate or threshold sweep.",
+    "previous_attempts": "TPR1, V1, C1/C2, exit variants and other historical research were already inspected; total adaptive past attempts are not fully enumerated.",
+    "exposure": "All historical data are previously or potentially exposed. The candidates are fixed before this batch's PnL, but this is not a fresh holdout or a restored blind test.",
+    "stop": "After this fixed batch, retain every result. Do not modify failed candidates in this data batch to manufacture a winner."
+  },
+  "operations": {
+    "single_worker": true,
+    "low_priority": true,
+    "serial_accounts_and_release_memory": true,
+    "no_orders": true,
+    "no_production_parameter_changes": true,
+    "no_deployment_or_restart": true,
+    "preserve_all_existing_ledgers_and_frozen_studies": true,
+    "account_verified": false,
+    "statistically_verified": false,
+    "promotion_eligible": false
+  },
+  "background_references": [
+    "https://www.nber.org/papers/w24877",
+    "https://www.aqr.com/Insights/Research/Journal-Article/Time-Series-Momentum"
+  ],
+  "reference_scope": "These historical studies motivate exploring mechanisms; they do not validate these H1 thresholds, candidates, costs or expected returns."
+}

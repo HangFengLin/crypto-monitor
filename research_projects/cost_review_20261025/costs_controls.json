@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "status": "HYPOTHETICAL_LEGACY_CONTROLS_ONLY",
+  "actual_account_fee_verified": false,
+  "slippage_verified": false,
+  "not_actual_cost_validation": true,
+  "scenarios": [
+    {
+      "id": "legacy_base",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "source": "Original entry/T28 research cost assumption; not user account rate"
+    },
+    {
+      "id": "legacy_double",
+      "fee_rate": 0.002,
+      "slippage_bps": 4,
+      "delay_bars": 0,
+      "account_fee_verified": false,
+      "source": "Original twofold fee and slippage stress; funding unchanged"
+    },
+    {
+      "id": "legacy_delay15m",
+      "fee_rate": 0.001,
+      "slippage_bps": 2,
+      "delay_bars": 1,
+      "account_fee_verified": false,
+      "source": "Original base fee/slippage with additional 15m execution delay"
+    }
+  ]
+}
