@@ -1,4 +1,5 @@
 """Real Git fixtures for independent agent worktree creation."""
+import os
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,16 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual((self.target / 'tracked.txt').read_text(), 'remote update\n')
         self.assertEqual((self.repo / 'tracked.txt').read_text(), 'unsaved change\n')
         self.assertEqual(git('branch', '--show-current', cwd=self.repo), 'main')
+        upstream = subprocess.run(['git', '-C', str(self.target), 'rev-parse',
+                                   '--abbrev-ref', '@{upstream}'], capture_output=True)
+        self.assertNotEqual(upstream.returncode, 0)
+
+    def test_reports_explicit_url_and_fetched_commit(self):
+        expected_sha = git('rev-parse', 'main', cwd=self.remote)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.url, result.stdout)
+        self.assertIn(expected_sha, result.stdout)
 
     def test_existing_path_is_never_overwritten(self):
         self.target.mkdir()
@@ -74,6 +85,17 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse(self.target.exists())
         self.assertEqual(git('branch', '--list', 'agent/deepseek/sample', cwd=self.repo), '')
 
+    def test_failed_add_warns_about_possible_branch_and_safe_inspection(self):
+        max_name = os.pathconf(self.root, 'PC_NAME_MAX')
+        too_long = self.root / ('x' * (max_name + 1))
+        result = self.invoke(target=too_long)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(git('branch', '--list', 'agent/deepseek/sample', cwd=self.repo),
+                         'agent/deepseek/sample')
+        self.assertIn('agent/deepseek/sample', result.stderr)
+        self.assertIn('git worktree list', result.stderr)
+        self.assertIn('inspect', result.stderr.lower())
+
     def test_rejects_unsafe_url_and_target_inside_repo(self):
         self.assertNotEqual(self.invoke(url=str(self.remote)).returncode, 0)
         self.assertNotEqual(self.invoke(target=self.repo / 'nested').returncode, 0)
@@ -82,6 +104,7 @@ class WorktreeTests(unittest.TestCase):
     def test_rejects_invalid_task_and_agent(self):
         self.assertNotEqual(self.invoke(task='main').returncode, 0)
         self.assertNotEqual(self.invoke(task='../bad').returncode, 0)
+        self.assertNotEqual(self.invoke('--agent', 'invalid').returncode, 0)
         self.assertFalse(self.target.exists())
 
 

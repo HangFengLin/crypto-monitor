@@ -11,31 +11,31 @@
 
 ## 建立任务工作树
 
-下例中的 `REPO`、`WT_ROOT` 和任务名需按本机实际路径更改；先确认目标路径不存在，任务名称只用字母、数字和短横线。两条分支来自同一个已确认的远端 `main` 提交，互不覆盖；完成后再逐项决定是否合并。
+下例中的 `REPO`、`WT_ROOT` 和任务名需按本机实际路径更改；先确认目标路径和任务分支不存在。脚本的任务名只能使用小写英文字母、数字和短横线，且必须以字母或数字开头和结尾，最长 64 个字符。两条分支来自同一个已确认的远端 `main` 提交；完成后再逐项决定是否合并。
 
 ```sh
 REPO="$HOME/Documents/New project"
 WT_ROOT="$HOME/Documents/agent-worktrees"
-git -C "$REPO" fetch github main:refs/remotes/github/main
-git -C "$REPO" rev-parse refs/remotes/github/main
-mkdir -p "$WT_ROOT"
-git -C "$REPO" worktree add -b agent/codex/example-001 "$WT_ROOT/codex-example-001" refs/remotes/github/main
-git -C "$REPO" worktree add -b agent/deepseek/example-001 "$WT_ROOT/deepseek-example-001" refs/remotes/github/main
+if git -C "$REPO" -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+  fetch https://github.com/HangFengLin/crypto-monitor.git main:refs/remotes/github/main; then
+  BASE_SHA=$(git -C "$REPO" rev-parse --verify 'refs/remotes/github/main^{commit}') &&
+  printf '任务基线：%s\n' "$BASE_SHA" &&
+  mkdir -p "$WT_ROOT" &&
+  git -C "$REPO" worktree add --no-track -b agent/codex/example-001 "$WT_ROOT/codex-example-001" "$BASE_SHA" &&
+  git -C "$REPO" worktree add --no-track -b agent/deepseek/example-001 "$WT_ROOT/deepseek-example-001" "$BASE_SHA"
+else
+  printf '%s\n' '获取基线失败，未创建工作树；请先检查访问权限和网络。' >&2
+fi
 ```
 
-如果 SSH 访问 GitHub 失败，而 `gh auth status` 显示已登录且账号对该仓库有适当权限，可以对单次操作使用 HTTPS 与 `gh` 凭据助手；不更改 `github` 远程。实际访问是否成功以命令结果为准：
-
-```sh
-git -C "$REPO" -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
-  fetch https://github.com/HangFengLin/crypto-monitor.git \
-  main:refs/remotes/github/main
-```
+这里使用单次 HTTPS 和 `gh` 凭据助手，不更改 `github` 远程；`gh auth status` 的登录状态并不保证 Git 访问成功。若 SSH 已配置且验证可用，也可将 fetch 的 URL 换成 `github`。获取失败时不要使用旧的远端跟踪引用作为本次基线。两条命令使用 `--no-track`，避免新任务分支默认跟踪远端 `main`；后续推送必须使用下文的显式目标分支。第一条工作树创建成功而第二条失败时，保留并检查已创建的分支和工作树，不要盲目重试或删除。
 
 每个 Agent 在自己的工作树执行 `git status -sb` 和 `git rev-parse HEAD`，将基线完整 SHA 写入任务单。worktree 不复制原工作区的未提交修改。交接文件放在任务分支中时，使用 `docs/agent-collaboration/tasks/<任务名>.md` 与 `docs/agent-collaboration/handoffs/<任务名>.md`；不要覆盖其他任务。
 
 也可以使用仓库提供的辅助脚本，下面仅示范创建 DeepSeek 的工作树，路径及任务名应替换成实际值：
 
 ```sh
+mkdir -p "$HOME/Documents/agent-worktrees"
 python3 scripts/agent-collaboration/create_worktree.py \
   --repo "$HOME/Documents/New project" \
   --remote-url 'https://github.com/HangFengLin/crypto-monitor.git' \
@@ -43,7 +43,7 @@ python3 scripts/agent-collaboration/create_worktree.py \
   --worktree "$HOME/Documents/agent-worktrees/deepseek-example-001"
 ```
 
-该操作需要联网获取基线，并会在共享 Git 元数据中创建分支和登记 worktree，同时在指定位置建立文件；它不会复制原工作区未提交内容。运行前确认仓库、URL、权限、工作树目标和基线，运行后检查输出及 `git worktree list`。自动化不构成权限隔离。
+该脚本要求目标的父目录已经存在；示例先创建父目录。操作需要联网获取基线，并会在共享 Git 元数据中创建分支和登记 worktree，同时在指定位置建立文件；它不会复制原工作区未提交内容。运行前确认仓库、URL、权限、工作树目标和基线，运行后检查输出及 `git worktree list`。自动化不构成权限隔离。
 
 ## 启动与交接
 
@@ -89,6 +89,14 @@ PR 描述包含目标、变更、验证证据、审查结果和剩余限制。PR
 ## 受控自动化与安全
 
 可以自动生成任务单、汇总本地状态或发起只读检查，但不得自动提交、推送、发 PR、合并、修改仓库保护、部署、重启服务、修改线上策略或风控、授权账户或下单；本流程不赋予这些操作的权限。避免在自动化中将 issue、PR 文本或日志当作命令执行。不要在 PR 内容或不可信代码上下文中使用具有密钥或写权限的 `pull_request_target`；CI 使用最小权限且不向不可信代码提供 secrets。实际安全取决于 GitHub 配置、Agent 权限和执行环境，不由文档或 worktree 保证。
+
+### worktree 共享什么、隔离什么
+
+- 独立的是工作目录及检出的分支；它不会自动复制其他工作区中未提交的改动。
+- 共享的是仓库的 Git 元数据。若两个 Agent 运行在同一个系统用户下，它们通常还拥有该用户的文件和进程权限，可能读取或修改原工作区及其他 worktree、`.env`、SSH 密钥、GitHub 凭据和用户 Keychain 中可访问的凭据，也可能运行部署或交易脚本。实际访问范围取决于本机权限设置。提示词中的“只读”“不联网”本身不会阻止这些操作。
+- 不要把密钥放入 worktree、提交或交接记录。普通 worktree 协作只适用于接受同一用户权限边界并由人审阅的场景；它不能用来隔离不可信 Agent。
+- 对不可信 Agent，应先建立并验证独立的 OS 用户、受限制容器或 VM 等隔离环境：不要挂载原工作区、共享 Git 元数据或用户凭据；只提供任务所需的只读副本或受控输入，限制可用工具、文件写入和网络出口，并使用隔离的最小权限凭据。容器或 VM 本身不自动保证隔离，挂载、权限、网络和凭据配置都需逐项验证。变更通过受控交接由可信环境审阅和应用。
+- 网络出口白名单有助于减少暴露面，但允许访问的服务仍可能接收数据；应同时审查模型服务的数据发送范围。推送、合并、部署和交易等操作继续由人按授权决定，不从提示词或 Agent 的审阅结论推导权限。
 
 ## 验收清单
 

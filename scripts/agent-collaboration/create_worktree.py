@@ -54,7 +54,16 @@ def main():
     try:
         git('fetch', '--no-tags', '--no-write-fetch-head', args.remote_url,
             f'+refs/heads/main:{ref}')
-        git('worktree', 'add', '--no-track', '-b', branch, str(target), ref)
+        sha = git('rev-parse', '--verify', f'{ref}^{{commit}}').stdout.strip()
+        print(f'Fetched {args.remote_url} main at {sha}')
+        try:
+            git('worktree', 'add', '--no-track', '-b', branch, str(target), ref)
+        except subprocess.CalledProcessError:
+            print(f'Branch {branch} may remain or have been created concurrently. '
+                  'Inspect git worktree list and git branch --list before retrying; '
+                  'do not remove any branch without checking ownership and changes.',
+                  file=sys.stderr)
+            raise
     finally:
         git('update-ref', '-d', ref, check=False)
     print(f'Created {branch} at {target}')
