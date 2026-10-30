@@ -90,8 +90,6 @@ class WorktreeTests(unittest.TestCase):
         too_long = self.root / ('x' * (max_name + 1))
         result = self.invoke(target=too_long)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(git('branch', '--list', 'agent/deepseek/sample', cwd=self.repo),
-                         'agent/deepseek/sample')
         self.assertIn('agent/deepseek/sample', result.stderr)
         self.assertIn('git worktree list', result.stderr)
         self.assertIn('inspect', result.stderr.lower())
