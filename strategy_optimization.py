@@ -40,6 +40,110 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
 
 
+
+def _canonical_json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def signal_binding_material(config=None, config_v1=None, *, hold=HOLD, step=STEP):
+    """Rule and parameter material that must bind signal_cache reuse."""
+    baseline = asdict(DEFAULT_CONFIG if config is None else config)
+    v1 = asdict(replace(DEFAULT_CONFIG, volume_sequence_enabled=True) if config_v1 is None else config_v1)
+    return {
+        "config": baseline,
+        "config_V1": v1,
+        "hold": int(hold),
+        "step": int(step),
+        "event_variants": ["baseline", "V1"],
+    }
+
+
+def compute_signal_binding_sha256(material=None):
+    if material is None:
+        material = signal_binding_material()
+    return hashlib.sha256(_canonical_json(material).encode("utf-8")).hexdigest()
+
+
+def signal_cache_reusable(candidate, *, symbol, source_hash, window, binding_sha256):
+    if not isinstance(candidate, dict):
+        return False
+    return (
+        candidate.get("symbol") == symbol
+        and candidate.get("source_sha256") == source_hash
+        and candidate.get("window") == window
+        and candidate.get("binding_sha256") == binding_sha256
+    )
+
+
+def classify_coverage(coverage):
+    """Classify prepared/signal-cache coverage; missing or invalid is never usable economics."""
+    if coverage is None:
+        return dict(valid=False, reason="missing_coverage")
+    if not isinstance(coverage, dict):
+        return dict(valid=False, reason="invalid_coverage")
+    if coverage.get("error"):
+        return dict(valid=False, reason="coverage_error")
+    if "expected_bars" not in coverage or "missing_bars" not in coverage:
+        return dict(valid=False, reason="incomplete_coverage_fields")
+    try:
+        expected = int(coverage["expected_bars"])
+        missing = int(coverage["missing_bars"])
+    except (TypeError, ValueError):
+        return dict(valid=False, reason="invalid_coverage_fields")
+    if expected <= 0:
+        return dict(valid=False, reason="invalid_expected_bars")
+    if missing > 0:
+        return dict(valid=False, reason="missing_bars")
+    if "kline_coverage" in coverage:
+        try:
+            if float(coverage["kline_coverage"]) < 1.0:
+                return dict(valid=False, reason="incomplete_kline_coverage")
+        except (TypeError, ValueError):
+            return dict(valid=False, reason="invalid_kline_coverage")
+    return dict(valid=True, reason=None)
+
+
+def inspect_signal_cache_coverage(registry, output):
+    """Return coverage defects in this experiment's signal_cache; does not repair files."""
+    output = Path(output)
+    issues = []
+    for fold in registry["folds"]:
+        for symbol in registry["input_sources"]:
+            path = output / "signal_cache" / fold["name"] / f"{symbol}.json.gz"
+            record = dict(symbol=symbol, fold=fold["name"], path=str(path))
+            if not path.exists():
+                issues.append(dict(record, reason="missing_signal_cache"))
+                continue
+            try:
+                with gzip.open(path, "rt", encoding="utf-8") as handle:
+                    cache = json.load(handle)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                issues.append(dict(record, reason="unreadable_signal_cache"))
+                continue
+            classified = classify_coverage(cache.get("coverage") if isinstance(cache, dict) else None)
+            if not classified["valid"]:
+                issues.append(dict(record, reason=classified["reason"]))
+    return issues
+
+
+def blocked_economic_result(issues):
+    return dict(status="COVERAGE_INVALID", selection="NO_SELECTION", promotion_eligible=False,
+                economic_summary_valid=False, reasons=["MISSING_OR_INVALID_COVERAGE"],
+                invalid_coverage=issues, summary=None, comparisons=None, diagnostic_positive=[])
+
+
+def write_coverage_blocked_summaries(output, issues):
+    """Write distinguishable invalid summaries; never present them as valid economics."""
+    output = Path(output)
+    payload = dict(economic_summary_valid=False, reasons=["MISSING_OR_INVALID_COVERAGE"],
+                   invalid_coverage=issues, rows=[])
+    write_json(output / "fold_metrics.json", payload)
+    write_json(output / "comparison.json", blocked_economic_result(issues))
+    marker = pd.DataFrame([{"economic_summary_valid": False, "reason": "MISSING_OR_INVALID_COVERAGE"}])
+    marker.to_csv(output / "fold_metrics.csv", index=False)
+    marker.to_csv(output / "comparison.csv", index=False)
+
+
 def causal_events(symbol, bars, config, entry_start, entry_end, *, engine_factory=ProjectSignalEngine):
     engine = engine_factory(config)
     ready, seen, events = [], set(), []
@@ -210,17 +314,19 @@ def _symbol_job(task):
     rows, coverage = load_prepared_bars(source)
     times = [int(row["open_time"]) for row in rows]
     source_hash = sha256(source)
+    binding_sha256 = compute_signal_binding_sha256()
     collected = []
     for window in windows:
         destination = Path(directory) / "signal_cache" / window["name"] / f"{symbol}.json.gz"
         cached = None
         if destination.exists():
             try:
-                with gzip.open(destination, "rt") as handle:
+                with gzip.open(destination, "rt", encoding="utf-8") as handle:
                     candidate = json.load(handle)
-                if candidate["source_sha256"] == source_hash and candidate["window"] == window:
+                if signal_cache_reusable(candidate, symbol=symbol, source_hash=source_hash,
+                                         window=window, binding_sha256=binding_sha256):
                     cached = candidate
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
                 pass  # Only this experiment's partial output may be regenerated.
         first = bisect.bisect_left(times, window["start"] - 250 * STEP)
         last = bisect.bisect_left(times, window["end"])
@@ -232,7 +338,8 @@ def _symbol_job(task):
             for name, config in (("baseline", DEFAULT_CONFIG), ("V1", replace(DEFAULT_CONFIG, volume_sequence_enabled=True))):
                 variants_events[name] = causal_events(symbol, sliced, config, window["start"], window["end"] - HOLD * STEP)
         payload = dict(symbol=symbol, window=window, coverage=coverage, bars=execution,
-                       events=variants_events, source_sha256=source_hash)
+                       events=variants_events, source_sha256=source_hash,
+                       binding_sha256=binding_sha256)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not cached:
             temporary = destination.with_suffix(".part")
@@ -285,7 +392,8 @@ def build_registry(source_root, output):
                 baseline_note="Includes pending_sell engineering repair; old accounting separately recalculated without history rewrite",
                 inference="All results diagnostic; exposed holdout, incomplete PIT and no OKX confirmation forbid promotion",
                 code_hashes={p: sha256(Path(__file__).parent / p) for p in
-                             ("strategy.py", "position_manager.py", "strategy_optimization.py", "research_portfolio.py")})
+                             ("strategy.py", "position_manager.py", "strategy_optimization.py", "research_portfolio.py")},
+                signal_binding_sha256=compute_signal_binding_sha256())
 
 
 def attach_predecessor(task):
@@ -312,6 +420,13 @@ def run_replays(registry, output):
     actual_code = {p: sha256(Path(__file__).parent / p) for p in registry["code_hashes"]}
     if actual_code["strategy.py"] != registry["code_hashes"]["strategy.py"]:
         raise ValueError("signal engine changed after freeze")
+    expected_binding = registry.get("signal_binding_sha256") or compute_signal_binding_sha256()
+    if registry.get("signal_binding_sha256") and registry["signal_binding_sha256"] != compute_signal_binding_sha256():
+        raise ValueError("signal cache rule/parameter binding drift")
+    issues = inspect_signal_cache_coverage(registry, output)
+    if issues:
+        write_coverage_blocked_summaries(output, issues)
+        raise ValueError("missing or invalid coverage cannot be a valid economic summary")
     execution_snapshot = dict(created_at=datetime.now(timezone.utc).isoformat(),
                               registry_sha256=sha256(output / "experiment_registry.json"),
                               actual_code_hashes=actual_code,
@@ -344,6 +459,10 @@ def run_replays(registry, output):
                 cache = json.load(handle)
             if cache["source_sha256"] != registry["input_sources"][symbol]["sha256"]:
                 raise ValueError("signal source hash drift")
+            if cache.get("binding_sha256") != expected_binding:
+                raise ValueError("signal cache rule/parameter binding drift")
+            if cache.get("symbol") != symbol:
+                raise ValueError("signal cache symbol mismatch")
             if "prior_bar" not in cache:
                 raise ValueError("preceding bar audit missing; run --prepare-predecessors")
             data[symbol] = ([cache["prior_bar"]] if cache["prior_bar"] else []) + cache["bars"]
@@ -446,6 +565,7 @@ def run_replays(registry, output):
         previous = min(previous, comparisons[idx]["p_value"] * len(comparisons) / rank)
         comparisons[idx]["q_value"] = previous
     result = dict(status="RESEARCH_ONLY", selection="NO_SELECTION", promotion_eligible=False,
+                  economic_summary_valid=True,
                   reasons=["HOLDOUT_EXPOSED", "PIT_UNIVERSE_UNVERIFIED", "OI_AVAILABLE_AT_UNVERIFIED", "NO_OKX_CONFIRMATION"],
                   summary=summary, comparisons=comparisons,
                   linked_return_convention="product of independently reset fixed-window returns; gaps uninvested; no account return claim",
