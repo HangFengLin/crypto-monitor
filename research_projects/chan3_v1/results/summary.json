@@ -1,0 +1,338 @@
+{
+  "project": "CHAN3_V1",
+  "verdict": "REJECT",
+  "verdict_conditions": {
+    "trades_ge_30": true,
+    "mean_net_positive": false,
+    "mean_ci_low_positive": false,
+    "excess_over_baseline_positive": false,
+    "excess_ci_low_positive": false,
+    "profit_factor_gt_1": false
+  },
+  "created_at_utc": "2026-10-29T16:38:51.729079+00:00",
+  "data": {
+    "start_utc": "2020-01-01T00:00:00Z",
+    "end_exclusive_utc": "2023-10-01T00:00:00Z",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "data_manifest_sha256": "1a035fafe341501d225b1cbc62d6d88473dc751125761520638fbaa6ead4cfda",
+    "coverage": {
+      "BTCUSDT": {
+        "symbol": "BTCUSDT",
+        "rows": 131424,
+        "first_open_time": 1577836800000,
+        "last_open_time": 1696117500000,
+        "first_utc": "2020-01-01T00:00:00+00:00",
+        "last_utc": "2023-09-30T23:45:00+00:00",
+        "expected_rows_between_endpoints": 131424,
+        "missing_rows": 0,
+        "duplicates": 0,
+        "bad_ohlc": 0,
+        "gaps": [],
+        "gap_count": 0
+      },
+      "ETHUSDT": {
+        "symbol": "ETHUSDT",
+        "rows": 131424,
+        "first_open_time": 1577836800000,
+        "last_open_time": 1696117500000,
+        "first_utc": "2020-01-01T00:00:00+00:00",
+        "last_utc": "2023-09-30T23:45:00+00:00",
+        "expected_rows_between_endpoints": 131424,
+        "missing_rows": 0,
+        "duplicates": 0,
+        "bad_ohlc": 0,
+        "gaps": [],
+        "gap_count": 0
+      }
+    }
+  },
+  "primary": {
+    "trades": 2125,
+    "mean_net_return_pct": -0.27427318191657046,
+    "median_net_return_pct": -0.7940658773606274,
+    "stdev_net_return_pct": 2.496283144066034,
+    "win_rate_pct": 33.6,
+    "avg_win_pct": 2.445732683023431,
+    "avg_loss_pct": -1.65066169188621,
+    "payoff_ratio": 1.4816680456361075,
+    "profit_factor": 0.7497597339363435,
+    "best_trade_pct": 15.974044985799422,
+    "worst_trade_pct": -10.319854748354306,
+    "gross_mean_pct": -0.04790839902147429,
+    "fee_mean_pct": 0.19995209160097852,
+    "funding_mean_pct": 0.02641269129411765,
+    "mean_r_multiple": -0.3312561288162399,
+    "excluded_missing_funding": 0,
+    "candidate_signals": 2127,
+    "skipped_signals": 2
+  },
+  "bootstrap": {
+    "signal_mean_pct": {
+      "low": -0.3979647321411009,
+      "high": -0.14458991906296925,
+      "mean": -0.27427318191657046
+    },
+    "baseline_mean_pct": {
+      "low": -0.2508315112685807,
+      "high": 0.13311370915907345,
+      "mean": -0.05835081361933837
+    },
+    "signal_minus_baseline_pct": {
+      "low": -0.3827207945556106,
+      "high": -0.0483851377274508,
+      "mean": -0.2159223682972321
+    },
+    "unit": "UTC week of entry",
+    "iterations": 2000,
+    "seed": 20261030
+  },
+  "baseline": {
+    "trades": 262656,
+    "mean_net_return_pct": -0.06074216176475987,
+    "median_net_return_pct": -0.15131299169710385,
+    "stdev_net_return_pct": 4.075888040629281,
+    "win_rate_pct": 46.99683235867447,
+    "avg_win_pct": 2.8717648872828785,
+    "avg_loss_pct": -2.6609366087711415,
+    "payoff_ratio": 1.0792308534584372,
+    "profit_factor": 0.9569320807300129,
+    "best_trade_pct": 52.21572732198613,
+    "worst_trade_pct": -53.07062723365551,
+    "symbols": {
+      "BTCUSDT": {
+        "trades": 131328,
+        "mean_net_return_pct": -0.12067282222105738,
+        "median_net_return_pct": -0.17827950331672596,
+        "stdev_net_return_pct": 3.5673751949207135,
+        "win_rate_pct": 45.895772417154,
+        "avg_win_pct": 2.4714049795305804,
+        "avg_loss_pct": -2.3194919938761114,
+        "payoff_ratio": 1.0654940763130665,
+        "profit_factor": 0.903842006863706,
+        "best_trade_pct": 45.19155238493609,
+        "worst_trade_pct": -50.99231141296501
+      },
+      "ETHUSDT": {
+        "trades": 131328,
+        "mean_net_return_pct": -0.0008115013084623538,
+        "median_net_return_pct": -0.1131823313307743,
+        "stdev_net_return_pct": 4.526864691518139,
+        "win_rate_pct": 48.09789230019493,
+        "avg_win_pct": 3.2537946672255997,
+        "avg_loss_pct": -3.0168681493179488,
+        "payoff_ratio": 1.078533931939059,
+        "profit_factor": 0.999481739750339,
+        "best_trade_pct": 52.21572732198613,
+        "worst_trade_pct": -53.07062723365551
+      }
+    },
+    "years": {
+      "2020": {
+        "trades": 70270,
+        "mean_net_return_pct": 0.21531144649663453,
+        "median_net_return_pct": 0.10768656563100966,
+        "stdev_net_return_pct": 4.139229023650524,
+        "win_rate_pct": 51.935392059200225,
+        "avg_win_pct": 2.8115176258072094,
+        "avg_loss_pct": -2.589974845551905,
+        "payoff_ratio": 1.0855385837572082,
+        "profit_factor": 1.172960195831808,
+        "best_trade_pct": 52.21572732198613,
+        "worst_trade_pct": -53.07062723365551
+      },
+      "2021": {
+        "trades": 70080,
+        "mean_net_return_pct": 0.08003676864243335,
+        "median_net_return_pct": 0.016926634704817475,
+        "stdev_net_return_pct": 4.995970843476768,
+        "win_rate_pct": 50.195490867579906,
+        "avg_win_pct": 3.704304721650628,
+        "avg_loss_pct": -3.5726828767453345,
+        "payoff_ratio": 1.0368411777496465,
+        "profit_factor": 1.0449807211328344,
+        "best_trade_pct": 42.74483413446533,
+        "worst_trade_pct": -38.090115176048585
+      },
+      "2022": {
+        "trades": 70080,
+        "mean_net_return_pct": -0.4661184273414854,
+        "median_net_return_pct": -0.38590267020865365,
+        "stdev_net_return_pct": 3.9358706893076847,
+        "win_rate_pct": 42.73972602739726,
+        "avg_win_pct": 2.717984832559387,
+        "avg_loss_pct": -2.8427696643966818,
+        "payoff_ratio": 0.9561044873244143,
+        "profit_factor": 0.7136473685292279,
+        "best_trade_pct": 26.295900206883122,
+        "worst_trade_pct": -24.48307690099419
+      },
+      "2023": {
+        "trades": 52226,
+        "mean_net_return_pct": -0.07711917328866295,
+        "median_net_return_pct": -0.23473823671647528,
+        "stdev_net_return_pct": 2.4225353361584245,
+        "win_rate_pct": 41.77229732317237,
+        "avg_win_pct": 1.8412593066575655,
+        "avg_loss_pct": -1.45335544157235,
+        "payoff_ratio": 1.2669022690454523,
+        "profit_factor": 0.908870105277724,
+        "best_trade_pct": 19.69283806262288,
+        "worst_trade_pct": -17.351102317412035
+      }
+    }
+  },
+  "yearly": {
+    "2020": {
+      "trades": 609,
+      "mean_net_return_pct": -0.11645030209505164,
+      "median_net_return_pct": -0.7979495134626381,
+      "stdev_net_return_pct": 2.5264000272265874,
+      "win_rate_pct": 36.45320197044335,
+      "avg_win_pct": 2.4606917936744988,
+      "avg_loss_pct": -1.594810884164406,
+      "payoff_ratio": 1.5429364184229073,
+      "profit_factor": 0.8850953097929857,
+      "best_trade_pct": 15.974044985799422,
+      "worst_trade_pct": -6.981862074893996
+    },
+    "2021": {
+      "trades": 584,
+      "mean_net_return_pct": -0.3407483699538454,
+      "median_net_return_pct": -1.1460356477871974,
+      "stdev_net_return_pct": 3.070183373123666,
+      "win_rate_pct": 34.24657534246575,
+      "avg_win_pct": 3.1025823946004594,
+      "avg_loss_pct": -2.134149809825879,
+      "payoff_ratio": 1.453779102252242,
+      "profit_factor": 0.7571766157563761,
+      "best_trade_pct": 12.255105170601958,
+      "worst_trade_pct": -10.319854748354306
+    },
+    "2022": {
+      "trades": 521,
+      "mean_net_return_pct": -0.39792516969894765,
+      "median_net_return_pct": -0.8184526816086631,
+      "stdev_net_return_pct": 2.194553853524348,
+      "win_rate_pct": 32.629558541266796,
+      "avg_win_pct": 2.1432220474389276,
+      "avg_loss_pct": -1.6286802321303973,
+      "payoff_ratio": 1.3159256219592494,
+      "profit_factor": 0.6373428938264172,
+      "best_trade_pct": 8.664674912304676,
+      "worst_trade_pct": -9.24664655376766
+    },
+    "2023": {
+      "trades": 411,
+      "mean_net_return_pct": -0.25692510007452163,
+      "median_net_return_pct": -0.6033494333935002,
+      "stdev_net_return_pct": 1.800615998348228,
+      "win_rate_pct": 29.683698296836983,
+      "avg_win_pct": 1.7632404139203413,
+      "avg_loss_pct": -1.1097285350481318,
+      "payoff_ratio": 1.5888934619887602,
+      "profit_factor": 0.6707439528118642,
+      "best_trade_pct": 8.057511491371708,
+      "worst_trade_pct": -4.793254093533471
+    }
+  },
+  "by_symbol": {
+    "BTCUSDT": {
+      "trades": 1050,
+      "mean_net_return_pct": -0.27039991842719646,
+      "median_net_return_pct": -0.735447931411347,
+      "stdev_net_return_pct": 2.195998827688376,
+      "win_rate_pct": 32.95238095238095,
+      "avg_win_pct": 2.1055255108025874,
+      "avg_loss_pct": -1.4381132685884255,
+      "payoff_ratio": 1.4640887868792545,
+      "profit_factor": 0.7195663640059973,
+      "best_trade_pct": 15.974044985799422,
+      "worst_trade_pct": -9.993903640613144
+    },
+    "ETHUSDT": {
+      "trades": 1075,
+      "mean_net_return_pct": -0.2780563695108428,
+      "median_net_return_pct": -0.9047671688628536,
+      "stdev_net_return_pct": 2.7592431781454234,
+      "win_rate_pct": 34.23255813953488,
+      "avg_win_pct": 2.7656013829919424,
+      "avg_loss_pct": -1.8623082123977237,
+      "payoff_ratio": 1.4850395678764836,
+      "profit_factor": 0.7729767482016209,
+      "best_trade_pct": 12.016419802758517,
+      "worst_trade_pct": -10.319854748354306
+    }
+  },
+  "by_exit_reason": {
+    "stop": {
+      "trades": 1239,
+      "mean_net_return_pct": -1.7264517495426468,
+      "median_net_return_pct": -1.4023767027687897,
+      "stdev_net_return_pct": 1.2467617581860029,
+      "win_rate_pct": 0.0,
+      "avg_win_pct": null,
+      "avg_loss_pct": -1.7264517495426468,
+      "payoff_ratio": null,
+      "profit_factor": 0.0,
+      "best_trade_pct": -0.29305954212937035,
+      "worst_trade_pct": -10.319854748354306
+    },
+    "target": {
+      "trades": 471,
+      "mean_net_return_pct": 2.664860010741135,
+      "median_net_return_pct": 2.0547872053109275,
+      "stdev_net_return_pct": 2.18401670070053,
+      "win_rate_pct": 99.78768577494692,
+      "avg_win_pct": 2.670661585496142,
+      "avg_loss_pct": -0.06188012411218152,
+      "payoff_ratio": 43.1586333061411,
+      "profit_factor": 20284.557653886317,
+      "best_trade_pct": 15.974044985799422,
+      "worst_trade_pct": -0.06188012411218152
+    },
+    "time": {
+      "trades": 415,
+      "mean_net_return_pct": 0.7255280507266327,
+      "median_net_return_pct": 0.3321604869753674,
+      "stdev_net_return_pct": 2.1830055755532793,
+      "win_rate_pct": 58.795180722891565,
+      "avg_win_pct": 2.012467993834193,
+      "avg_loss_pct": -1.110807306690003,
+      "payoff_ratio": 1.811716561201753,
+      "profit_factor": 2.5851394206621503,
+      "best_trade_pct": 11.062378544880067,
+      "worst_trade_pct": -5.418276628168616
+    }
+  },
+  "simple_equity": {
+    "initial_equity_usdt": 10000.0,
+    "risk_per_trade_pct": 0.5,
+    "max_drawdown_pct": 299.5222374313722,
+    "note": "fixed-risk, non-compounded, trade-close equity; not a mark-to-market portfolio"
+  },
+  "signals": {
+    "candidate": 2127,
+    "skipped": 2,
+    "excluded_missing_funding": 0
+  },
+  "freeze": {
+    "created_at_utc": "2026-10-29T16:38:46.832190+00:00",
+    "hashes": {
+      "PROJECT.md": "d940bf26f574446648a982d5493757dcca0991144fbef4e7b5b11007342c11df",
+      "protocol.json": "fe6a2433d3a34822de7af4cd0a30649929f4c76524e55bb63dd9fc499a7c8528",
+      "chan3.py": "4906e7ef7623ed321aac8f460a6c07234f9141ef7fc0627718a4b420f716e4b3",
+      "test_chan3.py": "413720521c4640e687c99fa5a616bcc74205184458e239e7c5aadc4b0da2dbc0",
+      "prepare_data.py": "00565926171cbc5d4ce6e2c87f5c20b5172fefcedf235ef55837ade4d14c3506",
+      "run_study.py": "f553d2c18bf1bd9f2013a798e2c3238910bae9eb0d8ddd23d95614f0fe3795c7",
+      "data_manifest.json": "1a035fafe341501d225b1cbc62d6d88473dc751125761520638fbaa6ead4cfda"
+    },
+    "git_commit": "560587509e41d23df4cca62acbcce03dad4ea734"
+  },
+  "runtime": {
+    "python": "3.12.13 (main, Jun 23 2026, 15:44:24) [Clang 22.1.3 ]",
+    "platform": "macOS-26.6.2-arm64-arm-64bit"
+  }
+}

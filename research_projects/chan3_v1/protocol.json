@@ -1,0 +1,134 @@
+{
+  "project": "CHAN3_V1",
+  "status": "FROZEN_BEFORE_RESULTS",
+  "created_at_utc": "2026-10-29T16:32:43Z",
+  "one_shot": true,
+  "hypothesis": "BTCUSDT and ETHUSDT 15m perpetual futures have positive net expectancy after fees, slippage and actual funding when entering long at a causal third buy point (third-buy: an upward departure from a valid central zone followed by a pullback whose low remains strictly above the zone upper bound), and the signal beats an unconditional 24-hour long baseline in the same symbols and period.",
+  "scope": {
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "market": "Binance USD-M perpetual",
+    "interval": "15m",
+    "direction": "long_only",
+    "entry_family": "third_buy_sanmai",
+    "no_other_filters": true
+  },
+  "data": {
+    "source": "Binance official monthly USD-M kline and fundingRate archives",
+    "start_utc": "2020-01-01T00:00:00Z",
+    "end_exclusive_utc": "2023-10-01T00:00:00Z",
+    "why_unseen": "Repository audit found pre-2024 use only from 2023-10 onward (smoke tests, T28 warmup from 2023-11, Jindan V3 warmup from 2023-11). This window ends 2023-09-30, before all of those records.",
+    "missing_policy": "No interpolation or zero fill. Skip any signal/trade whose required lookback, entry or exit bars are missing. Exclude trades with missing funding at a crossed settlement.",
+    "checksum": "Verify official .CHECKSUM for every monthly archive; record SHA-256 in data_manifest.json."
+  },
+  "rules": {
+    "bar_handling": "raw closed 15m bars; no inclusion merging; this is an explicit simplification of traditional chanlun",
+    "fractal": {
+      "wing_bars": 2,
+      "top": "high[i] > high[i-2], high[i-1], high[i+1], high[i+2]",
+      "bottom": "low[i] < low[i-2], low[i-1], low[i+1], low[i+2]",
+      "strict_inequality": true,
+      "confirmation": "confirmed at close of bar i+2"
+    },
+    "stroke": {
+      "min_center_gap_bars": 4,
+      "alternation": "top and bottom fractals alternate",
+      "same_type_rule": "keep the more extreme fractal (higher top / lower bottom)",
+      "too_close_opposite_rule": "discard the new opposite fractal",
+      "known_at": "confirmation of its ending fractal",
+      "signal_emission": "only when a new opposite stroke is appended; a same-type extension updates the last stroke but emits no duplicate signal",
+      "causality": "incremental processing in confirmation order; later fractals cannot rewrite an already emitted signal"
+    },
+    "central_zone": {
+      "definition": "three consecutive strokes s1,s2,s3",
+      "zg": "min(s1.high, s2.high, s3.high)",
+      "zd": "max(s1.low, s2.low, s3.low)",
+      "valid_if": "ZG > ZD",
+      "usage": "the three strokes immediately before the departure stroke; no zone extension"
+    },
+    "third_buy": {
+      "zone_strokes": ["p-4", "p-3", "p-2"],
+      "departure_stroke": "p-1",
+      "pullback_stroke": "p",
+      "conditions": [
+        "zone valid: ZG > ZD",
+        "departure ends at a top and departure.high > ZG",
+        "pullback ends at a bottom and pullback.low > ZG strictly",
+        "pullback bottom fractal confirmed at signal bar t"
+      ],
+      "signal_time": "close of bar t",
+      "entry_time": "open of bar t+1"
+    },
+    "entry": {
+      "price": "open[t+1] * (1 + 0.0002)",
+      "skip_if": "entry <= initial stop, or entry <= ZG (gap back into the central zone)"
+    },
+    "atr": {
+      "period": 14,
+      "method": "Wilder",
+      "use": "ATR at signal bar t, only bars up to t"
+    },
+    "stop": "ZG - 0.25 * ATR14(t)",
+    "target": "entry + 2 * (entry - stop)",
+    "max_hold_bars": 96,
+    "holding_limit_convention": "entry bar is bar 1; time exit at close of bar 96",
+    "forward_window": "signals without 96 complete bars after entry are excluded, not partially scored",
+    "intrabar_priority": "stop first",
+    "gap_policy": "open <= stop exits at open; open >= target exits at target; no favorable gap credit",
+    "exit_slippage": "exit price * (1 - 0.0002)"
+  },
+  "costs": {
+    "fee_rate_per_side": 0.001,
+    "slippage_bps_per_side": 2,
+    "funding": "actual Binance funding at 00:00/08:00/16:00 UTC while held; long pays positive rate and receives negative rate; missing settlement excludes the trade"
+  },
+  "metrics": [
+    "trades",
+    "win_rate_net",
+    "mean_net_return_pct",
+    "median_net_return_pct",
+    "avg_win_pct",
+    "avg_loss_pct",
+    "payoff_ratio",
+    "profit_factor",
+    "worst_trade_pct",
+    "yearly_mean_net_return_pct",
+    "signal_minus_baseline_pct",
+    "max_drawdown_pct_simple_equity"
+  ],
+  "baseline": {
+    "definition": "unconditional long: every bar with 96 forward bars, enter next open + 2bps, exit close of bar 96 - 2bps, same fees and funding",
+    "comparison": "signal mean minus baseline mean, paired by entry UTC week where a signal exists"
+  },
+  "bootstrap": {
+    "unit": "UTC week of entry",
+    "iterations": 2000,
+    "seed": 20261030,
+    "confidence": 0.95
+  },
+  "decision": {
+    "min_trades": 30,
+    "pass_to_next_stage": [
+      "trades >= 30",
+      "mean_net_return_pct > 0",
+      "bootstrap 95% lower bound of mean_net_return_pct > 0",
+      "signal_minus_baseline_pct > 0",
+      "bootstrap 95% lower bound of signal_minus_baseline_pct > 0",
+      "profit_factor > 1"
+    ],
+    "inconclusive": "trades < 30, or positive point estimate with a confidence interval crossing zero",
+    "reject": "mean_net_return_pct <= 0, or profit_factor <= 1, or no positive excess over baseline"
+  },
+  "tuning": {
+    "parameter_search": false,
+    "additional_filters_after_results": false,
+    "change_time_window_after_results": false,
+    "retry_on_negative": false
+  },
+  "limitations": [
+    "Raw-bar fractals without inclusion merging are a simplified chanlun, not the full traditional framework.",
+    "Only BTC/ETH, long-only, 15m; results do not generalize to other symbols, timeframes or short side.",
+    "0.1% fee and 2bps slippage are research assumptions, not verified account terms; no order book, queue or partial fills.",
+    "The simple equity curve is trade-close based, not a full mark-to-market portfolio drawdown.",
+    "2020-2023 covers multiple regimes but remains a single market and two assets; it is not a guarantee of future performance."
+  ]
+}

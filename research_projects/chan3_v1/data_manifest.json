@@ -1,0 +1,1877 @@
+{
+  "project": "CHAN3_V1",
+  "created_at_utc": "2026-10-29T16:35:21.767453+00:00",
+  "source": "Binance official USD-M monthly kline and fundingRate archives",
+  "start_utc": "2020-01-01T00:00:00+00:00",
+  "end_exclusive_utc": "2023-10-01T00:00:00+00:00",
+  "interval": "15m",
+  "symbols": {
+    "BTCUSDT": {
+      "bars": {
+        "symbol": "BTCUSDT",
+        "rows": 131424,
+        "first_open_time": 1577836800000,
+        "last_open_time": 1696117500000,
+        "first_utc": "2020-01-01T00:00:00+00:00",
+        "last_utc": "2023-09-30T23:45:00+00:00",
+        "expected_rows_between_endpoints": 131424,
+        "missing_rows": 0,
+        "duplicates": 0,
+        "bad_ohlc": 0,
+        "gaps": [],
+        "gap_count": 0
+      },
+      "funding": {
+        "symbol": "BTCUSDT",
+        "rows": 4107,
+        "first_utc": "2020-01-01T00:00:00+00:00",
+        "last_utc": "2023-09-30T16:00:00+00:00",
+        "expected_settlements": 4107,
+        "missing_settlements": 0,
+        "missing_examples": [],
+        "duplicates": 0
+      },
+      "bars_csv": "data/BTCUSDT_15m.csv",
+      "funding_csv": "data/BTCUSDT_funding.csv",
+      "kline_archives": [
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-01.zip",
+          "sha256": "604e91a9db89202e87f10b610cf11d805a2a7915e28a07c53fc7d3921e384480",
+          "bytes": 139485
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-02.zip",
+          "sha256": "a89e0dfaf3bf187d4c86c0e96c2052110682f5980c370ece041184b4615b86d6",
+          "bytes": 131623
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-03.zip",
+          "sha256": "da4596277f7e914e04497d36a733722b42a6c84b5710734e4076d50c0a6675b0",
+          "bytes": 143581
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-04.zip",
+          "sha256": "ebfe6813862b72c33b9defbc32317b89c0b59e03ec7d8b1a6cf4ff161716c100",
+          "bytes": 138390
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-05.zip",
+          "sha256": "8ef7d076102b7d7d5f0bbd6b0ac6b36d24c6194a4c51aa239ac68e614c1824b6",
+          "bytes": 144024
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-06.zip",
+          "sha256": "5674187f592088659d55aaabc8d684ba8b504e5bc7f9863b2a79ad91d46d21c3",
+          "bytes": 135897
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-07.zip",
+          "sha256": "82c2528648b7202e329e4eb42f59fa2972ee4f59ea4720139160a4e683535193",
+          "bytes": 138871
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-08.zip",
+          "sha256": "c3b8d9ff137e32f20b2793c4f7f7eed8bfd45648674f051cb51ce9e4ab366044",
+          "bytes": 142759
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-09.zip",
+          "sha256": "b23fd2d1b8d09f8d2b10308539bbc1023b29452f2ff5365fce5bb08b7888072a",
+          "bytes": 138064
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-10.zip",
+          "sha256": "723f3a5297b718ac1ea766933c12042f422ceb43f3dbfb1430e0ea5f55fa1e39",
+          "bytes": 142405
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-11.zip",
+          "sha256": "9442ac3d7c5aba02bfacfe0a35ce05756263e4f462a5a694941f27dfcd76f15d",
+          "bytes": 142846
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-12.zip",
+          "sha256": "c824e54aec2b63ace61d29166fcf12ac15729021b13bd1b5355f3825ecb50523",
+          "bytes": 147987
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-01.zip",
+          "sha256": "3aa4530f2afd42d8cae441d2634e81a6d733a49fd33970c705afee325e4aee2c",
+          "bytes": 152367
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-02.zip",
+          "sha256": "f0c941a7ecf452a3448e4a8951948518dd47e51ad7158629d5efcf410431939f",
+          "bytes": 137417
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-03.zip",
+          "sha256": "d1c4cfa8137848dc3373753f8d0437eddf8db43b0e835efbc4a6da3af6935286",
+          "bytes": 152137
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-04.zip",
+          "sha256": "124fab2a0fe7525a5e7b2a1dbb2b776ce12e6003770dd930a10bbd56db4cdc79",
+          "bytes": 146457
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-05.zip",
+          "sha256": "f7ef372e125f87339f45fffaa329ea386d9e8be74998577fd75f807a90abae16",
+          "bytes": 154209
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-06.zip",
+          "sha256": "9853eae293ad9c5b4a1395fe6d5e6257bfd2ff27433c4ef00b0169b54853b7a2",
+          "bytes": 148508
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-07.zip",
+          "sha256": "86ef554b5c3c392cff96180db24268d9273905f3e8c2ed4d5e63904b0d798096",
+          "bytes": 151061
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-08.zip",
+          "sha256": "f6e0c79d84839f34de1c41993624b76b1c738101cf39622d31c926300681fc5a",
+          "bytes": 151593
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-09.zip",
+          "sha256": "5c74e804831937235287f424a0c34eddf525b3a366249037a34288c69b2cc6ed",
+          "bytes": 146664
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-10.zip",
+          "sha256": "6fbc1ced80b2d5b722114394ce145bfe4fbc40ad233b2ec0316d3bd45b8abcaa",
+          "bytes": 151726
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-11.zip",
+          "sha256": "8c3170955683fc914da107d67d8ebde0cda6f3a6250e9b4b5f6ceb94f5593712",
+          "bytes": 146206
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-12.zip",
+          "sha256": "a216bab60744f399e55561df822644029178827b352d1878fd6116082f70273d",
+          "bytes": 151429
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-01.zip",
+          "sha256": "46e0bc4607df992e4de6a6e76e2bf60b3a19db2b11f7b07d4a4bac4e26c6c35d",
+          "bytes": 151020
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-02.zip",
+          "sha256": "7b615ec48c6bc9f4a723e08d9990136554406640055c2fd084e0c0b63d405d74",
+          "bytes": 135101
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-03.zip",
+          "sha256": "2ddcc24fbcf2661020a218f2251b1cb3af03bf32633efed028c0d0921468cafe",
+          "bytes": 146333
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-04.zip",
+          "sha256": "911e220f50a2a1798d35b31fce321cc4e61932a0a370c9e6837c27ff4dd8f0a8",
+          "bytes": 140454
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-05.zip",
+          "sha256": "31a46b1ac257f1690e6b16c606b2fde22aebf2d605047943d885bf28fe813389",
+          "bytes": 146513
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-06.zip",
+          "sha256": "7115895dc1e8425ee5ecedb18258e293decfc7769213362d928c42a29d8b6127",
+          "bytes": 141973
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-07.zip",
+          "sha256": "6cd98667f9b7a127a413bd061103800f2707921a9a231e18f47d71816ef86ac8",
+          "bytes": 145550
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-08.zip",
+          "sha256": "517e241a31c2062c50ca9861eb832fa9b3505b0ae67350135d5a74d812228eab",
+          "bytes": 143927
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-09.zip",
+          "sha256": "776bd8021ee4b7dd8dd6530bd8b0d4f4a3287df2a72810f5dcb26e35714c8903",
+          "bytes": 139666
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-10.zip",
+          "sha256": "bff25dbfad92e9c551ab77b6411e29462dbde298636144041a775330a126cd1b",
+          "bytes": 141497
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-11.zip",
+          "sha256": "7f74daa2a5f1631e5b60d0dd035dfb60c0d8e5f0105820484fde8b8914d07986",
+          "bytes": 137846
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-12.zip",
+          "sha256": "acf8b92a5cea478f7c32ab863b977836f629d4ff3373d20bb2b15673b57b87ae",
+          "bytes": 137311
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-01.zip",
+          "sha256": "7d9c643f940a65eaae7f8618a5f997ada493076a5f91b02bdd77b559d2ab2514",
+          "bytes": 140488
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-02.zip",
+          "sha256": "3d2bf498800e0526d9e7503d8f20f7dbd4fd1908e90570053a7ec5803b31118e",
+          "bytes": 129016
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-03.zip",
+          "sha256": "843bdaf3f134e74e6f0efecf46dbd92952c61b9d57c6ce8b556392d81526ec48",
+          "bytes": 144941
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-04.zip",
+          "sha256": "4a9416010259d5219c25ba8d29eac0928ecf6876fc4d6cc751228110e97f5138",
+          "bytes": 138552
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-05.zip",
+          "sha256": "f584af353ef1a3bef7f45aa17d8826c622d04a2a817fe0c6289e37b933959b54",
+          "bytes": 142660
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-06.zip",
+          "sha256": "8fb734f8a60a161b2f17b5458ed3659017a61d2a5dd24d2d810243ce1f621032",
+          "bytes": 138330
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-07.zip",
+          "sha256": "c8df4ff96d804f2f57e51049bf94c11bf8bfa2f9333c0af29ab8f2504471966d",
+          "bytes": 140229
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-08.zip",
+          "sha256": "8ba91ecc5bf5573c3840a2f22f4b0b6d307fc659a9e11df3c3a6e7bcf332150f",
+          "bytes": 138936
+        },
+        {
+          "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-09.zip",
+          "sha256": "f1f628bb4b1976ba632150bf999fde302ddcfc8899ff369a5119bdd5dba1e0d5",
+          "bytes": 134048
+        }
+      ],
+      "funding_archives": [
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-01.zip",
+          "sha256": "7f81b2f3694d13779e7e896b69d60cd61e9444d7b9f9e90df761935e1c1b76e2",
+          "bytes": 825
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-02.zip",
+          "sha256": "6599466d108d120c64a078824326c063ed2d4335b3292e52c5e572f79166533a",
+          "bytes": 885
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-03.zip",
+          "sha256": "eee845fde6336e29d25889563cba3d2cff2d4d640e51fb1f82ae9b28cedaee77",
+          "bytes": 928
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-04.zip",
+          "sha256": "d009ce034d08c3dcf3e7f874b0f8b0ec76ba507bc6bb4e007e541df537bafbce",
+          "bytes": 867
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-05.zip",
+          "sha256": "3f2b56dd6b9a42457009bb367d0adadd3cf7e2216cd325172d0089e3883125a8",
+          "bytes": 839
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-06.zip",
+          "sha256": "30b3470ff98576578973d75e3c157a5cbf1778b11e4c26b4b4ff70a3cbb348ec",
+          "bytes": 791
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-07.zip",
+          "sha256": "18dae7b11075fc0fba79ad47df46683415cba5d027caa69c66bc2a5c9d9b459a",
+          "bytes": 712
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-08.zip",
+          "sha256": "e6f6d1749f674c85d4766e0eb36af6ea40d91a0674234d30df80eb9876b094e3",
+          "bytes": 854
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-09.zip",
+          "sha256": "7ae9a3b6afb2dc06e46080582908ec8c27063b707a14c7f1e679dc991ff48032",
+          "bytes": 838
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-10.zip",
+          "sha256": "4c55b191c101f39c7fb193a6529665dd9e83302ca21876521e4c93b3902e9fb1",
+          "bytes": 828
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-11.zip",
+          "sha256": "676356a2d075caa51b4f8ada026e9430dc320ffd23d2343b13b7aa25324ed6d1",
+          "bytes": 854
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-12.zip",
+          "sha256": "d7390f90edf54cc4ad9bbe78e2f6b291ae06ad9539f591a2d0fce445873bbd63",
+          "bytes": 852
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-01.zip",
+          "sha256": "cff916dc4b638ec3de97828e8911cd91cf7d7a3d0836ec0175869c374e66823d",
+          "bytes": 981
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-02.zip",
+          "sha256": "819a7b107443686adb313fc5fc223302a29f3981e1d1bd9828ad0ade65a8a8af",
+          "bytes": 956
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-03.zip",
+          "sha256": "2125fd300848938c7b992b8f7b7b5007d5b277a4ff1ebda7da083b40242729da",
+          "bytes": 918
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-04.zip",
+          "sha256": "9cd888e3b0a1954813d0062c2e60426fdc8e34a7f258f6838371ec67f535b028",
+          "bytes": 914
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-05.zip",
+          "sha256": "ed934afb9cf84df6ecae742e755147333a84244836a66b51523abc66dd5f63af",
+          "bytes": 960
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-06.zip",
+          "sha256": "7b8d9bfb8816636b800764dafb2aa2307d19166c695bfa245adbf7d01d61f766",
+          "bytes": 883
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-07.zip",
+          "sha256": "8ab3df641d3bcf40527491f8e26d046ad2b662d1950ead9555ad32975571b7fe",
+          "bytes": 973
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-08.zip",
+          "sha256": "7eb681cc45b94176f4b9192a62c3a1925d79031ba001cea2d8dec6ff6e5b9c35",
+          "bytes": 781
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-09.zip",
+          "sha256": "03f25a7c25eef18d5f5b5b7bb0b664cab7a210b409f37e95a54e141808a0752d",
+          "bytes": 828
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-10.zip",
+          "sha256": "f25820d6add687addbca3ef43bee58f70853a6da53832a0c1bc22d00dc8ec64a",
+          "bytes": 951
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-11.zip",
+          "sha256": "e2e6b2d7218607e7e4a38137d50f553c2cfb901275c19edf567024c1cc6de85f",
+          "bytes": 919
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-12.zip",
+          "sha256": "bf3ce484faf41d7dccfd38c5cc3d8de34d8297df30ab10784e874cc10fd1b310",
+          "bytes": 815
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-01.zip",
+          "sha256": "22ee19079b620f5c6d820e7d7f8bafa7fde866d89bd664863b8bd527749c12cb",
+          "bytes": 906
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-02.zip",
+          "sha256": "fa95088258a905c79ab79e8984d2f6f66933ec2e814dbab4ef9da89b01ab484a",
+          "bytes": 890
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-03.zip",
+          "sha256": "4cf0883bc07f4ed4cdd3b0d8c0d166b4d15d21e666ab752f9f44401af4d6172f",
+          "bytes": 904
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-04.zip",
+          "sha256": "57e2776cc68b3169fc9f8632dad67278f470cd453407a8ebe6c87963c8a31357",
+          "bytes": 926
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-05.zip",
+          "sha256": "bced8a5013d09742b96682e6fd01ad4456213515a03d7586ec2b1f2689af5255",
+          "bytes": 915
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-06.zip",
+          "sha256": "0cd0708f8903829eb46f98cf60f4b2516c986e1ccddf6620a5912b48e16baf93",
+          "bytes": 966
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-07.zip",
+          "sha256": "29d58cce0cd45f74c6a112039835c6d9ee5a7e60e7c38c2503beb7930453a4fe",
+          "bytes": 917
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-08.zip",
+          "sha256": "6f4f0c6c84c05694b4b4a5c085776730fd4059723eecd98ee6ffeb3fde4da811",
+          "bytes": 997
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-09.zip",
+          "sha256": "d62cd4e13009de37add446dc4f63ead4c56dcc4955a1e60f6726bcadc5a68fa9",
+          "bytes": 960
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-10.zip",
+          "sha256": "ad9efed10d4ca1567b865d7a158790977cec1b925395634217069df6696c8bc9",
+          "bytes": 950
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-11.zip",
+          "sha256": "8febe5bec1a029e993bbf27490761f8c47c32849bf7dd13441b2b2f6ec1ffb51",
+          "bytes": 1000
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-12.zip",
+          "sha256": "4218c78331bcc4dbeb5768fa112242a880971c1f2cfd1d3f32aaa26ca34069af",
+          "bytes": 982
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-01.zip",
+          "sha256": "05e3df32f28d0d50f4c5a280adee9368b4a66fc68c6ddca1b3277087ac0d19f5",
+          "bytes": 863
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-02.zip",
+          "sha256": "5227accd9aaa59f71f5e682abffb58be5f99573ed208ab968b1704c81ac11345",
+          "bytes": 808
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-03.zip",
+          "sha256": "ab022adff9b853d2f33cf80154e77c770f57c3392f0bbc36564b2e2cdbd0e872",
+          "bytes": 956
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-04.zip",
+          "sha256": "2931039d26818edc65d4faefba84945fd1ba52989dd58fb127dc3cd7a12c7fbf",
+          "bytes": 952
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-05.zip",
+          "sha256": "5d026fece46df86293054c8c56c2c8de575d30161b82979b11831831217a246e",
+          "bytes": 983
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-06.zip",
+          "sha256": "3ffdde6f1dc9c3c065d77ae43f3ba64d19d4cb76512d4bc1d541933d4fb2e6f7",
+          "bytes": 845
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-07.zip",
+          "sha256": "0304baed9fd407293a8a8040b30a1b68bd344803b630d33530375b421733a930",
+          "bytes": 861
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-08.zip",
+          "sha256": "516a8f50631c6ede6a9642f6d1590b6a22c33ba09935501d2ace8dc1396501fd",
+          "bytes": 846
+        },
+        {
+          "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-09.zip",
+          "sha256": "3fd9df6fd1eef33cf5fe625c27012359bc6d64a68c109305d7b44a0354f533c2",
+          "bytes": 914
+        }
+      ]
+    },
+    "ETHUSDT": {
+      "bars": {
+        "symbol": "ETHUSDT",
+        "rows": 131424,
+        "first_open_time": 1577836800000,
+        "last_open_time": 1696117500000,
+        "first_utc": "2020-01-01T00:00:00+00:00",
+        "last_utc": "2023-09-30T23:45:00+00:00",
+        "expected_rows_between_endpoints": 131424,
+        "missing_rows": 0,
+        "duplicates": 0,
+        "bad_ohlc": 0,
+        "gaps": [],
+        "gap_count": 0
+      },
+      "funding": {
+        "symbol": "ETHUSDT",
+        "rows": 4107,
+        "first_utc": "2020-01-01T00:00:00+00:00",
+        "last_utc": "2023-09-30T16:00:00+00:00",
+        "expected_settlements": 4107,
+        "missing_settlements": 0,
+        "missing_examples": [],
+        "duplicates": 0
+      },
+      "bars_csv": "data/ETHUSDT_15m.csv",
+      "funding_csv": "data/ETHUSDT_funding.csv",
+      "kline_archives": [
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-01.zip",
+          "sha256": "be850bcde4421807ca925375f9f529a94e132be473382202f57ea49ff124c8d6",
+          "bytes": 127343
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-02.zip",
+          "sha256": "1ee452ca7e0874b3170e7e170c39516da1b4cbbc7760a715733fd47fcc79187c",
+          "bytes": 124867
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-03.zip",
+          "sha256": "5c16b4231cc0366d246b60c4daafc3c7fc7127aed43a7401b7b4743d1898f505",
+          "bytes": 133674
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-04.zip",
+          "sha256": "4fd06af73bdabdf6eb668dc738550a337cb8647a0c7c60b586abb39a9e3ba6ac",
+          "bytes": 128736
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-05.zip",
+          "sha256": "7095867a2ea3a9123469ec2bb13ea4865b7b092f6f2edf6c67c8a406852c1607",
+          "bytes": 132618
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-06.zip",
+          "sha256": "6e91d9437b28a7f6e47b43ccace4377456ca6cf75164affbbf1b5f33687f630b",
+          "bytes": 126296
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-07.zip",
+          "sha256": "323cdc8f50a1822c421d15f715d9d514d513c2c4ec479d4f656228b2e0f3944e",
+          "bytes": 131141
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-08.zip",
+          "sha256": "817d409f95802453bb62d34cb3a76475d863695429b3f62304a47dc858dacb98",
+          "bytes": 136505
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-09.zip",
+          "sha256": "44cb7ac27035e1abbfb0877d7a32e707c8bc9b1e8c5c31e4efed45007db8715a",
+          "bytes": 132883
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-10.zip",
+          "sha256": "9c65599b32eb9439f6ee80dcc052c111c9d1eea2fc64f858a2b78d47a516b62c",
+          "bytes": 134372
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-11.zip",
+          "sha256": "3d5347a1174a5f641220d589877a1104241eadac7ee4a459a6b6b269329961ec",
+          "bytes": 135543
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-12.zip",
+          "sha256": "5790ffe90d9808ed526b274f78f3534f7516f38d2dab69184a4d26f0846dab4a",
+          "bytes": 140403
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-01.zip",
+          "sha256": "8949195778e2b05370e9082dc60c8f7a9c83631252eb9491c3c3c84b07c0bec7",
+          "bytes": 147930
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-02.zip",
+          "sha256": "779cc2fbd39b028049c038233b9d3c1fcfa41ea9d1c9883f33dbf7ccc3dbc847",
+          "bytes": 132702
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-03.zip",
+          "sha256": "26b21140c3dc70d0df78db60ca98ab1be8d5a874eefc74c72b037f720167d0c4",
+          "bytes": 145442
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-04.zip",
+          "sha256": "60b7d0bfbed9bf1bbf9554dcf08f9c676740ef7161fddcc0fa408846a8072878",
+          "bytes": 142562
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-05.zip",
+          "sha256": "77c8ca3914321c8e59c34ba7d23a3c7d63f5e83c219e55c767ce9953022dcbf2",
+          "bytes": 151239
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-06.zip",
+          "sha256": "913546ade2f9425e89989e839ca3d3d14ac29838eb83e2fc735ea2438e2eb141",
+          "bytes": 144396
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-07.zip",
+          "sha256": "c5c52ba14f8964e3669c7c147358981b2d31e0b7982b0567f1ffc24ec857831d",
+          "bytes": 147576
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-08.zip",
+          "sha256": "95981cb8a9dda8d51be3a0d323d8d89ee4410f6e4ee3ea74e41d54b8152770b0",
+          "bytes": 148269
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-09.zip",
+          "sha256": "7e9db70488fe7324c7c58a905638bf81437f11c61018238190ca6723a828e9e9",
+          "bytes": 143558
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-10.zip",
+          "sha256": "755a29a1a30d7c18f6932a5ceb16288a61968fb2e1ada5611b58c5aad46947da",
+          "bytes": 147264
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-11.zip",
+          "sha256": "016ce492025483e69485963f4d503ef0b04b7d961f2c89f2fd455d6bb15169fc",
+          "bytes": 142393
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-12.zip",
+          "sha256": "88eda6c9262c4322022ed9017232756e9ba0aca6a3d4d34c23850da6f241812d",
+          "bytes": 147346
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-01.zip",
+          "sha256": "f34e867abd33f17c4c9722338d1e6098da86ceb1ed7e68da704de4a1a6fc0b62",
+          "bytes": 146670
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-02.zip",
+          "sha256": "c4e6259d3d5bab4e1d2349c42d6ac0af6514237b55683a36364672b9be5ec77e",
+          "bytes": 133502
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-03.zip",
+          "sha256": "763c04742dd6d47f2c01b3215bededcf606c07e7df0af78c341fe9590c5d7d65",
+          "bytes": 145963
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-04.zip",
+          "sha256": "cbab8ad431d7c56272aee8eb21be74c33933e63aebeb45fdc0a51d71e3342a29",
+          "bytes": 140578
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-05.zip",
+          "sha256": "89f651e2e396166ab54a66e53fab3061eb82f7c1bdd33352752c9956da586aae",
+          "bytes": 146729
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-06.zip",
+          "sha256": "14a2d341f726acda252f3cd17b20a21bc75b8566fe5a4d060afbc3c763922dd6",
+          "bytes": 143420
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-07.zip",
+          "sha256": "c248a49cae33740d26b9ba7f3828630fdf0428ad36c68c8752c276e11f4146d0",
+          "bytes": 148525
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-08.zip",
+          "sha256": "6a9e64b652806493ec753eec55780cad6420e8fd0daf007778641368d1d4ccc9",
+          "bytes": 149065
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-09.zip",
+          "sha256": "e3c24622eff11720bd241a37a09eee904424d5f095bed163803faaec1f8094b5",
+          "bytes": 143819
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-10.zip",
+          "sha256": "8406a50b9db5e1b2c2753e8496372f9199193041c698aea959faf40e7786fcba",
+          "bytes": 145390
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-11.zip",
+          "sha256": "353bbe11f3aa0dbcd0772c78232e2ec104b02d105ea4173e1f619eed943b5971",
+          "bytes": 142474
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-12.zip",
+          "sha256": "d311ac52d3a542b126e1b6574498609c32c5f0adf566d9f6a5b69c0b72f5a059",
+          "bytes": 142432
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-01.zip",
+          "sha256": "4b94b8078f553d56986966a816ab1888b57f1c4ac4be9385aa8eb4a0f5d0b5bf",
+          "bytes": 144355
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-02.zip",
+          "sha256": "181f161c13de3e1918f987845d0d7a3e698634d98e5ca83d2a46baaa8602feba",
+          "bytes": 131348
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-03.zip",
+          "sha256": "1402dfca8c6b948335ab7500cae23093e734a112c11474fab8f10bc93bdc07e9",
+          "bytes": 146259
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-04.zip",
+          "sha256": "55fc2dcc0749ab4b21d12aa9f8d08148a148dc520fc0cf430409189ade9d26c1",
+          "bytes": 140454
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-05.zip",
+          "sha256": "3b28964792ad73c04a2c95a40704b426b1ebb2d90e215531406d7b029f6b5c3c",
+          "bytes": 143791
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-06.zip",
+          "sha256": "14cf1b27bb9325e34df4dd0cb2d2b05ae63a6d5706dbf5e0cb6b8f7e92e4cbe9",
+          "bytes": 139195
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-07.zip",
+          "sha256": "7a9c96acb0a88270fd79f7ac5b154ba34467d33c600bec63438bbefaf13e1660",
+          "bytes": 141673
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-08.zip",
+          "sha256": "b8e1882d9bf4ca6755794b20e8631fe2f030a05e252d0c94d14d4f0638aa33bf",
+          "bytes": 139636
+        },
+        {
+          "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-09.zip",
+          "sha256": "a4f6804bd2edb66ff385d70a029a52447e68f31d94cccc803aafe34bb537d8ce",
+          "bytes": 135001
+        }
+      ],
+      "funding_archives": [
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-01.zip",
+          "sha256": "0ce8da3b2ee7eceb6616efa215a2a1b1aab7b5b04becebe73634a95ec0abfa90",
+          "bytes": 795
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-02.zip",
+          "sha256": "5a1de843dc3f098e86ca3c0979b38591d57d18664a1079588e61def93224fa06",
+          "bytes": 911
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-03.zip",
+          "sha256": "0b9edb31ec6aedad0248d54e89b7ea5ff3cc4ab719519751db3de334caf54303",
+          "bytes": 785
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-04.zip",
+          "sha256": "ce2208113358208182eaae41971fb5762e1794a04b4a606368416d08eea2d41b",
+          "bytes": 698
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-05.zip",
+          "sha256": "77f5790ae26f95caee52b58317ee65d13b0eeb61f73d83482fd5d3aa153ab300",
+          "bytes": 769
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-06.zip",
+          "sha256": "2e6af078edbe3e0df30d12d0d381652949572ce514222a257efe1f4eb145dae0",
+          "bytes": 700
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-07.zip",
+          "sha256": "1983ad90e1d1f98eefd2c23b9eb209d26e4e2efba2f4e8b5e662e8a7d563bc56",
+          "bytes": 774
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-08.zip",
+          "sha256": "d4e766270a078741387ba564103d285ad9a2c05c7e6df9ad0b03619248bb041f",
+          "bytes": 918
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-09.zip",
+          "sha256": "cdee5c299c22dda85a5d5449e19250f7bc66c0d52759f9de0a49cc233520510d",
+          "bytes": 807
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-10.zip",
+          "sha256": "47749a38b41b185d786af96bf41c796edf8ea517cf76d6d61402974c629e0239",
+          "bytes": 852
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-11.zip",
+          "sha256": "9b02376eaa04be4ec2e201b492ef2a3c34dc61542492c715b5cea5dec5f01d36",
+          "bytes": 889
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-12.zip",
+          "sha256": "f99267a3fef35dd201e76c8338be877fb52883376b4cd0acb890a1387de0b0d4",
+          "bytes": 901
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-01.zip",
+          "sha256": "4c18c1df8904dea9770aeba5326d26b3fa9a3ffac4891f5f7125d4be2da847c0",
+          "bytes": 1017
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-02.zip",
+          "sha256": "15e9a939f253a11fc1af2858bb3844f3d39019ccf7efa66a9456f0f60afba3dd",
+          "bytes": 950
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-03.zip",
+          "sha256": "2bcaadc8206cb8d76a26f0f3cbf97020b747545b0e75c3dd8a3b195b435478a5",
+          "bytes": 997
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-04.zip",
+          "sha256": "2fee34e8b9b6e828d01bab0df1c67104f7a98f3c063668c8db627b802ffa5a95",
+          "bytes": 954
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-05.zip",
+          "sha256": "21809ef6691a1441bd55ba4af4494a038d1a399ae0ae432e80cb41b47d71f3bd",
+          "bytes": 913
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-06.zip",
+          "sha256": "8e58ccf8f52c69c55754492daafadab92d4ca8c8bd027f4532582d06e9f36063",
+          "bytes": 827
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-07.zip",
+          "sha256": "f8f538bedf642052e428cd25f3134784de6e62a136e76f6a07ea6e79dfc9c39d",
+          "bytes": 892
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-08.zip",
+          "sha256": "0120b284bde23d077e1e26e5e4b56fd3e2d1d82a3a7fe0e9de26825b9fc9c0db",
+          "bytes": 857
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-09.zip",
+          "sha256": "4b4a94cdafbb8fea7762c266aa79b183700b7c9dcf7e981f7fdbe9372f2eec66",
+          "bytes": 826
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-10.zip",
+          "sha256": "4dfb8698f6951b2c66229e1c687977eae0778bb703d6268232da2ceb3e9b5e6d",
+          "bytes": 935
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-11.zip",
+          "sha256": "d9a7e22a237717f23d4b0505f14613359b7ea7831b23a78653a891cbbe3d521c",
+          "bytes": 838
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-12.zip",
+          "sha256": "788d5c57e7cbc8e6b94ed4d7672618a85311edf1d7f0888083410d0d3389d811",
+          "bytes": 806
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-01.zip",
+          "sha256": "9f5bd01450b05a8c5e48cdc99fa147e85c82ecf7ee7919fa543a4e6039a2b98d",
+          "bytes": 950
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-02.zip",
+          "sha256": "9c35e30327ac8915cc1333415b7d5018425781c81918e349d26b734525fcdfe5",
+          "bytes": 898
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-03.zip",
+          "sha256": "3de0714a2b2582029b32147815298b6e67e972e776ca3f68a4208823b4109404",
+          "bytes": 866
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-04.zip",
+          "sha256": "7c306ac8b6275a857b064916080e0b6ec502b25a4501c84c3fd2c0b077425de3",
+          "bytes": 941
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-05.zip",
+          "sha256": "c458330243c9d8e048ffc7168c9e3c077c01bb82b1644097a4893fee34069b78",
+          "bytes": 972
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-06.zip",
+          "sha256": "f6f3a69b656b91500b41501a230e663ccc3c1a65f46273595b00682d8f6fabb1",
+          "bytes": 980
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-07.zip",
+          "sha256": "17826e5591af8660a7fed74d60e24eee77c822cf0d901dd8af355a10a36699aa",
+          "bytes": 953
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-08.zip",
+          "sha256": "a2680549de5e087566f4d323b3a812c2b9863528c6bc49b0e551cb42c381bb4d",
+          "bytes": 1000
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-09.zip",
+          "sha256": "816e4de946d9f854cc457c86ca396b9cb49b46e80cf44941b59b9ad2124f2ef8",
+          "bytes": 1016
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-10.zip",
+          "sha256": "e434c29eb544cc57ff574e38685535bb7d04703aee54bc5d52f53cea372810e6",
+          "bytes": 1004
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-11.zip",
+          "sha256": "4f4e52f176f69e99353959d287874a4d4a135b5bb4ea85514dd5a3e65958b2d7",
+          "bytes": 987
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-12.zip",
+          "sha256": "8cd0e885d63b85ee602d80eaae956f9ee3e0e25db264eb5c74026a9ae0d71f4e",
+          "bytes": 964
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-01.zip",
+          "sha256": "5647d5978092d220eb14e11c7854d86815d0eb6204197e37b4808cc599e986f3",
+          "bytes": 819
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-02.zip",
+          "sha256": "7da37820c15fb08600ae668551d0b724326b8f71d761582990721059280a221b",
+          "bytes": 821
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-03.zip",
+          "sha256": "5110b60cbbc5f26048ce02575c26444ea2ed497baed9a5609e118359e1ca3b51",
+          "bytes": 963
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-04.zip",
+          "sha256": "fa3a3cf7c3b8285687ae8c8014eed8bc58ad3ceb33ccb62ff4298048213c0e6c",
+          "bytes": 945
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-05.zip",
+          "sha256": "bf890ea68d979942ed296b058390eb98b0b495547fee2117d3b76d5e7f629b24",
+          "bytes": 990
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-06.zip",
+          "sha256": "b3ddac1309f9a684f4e811776a6c09fb2239bb8d1ae0ff4bd342a1c32a5e171f",
+          "bytes": 888
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-07.zip",
+          "sha256": "82577976d8acd886fda84179ee38c9e7ef445732c3b6a062d6ffd2a9e3cc30bf",
+          "bytes": 861
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-08.zip",
+          "sha256": "cf749429c366cef3302a804b3e702937e5f1a77aeddc5b628dca7da547a8935a",
+          "bytes": 897
+        },
+        {
+          "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-09.zip",
+          "sha256": "41ac7eb67a46d14d97daec4c37e8229df5ac6b165639ad4b2c54bc7374930341",
+          "bytes": 902
+        }
+      ]
+    }
+  },
+  "archives": [
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-01.zip",
+      "sha256": "604e91a9db89202e87f10b610cf11d805a2a7915e28a07c53fc7d3921e384480",
+      "bytes": 139485
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-02.zip",
+      "sha256": "a89e0dfaf3bf187d4c86c0e96c2052110682f5980c370ece041184b4615b86d6",
+      "bytes": 131623
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-03.zip",
+      "sha256": "da4596277f7e914e04497d36a733722b42a6c84b5710734e4076d50c0a6675b0",
+      "bytes": 143581
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-04.zip",
+      "sha256": "ebfe6813862b72c33b9defbc32317b89c0b59e03ec7d8b1a6cf4ff161716c100",
+      "bytes": 138390
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-05.zip",
+      "sha256": "8ef7d076102b7d7d5f0bbd6b0ac6b36d24c6194a4c51aa239ac68e614c1824b6",
+      "bytes": 144024
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-06.zip",
+      "sha256": "5674187f592088659d55aaabc8d684ba8b504e5bc7f9863b2a79ad91d46d21c3",
+      "bytes": 135897
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-07.zip",
+      "sha256": "82c2528648b7202e329e4eb42f59fa2972ee4f59ea4720139160a4e683535193",
+      "bytes": 138871
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-08.zip",
+      "sha256": "c3b8d9ff137e32f20b2793c4f7f7eed8bfd45648674f051cb51ce9e4ab366044",
+      "bytes": 142759
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-09.zip",
+      "sha256": "b23fd2d1b8d09f8d2b10308539bbc1023b29452f2ff5365fce5bb08b7888072a",
+      "bytes": 138064
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-10.zip",
+      "sha256": "723f3a5297b718ac1ea766933c12042f422ceb43f3dbfb1430e0ea5f55fa1e39",
+      "bytes": 142405
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-11.zip",
+      "sha256": "9442ac3d7c5aba02bfacfe0a35ce05756263e4f462a5a694941f27dfcd76f15d",
+      "bytes": 142846
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2020-12.zip",
+      "sha256": "c824e54aec2b63ace61d29166fcf12ac15729021b13bd1b5355f3825ecb50523",
+      "bytes": 147987
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-01.zip",
+      "sha256": "3aa4530f2afd42d8cae441d2634e81a6d733a49fd33970c705afee325e4aee2c",
+      "bytes": 152367
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-02.zip",
+      "sha256": "f0c941a7ecf452a3448e4a8951948518dd47e51ad7158629d5efcf410431939f",
+      "bytes": 137417
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-03.zip",
+      "sha256": "d1c4cfa8137848dc3373753f8d0437eddf8db43b0e835efbc4a6da3af6935286",
+      "bytes": 152137
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-04.zip",
+      "sha256": "124fab2a0fe7525a5e7b2a1dbb2b776ce12e6003770dd930a10bbd56db4cdc79",
+      "bytes": 146457
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-05.zip",
+      "sha256": "f7ef372e125f87339f45fffaa329ea386d9e8be74998577fd75f807a90abae16",
+      "bytes": 154209
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-06.zip",
+      "sha256": "9853eae293ad9c5b4a1395fe6d5e6257bfd2ff27433c4ef00b0169b54853b7a2",
+      "bytes": 148508
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-07.zip",
+      "sha256": "86ef554b5c3c392cff96180db24268d9273905f3e8c2ed4d5e63904b0d798096",
+      "bytes": 151061
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-08.zip",
+      "sha256": "f6e0c79d84839f34de1c41993624b76b1c738101cf39622d31c926300681fc5a",
+      "bytes": 151593
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-09.zip",
+      "sha256": "5c74e804831937235287f424a0c34eddf525b3a366249037a34288c69b2cc6ed",
+      "bytes": 146664
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-10.zip",
+      "sha256": "6fbc1ced80b2d5b722114394ce145bfe4fbc40ad233b2ec0316d3bd45b8abcaa",
+      "bytes": 151726
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-11.zip",
+      "sha256": "8c3170955683fc914da107d67d8ebde0cda6f3a6250e9b4b5f6ceb94f5593712",
+      "bytes": 146206
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2021-12.zip",
+      "sha256": "a216bab60744f399e55561df822644029178827b352d1878fd6116082f70273d",
+      "bytes": 151429
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-01.zip",
+      "sha256": "46e0bc4607df992e4de6a6e76e2bf60b3a19db2b11f7b07d4a4bac4e26c6c35d",
+      "bytes": 151020
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-02.zip",
+      "sha256": "7b615ec48c6bc9f4a723e08d9990136554406640055c2fd084e0c0b63d405d74",
+      "bytes": 135101
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-03.zip",
+      "sha256": "2ddcc24fbcf2661020a218f2251b1cb3af03bf32633efed028c0d0921468cafe",
+      "bytes": 146333
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-04.zip",
+      "sha256": "911e220f50a2a1798d35b31fce321cc4e61932a0a370c9e6837c27ff4dd8f0a8",
+      "bytes": 140454
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-05.zip",
+      "sha256": "31a46b1ac257f1690e6b16c606b2fde22aebf2d605047943d885bf28fe813389",
+      "bytes": 146513
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-06.zip",
+      "sha256": "7115895dc1e8425ee5ecedb18258e293decfc7769213362d928c42a29d8b6127",
+      "bytes": 141973
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-07.zip",
+      "sha256": "6cd98667f9b7a127a413bd061103800f2707921a9a231e18f47d71816ef86ac8",
+      "bytes": 145550
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-08.zip",
+      "sha256": "517e241a31c2062c50ca9861eb832fa9b3505b0ae67350135d5a74d812228eab",
+      "bytes": 143927
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-09.zip",
+      "sha256": "776bd8021ee4b7dd8dd6530bd8b0d4f4a3287df2a72810f5dcb26e35714c8903",
+      "bytes": 139666
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-10.zip",
+      "sha256": "bff25dbfad92e9c551ab77b6411e29462dbde298636144041a775330a126cd1b",
+      "bytes": 141497
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-11.zip",
+      "sha256": "7f74daa2a5f1631e5b60d0dd035dfb60c0d8e5f0105820484fde8b8914d07986",
+      "bytes": 137846
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2022-12.zip",
+      "sha256": "acf8b92a5cea478f7c32ab863b977836f629d4ff3373d20bb2b15673b57b87ae",
+      "bytes": 137311
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-01.zip",
+      "sha256": "7d9c643f940a65eaae7f8618a5f997ada493076a5f91b02bdd77b559d2ab2514",
+      "bytes": 140488
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-02.zip",
+      "sha256": "3d2bf498800e0526d9e7503d8f20f7dbd4fd1908e90570053a7ec5803b31118e",
+      "bytes": 129016
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-03.zip",
+      "sha256": "843bdaf3f134e74e6f0efecf46dbd92952c61b9d57c6ce8b556392d81526ec48",
+      "bytes": 144941
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-04.zip",
+      "sha256": "4a9416010259d5219c25ba8d29eac0928ecf6876fc4d6cc751228110e97f5138",
+      "bytes": 138552
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-05.zip",
+      "sha256": "f584af353ef1a3bef7f45aa17d8826c622d04a2a817fe0c6289e37b933959b54",
+      "bytes": 142660
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-06.zip",
+      "sha256": "8fb734f8a60a161b2f17b5458ed3659017a61d2a5dd24d2d810243ce1f621032",
+      "bytes": 138330
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-07.zip",
+      "sha256": "c8df4ff96d804f2f57e51049bf94c11bf8bfa2f9333c0af29ab8f2504471966d",
+      "bytes": 140229
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-08.zip",
+      "sha256": "8ba91ecc5bf5573c3840a2f22f4b0b6d307fc659a9e11df3c3a6e7bcf332150f",
+      "bytes": 138936
+    },
+    {
+      "path": "cache/binance/um/klines/BTCUSDT/15m/monthly/BTCUSDT-15m-2023-09.zip",
+      "sha256": "f1f628bb4b1976ba632150bf999fde302ddcfc8899ff369a5119bdd5dba1e0d5",
+      "bytes": 134048
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-01.zip",
+      "sha256": "7f81b2f3694d13779e7e896b69d60cd61e9444d7b9f9e90df761935e1c1b76e2",
+      "bytes": 825
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-02.zip",
+      "sha256": "6599466d108d120c64a078824326c063ed2d4335b3292e52c5e572f79166533a",
+      "bytes": 885
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-03.zip",
+      "sha256": "eee845fde6336e29d25889563cba3d2cff2d4d640e51fb1f82ae9b28cedaee77",
+      "bytes": 928
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-04.zip",
+      "sha256": "d009ce034d08c3dcf3e7f874b0f8b0ec76ba507bc6bb4e007e541df537bafbce",
+      "bytes": 867
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-05.zip",
+      "sha256": "3f2b56dd6b9a42457009bb367d0adadd3cf7e2216cd325172d0089e3883125a8",
+      "bytes": 839
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-06.zip",
+      "sha256": "30b3470ff98576578973d75e3c157a5cbf1778b11e4c26b4b4ff70a3cbb348ec",
+      "bytes": 791
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-07.zip",
+      "sha256": "18dae7b11075fc0fba79ad47df46683415cba5d027caa69c66bc2a5c9d9b459a",
+      "bytes": 712
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-08.zip",
+      "sha256": "e6f6d1749f674c85d4766e0eb36af6ea40d91a0674234d30df80eb9876b094e3",
+      "bytes": 854
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-09.zip",
+      "sha256": "7ae9a3b6afb2dc06e46080582908ec8c27063b707a14c7f1e679dc991ff48032",
+      "bytes": 838
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-10.zip",
+      "sha256": "4c55b191c101f39c7fb193a6529665dd9e83302ca21876521e4c93b3902e9fb1",
+      "bytes": 828
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-11.zip",
+      "sha256": "676356a2d075caa51b4f8ada026e9430dc320ffd23d2343b13b7aa25324ed6d1",
+      "bytes": 854
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2020-12.zip",
+      "sha256": "d7390f90edf54cc4ad9bbe78e2f6b291ae06ad9539f591a2d0fce445873bbd63",
+      "bytes": 852
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-01.zip",
+      "sha256": "cff916dc4b638ec3de97828e8911cd91cf7d7a3d0836ec0175869c374e66823d",
+      "bytes": 981
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-02.zip",
+      "sha256": "819a7b107443686adb313fc5fc223302a29f3981e1d1bd9828ad0ade65a8a8af",
+      "bytes": 956
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-03.zip",
+      "sha256": "2125fd300848938c7b992b8f7b7b5007d5b277a4ff1ebda7da083b40242729da",
+      "bytes": 918
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-04.zip",
+      "sha256": "9cd888e3b0a1954813d0062c2e60426fdc8e34a7f258f6838371ec67f535b028",
+      "bytes": 914
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-05.zip",
+      "sha256": "ed934afb9cf84df6ecae742e755147333a84244836a66b51523abc66dd5f63af",
+      "bytes": 960
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-06.zip",
+      "sha256": "7b8d9bfb8816636b800764dafb2aa2307d19166c695bfa245adbf7d01d61f766",
+      "bytes": 883
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-07.zip",
+      "sha256": "8ab3df641d3bcf40527491f8e26d046ad2b662d1950ead9555ad32975571b7fe",
+      "bytes": 973
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-08.zip",
+      "sha256": "7eb681cc45b94176f4b9192a62c3a1925d79031ba001cea2d8dec6ff6e5b9c35",
+      "bytes": 781
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-09.zip",
+      "sha256": "03f25a7c25eef18d5f5b5b7bb0b664cab7a210b409f37e95a54e141808a0752d",
+      "bytes": 828
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-10.zip",
+      "sha256": "f25820d6add687addbca3ef43bee58f70853a6da53832a0c1bc22d00dc8ec64a",
+      "bytes": 951
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-11.zip",
+      "sha256": "e2e6b2d7218607e7e4a38137d50f553c2cfb901275c19edf567024c1cc6de85f",
+      "bytes": 919
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2021-12.zip",
+      "sha256": "bf3ce484faf41d7dccfd38c5cc3d8de34d8297df30ab10784e874cc10fd1b310",
+      "bytes": 815
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-01.zip",
+      "sha256": "22ee19079b620f5c6d820e7d7f8bafa7fde866d89bd664863b8bd527749c12cb",
+      "bytes": 906
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-02.zip",
+      "sha256": "fa95088258a905c79ab79e8984d2f6f66933ec2e814dbab4ef9da89b01ab484a",
+      "bytes": 890
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-03.zip",
+      "sha256": "4cf0883bc07f4ed4cdd3b0d8c0d166b4d15d21e666ab752f9f44401af4d6172f",
+      "bytes": 904
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-04.zip",
+      "sha256": "57e2776cc68b3169fc9f8632dad67278f470cd453407a8ebe6c87963c8a31357",
+      "bytes": 926
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-05.zip",
+      "sha256": "bced8a5013d09742b96682e6fd01ad4456213515a03d7586ec2b1f2689af5255",
+      "bytes": 915
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-06.zip",
+      "sha256": "0cd0708f8903829eb46f98cf60f4b2516c986e1ccddf6620a5912b48e16baf93",
+      "bytes": 966
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-07.zip",
+      "sha256": "29d58cce0cd45f74c6a112039835c6d9ee5a7e60e7c38c2503beb7930453a4fe",
+      "bytes": 917
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-08.zip",
+      "sha256": "6f4f0c6c84c05694b4b4a5c085776730fd4059723eecd98ee6ffeb3fde4da811",
+      "bytes": 997
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-09.zip",
+      "sha256": "d62cd4e13009de37add446dc4f63ead4c56dcc4955a1e60f6726bcadc5a68fa9",
+      "bytes": 960
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-10.zip",
+      "sha256": "ad9efed10d4ca1567b865d7a158790977cec1b925395634217069df6696c8bc9",
+      "bytes": 950
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-11.zip",
+      "sha256": "8febe5bec1a029e993bbf27490761f8c47c32849bf7dd13441b2b2f6ec1ffb51",
+      "bytes": 1000
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2022-12.zip",
+      "sha256": "4218c78331bcc4dbeb5768fa112242a880971c1f2cfd1d3f32aaa26ca34069af",
+      "bytes": 982
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-01.zip",
+      "sha256": "05e3df32f28d0d50f4c5a280adee9368b4a66fc68c6ddca1b3277087ac0d19f5",
+      "bytes": 863
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-02.zip",
+      "sha256": "5227accd9aaa59f71f5e682abffb58be5f99573ed208ab968b1704c81ac11345",
+      "bytes": 808
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-03.zip",
+      "sha256": "ab022adff9b853d2f33cf80154e77c770f57c3392f0bbc36564b2e2cdbd0e872",
+      "bytes": 956
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-04.zip",
+      "sha256": "2931039d26818edc65d4faefba84945fd1ba52989dd58fb127dc3cd7a12c7fbf",
+      "bytes": 952
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-05.zip",
+      "sha256": "5d026fece46df86293054c8c56c2c8de575d30161b82979b11831831217a246e",
+      "bytes": 983
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-06.zip",
+      "sha256": "3ffdde6f1dc9c3c065d77ae43f3ba64d19d4cb76512d4bc1d541933d4fb2e6f7",
+      "bytes": 845
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-07.zip",
+      "sha256": "0304baed9fd407293a8a8040b30a1b68bd344803b630d33530375b421733a930",
+      "bytes": 861
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-08.zip",
+      "sha256": "516a8f50631c6ede6a9642f6d1590b6a22c33ba09935501d2ace8dc1396501fd",
+      "bytes": 846
+    },
+    {
+      "path": "cache/binance/um/funding/BTCUSDT/monthly/BTCUSDT-fundingRate-2023-09.zip",
+      "sha256": "3fd9df6fd1eef33cf5fe625c27012359bc6d64a68c109305d7b44a0354f533c2",
+      "bytes": 914
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-01.zip",
+      "sha256": "be850bcde4421807ca925375f9f529a94e132be473382202f57ea49ff124c8d6",
+      "bytes": 127343
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-02.zip",
+      "sha256": "1ee452ca7e0874b3170e7e170c39516da1b4cbbc7760a715733fd47fcc79187c",
+      "bytes": 124867
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-03.zip",
+      "sha256": "5c16b4231cc0366d246b60c4daafc3c7fc7127aed43a7401b7b4743d1898f505",
+      "bytes": 133674
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-04.zip",
+      "sha256": "4fd06af73bdabdf6eb668dc738550a337cb8647a0c7c60b586abb39a9e3ba6ac",
+      "bytes": 128736
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-05.zip",
+      "sha256": "7095867a2ea3a9123469ec2bb13ea4865b7b092f6f2edf6c67c8a406852c1607",
+      "bytes": 132618
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-06.zip",
+      "sha256": "6e91d9437b28a7f6e47b43ccace4377456ca6cf75164affbbf1b5f33687f630b",
+      "bytes": 126296
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-07.zip",
+      "sha256": "323cdc8f50a1822c421d15f715d9d514d513c2c4ec479d4f656228b2e0f3944e",
+      "bytes": 131141
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-08.zip",
+      "sha256": "817d409f95802453bb62d34cb3a76475d863695429b3f62304a47dc858dacb98",
+      "bytes": 136505
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-09.zip",
+      "sha256": "44cb7ac27035e1abbfb0877d7a32e707c8bc9b1e8c5c31e4efed45007db8715a",
+      "bytes": 132883
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-10.zip",
+      "sha256": "9c65599b32eb9439f6ee80dcc052c111c9d1eea2fc64f858a2b78d47a516b62c",
+      "bytes": 134372
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-11.zip",
+      "sha256": "3d5347a1174a5f641220d589877a1104241eadac7ee4a459a6b6b269329961ec",
+      "bytes": 135543
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2020-12.zip",
+      "sha256": "5790ffe90d9808ed526b274f78f3534f7516f38d2dab69184a4d26f0846dab4a",
+      "bytes": 140403
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-01.zip",
+      "sha256": "8949195778e2b05370e9082dc60c8f7a9c83631252eb9491c3c3c84b07c0bec7",
+      "bytes": 147930
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-02.zip",
+      "sha256": "779cc2fbd39b028049c038233b9d3c1fcfa41ea9d1c9883f33dbf7ccc3dbc847",
+      "bytes": 132702
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-03.zip",
+      "sha256": "26b21140c3dc70d0df78db60ca98ab1be8d5a874eefc74c72b037f720167d0c4",
+      "bytes": 145442
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-04.zip",
+      "sha256": "60b7d0bfbed9bf1bbf9554dcf08f9c676740ef7161fddcc0fa408846a8072878",
+      "bytes": 142562
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-05.zip",
+      "sha256": "77c8ca3914321c8e59c34ba7d23a3c7d63f5e83c219e55c767ce9953022dcbf2",
+      "bytes": 151239
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-06.zip",
+      "sha256": "913546ade2f9425e89989e839ca3d3d14ac29838eb83e2fc735ea2438e2eb141",
+      "bytes": 144396
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-07.zip",
+      "sha256": "c5c52ba14f8964e3669c7c147358981b2d31e0b7982b0567f1ffc24ec857831d",
+      "bytes": 147576
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-08.zip",
+      "sha256": "95981cb8a9dda8d51be3a0d323d8d89ee4410f6e4ee3ea74e41d54b8152770b0",
+      "bytes": 148269
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-09.zip",
+      "sha256": "7e9db70488fe7324c7c58a905638bf81437f11c61018238190ca6723a828e9e9",
+      "bytes": 143558
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-10.zip",
+      "sha256": "755a29a1a30d7c18f6932a5ceb16288a61968fb2e1ada5611b58c5aad46947da",
+      "bytes": 147264
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-11.zip",
+      "sha256": "016ce492025483e69485963f4d503ef0b04b7d961f2c89f2fd455d6bb15169fc",
+      "bytes": 142393
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2021-12.zip",
+      "sha256": "88eda6c9262c4322022ed9017232756e9ba0aca6a3d4d34c23850da6f241812d",
+      "bytes": 147346
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-01.zip",
+      "sha256": "f34e867abd33f17c4c9722338d1e6098da86ceb1ed7e68da704de4a1a6fc0b62",
+      "bytes": 146670
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-02.zip",
+      "sha256": "c4e6259d3d5bab4e1d2349c42d6ac0af6514237b55683a36364672b9be5ec77e",
+      "bytes": 133502
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-03.zip",
+      "sha256": "763c04742dd6d47f2c01b3215bededcf606c07e7df0af78c341fe9590c5d7d65",
+      "bytes": 145963
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-04.zip",
+      "sha256": "cbab8ad431d7c56272aee8eb21be74c33933e63aebeb45fdc0a51d71e3342a29",
+      "bytes": 140578
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-05.zip",
+      "sha256": "89f651e2e396166ab54a66e53fab3061eb82f7c1bdd33352752c9956da586aae",
+      "bytes": 146729
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-06.zip",
+      "sha256": "14a2d341f726acda252f3cd17b20a21bc75b8566fe5a4d060afbc3c763922dd6",
+      "bytes": 143420
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-07.zip",
+      "sha256": "c248a49cae33740d26b9ba7f3828630fdf0428ad36c68c8752c276e11f4146d0",
+      "bytes": 148525
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-08.zip",
+      "sha256": "6a9e64b652806493ec753eec55780cad6420e8fd0daf007778641368d1d4ccc9",
+      "bytes": 149065
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-09.zip",
+      "sha256": "e3c24622eff11720bd241a37a09eee904424d5f095bed163803faaec1f8094b5",
+      "bytes": 143819
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-10.zip",
+      "sha256": "8406a50b9db5e1b2c2753e8496372f9199193041c698aea959faf40e7786fcba",
+      "bytes": 145390
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-11.zip",
+      "sha256": "353bbe11f3aa0dbcd0772c78232e2ec104b02d105ea4173e1f619eed943b5971",
+      "bytes": 142474
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2022-12.zip",
+      "sha256": "d311ac52d3a542b126e1b6574498609c32c5f0adf566d9f6a5b69c0b72f5a059",
+      "bytes": 142432
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-01.zip",
+      "sha256": "4b94b8078f553d56986966a816ab1888b57f1c4ac4be9385aa8eb4a0f5d0b5bf",
+      "bytes": 144355
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-02.zip",
+      "sha256": "181f161c13de3e1918f987845d0d7a3e698634d98e5ca83d2a46baaa8602feba",
+      "bytes": 131348
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-03.zip",
+      "sha256": "1402dfca8c6b948335ab7500cae23093e734a112c11474fab8f10bc93bdc07e9",
+      "bytes": 146259
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-04.zip",
+      "sha256": "55fc2dcc0749ab4b21d12aa9f8d08148a148dc520fc0cf430409189ade9d26c1",
+      "bytes": 140454
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-05.zip",
+      "sha256": "3b28964792ad73c04a2c95a40704b426b1ebb2d90e215531406d7b029f6b5c3c",
+      "bytes": 143791
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-06.zip",
+      "sha256": "14cf1b27bb9325e34df4dd0cb2d2b05ae63a6d5706dbf5e0cb6b8f7e92e4cbe9",
+      "bytes": 139195
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-07.zip",
+      "sha256": "7a9c96acb0a88270fd79f7ac5b154ba34467d33c600bec63438bbefaf13e1660",
+      "bytes": 141673
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-08.zip",
+      "sha256": "b8e1882d9bf4ca6755794b20e8631fe2f030a05e252d0c94d14d4f0638aa33bf",
+      "bytes": 139636
+    },
+    {
+      "path": "cache/binance/um/klines/ETHUSDT/15m/monthly/ETHUSDT-15m-2023-09.zip",
+      "sha256": "a4f6804bd2edb66ff385d70a029a52447e68f31d94cccc803aafe34bb537d8ce",
+      "bytes": 135001
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-01.zip",
+      "sha256": "0ce8da3b2ee7eceb6616efa215a2a1b1aab7b5b04becebe73634a95ec0abfa90",
+      "bytes": 795
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-02.zip",
+      "sha256": "5a1de843dc3f098e86ca3c0979b38591d57d18664a1079588e61def93224fa06",
+      "bytes": 911
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-03.zip",
+      "sha256": "0b9edb31ec6aedad0248d54e89b7ea5ff3cc4ab719519751db3de334caf54303",
+      "bytes": 785
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-04.zip",
+      "sha256": "ce2208113358208182eaae41971fb5762e1794a04b4a606368416d08eea2d41b",
+      "bytes": 698
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-05.zip",
+      "sha256": "77f5790ae26f95caee52b58317ee65d13b0eeb61f73d83482fd5d3aa153ab300",
+      "bytes": 769
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-06.zip",
+      "sha256": "2e6af078edbe3e0df30d12d0d381652949572ce514222a257efe1f4eb145dae0",
+      "bytes": 700
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-07.zip",
+      "sha256": "1983ad90e1d1f98eefd2c23b9eb209d26e4e2efba2f4e8b5e662e8a7d563bc56",
+      "bytes": 774
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-08.zip",
+      "sha256": "d4e766270a078741387ba564103d285ad9a2c05c7e6df9ad0b03619248bb041f",
+      "bytes": 918
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-09.zip",
+      "sha256": "cdee5c299c22dda85a5d5449e19250f7bc66c0d52759f9de0a49cc233520510d",
+      "bytes": 807
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-10.zip",
+      "sha256": "47749a38b41b185d786af96bf41c796edf8ea517cf76d6d61402974c629e0239",
+      "bytes": 852
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-11.zip",
+      "sha256": "9b02376eaa04be4ec2e201b492ef2a3c34dc61542492c715b5cea5dec5f01d36",
+      "bytes": 889
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2020-12.zip",
+      "sha256": "f99267a3fef35dd201e76c8338be877fb52883376b4cd0acb890a1387de0b0d4",
+      "bytes": 901
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-01.zip",
+      "sha256": "4c18c1df8904dea9770aeba5326d26b3fa9a3ffac4891f5f7125d4be2da847c0",
+      "bytes": 1017
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-02.zip",
+      "sha256": "15e9a939f253a11fc1af2858bb3844f3d39019ccf7efa66a9456f0f60afba3dd",
+      "bytes": 950
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-03.zip",
+      "sha256": "2bcaadc8206cb8d76a26f0f3cbf97020b747545b0e75c3dd8a3b195b435478a5",
+      "bytes": 997
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-04.zip",
+      "sha256": "2fee34e8b9b6e828d01bab0df1c67104f7a98f3c063668c8db627b802ffa5a95",
+      "bytes": 954
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-05.zip",
+      "sha256": "21809ef6691a1441bd55ba4af4494a038d1a399ae0ae432e80cb41b47d71f3bd",
+      "bytes": 913
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-06.zip",
+      "sha256": "8e58ccf8f52c69c55754492daafadab92d4ca8c8bd027f4532582d06e9f36063",
+      "bytes": 827
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-07.zip",
+      "sha256": "f8f538bedf642052e428cd25f3134784de6e62a136e76f6a07ea6e79dfc9c39d",
+      "bytes": 892
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-08.zip",
+      "sha256": "0120b284bde23d077e1e26e5e4b56fd3e2d1d82a3a7fe0e9de26825b9fc9c0db",
+      "bytes": 857
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-09.zip",
+      "sha256": "4b4a94cdafbb8fea7762c266aa79b183700b7c9dcf7e981f7fdbe9372f2eec66",
+      "bytes": 826
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-10.zip",
+      "sha256": "4dfb8698f6951b2c66229e1c687977eae0778bb703d6268232da2ceb3e9b5e6d",
+      "bytes": 935
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-11.zip",
+      "sha256": "d9a7e22a237717f23d4b0505f14613359b7ea7831b23a78653a891cbbe3d521c",
+      "bytes": 838
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2021-12.zip",
+      "sha256": "788d5c57e7cbc8e6b94ed4d7672618a85311edf1d7f0888083410d0d3389d811",
+      "bytes": 806
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-01.zip",
+      "sha256": "9f5bd01450b05a8c5e48cdc99fa147e85c82ecf7ee7919fa543a4e6039a2b98d",
+      "bytes": 950
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-02.zip",
+      "sha256": "9c35e30327ac8915cc1333415b7d5018425781c81918e349d26b734525fcdfe5",
+      "bytes": 898
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-03.zip",
+      "sha256": "3de0714a2b2582029b32147815298b6e67e972e776ca3f68a4208823b4109404",
+      "bytes": 866
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-04.zip",
+      "sha256": "7c306ac8b6275a857b064916080e0b6ec502b25a4501c84c3fd2c0b077425de3",
+      "bytes": 941
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-05.zip",
+      "sha256": "c458330243c9d8e048ffc7168c9e3c077c01bb82b1644097a4893fee34069b78",
+      "bytes": 972
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-06.zip",
+      "sha256": "f6f3a69b656b91500b41501a230e663ccc3c1a65f46273595b00682d8f6fabb1",
+      "bytes": 980
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-07.zip",
+      "sha256": "17826e5591af8660a7fed74d60e24eee77c822cf0d901dd8af355a10a36699aa",
+      "bytes": 953
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-08.zip",
+      "sha256": "a2680549de5e087566f4d323b3a812c2b9863528c6bc49b0e551cb42c381bb4d",
+      "bytes": 1000
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-09.zip",
+      "sha256": "816e4de946d9f854cc457c86ca396b9cb49b46e80cf44941b59b9ad2124f2ef8",
+      "bytes": 1016
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-10.zip",
+      "sha256": "e434c29eb544cc57ff574e38685535bb7d04703aee54bc5d52f53cea372810e6",
+      "bytes": 1004
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-11.zip",
+      "sha256": "4f4e52f176f69e99353959d287874a4d4a135b5bb4ea85514dd5a3e65958b2d7",
+      "bytes": 987
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2022-12.zip",
+      "sha256": "8cd0e885d63b85ee602d80eaae956f9ee3e0e25db264eb5c74026a9ae0d71f4e",
+      "bytes": 964
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-01.zip",
+      "sha256": "5647d5978092d220eb14e11c7854d86815d0eb6204197e37b4808cc599e986f3",
+      "bytes": 819
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-02.zip",
+      "sha256": "7da37820c15fb08600ae668551d0b724326b8f71d761582990721059280a221b",
+      "bytes": 821
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-03.zip",
+      "sha256": "5110b60cbbc5f26048ce02575c26444ea2ed497baed9a5609e118359e1ca3b51",
+      "bytes": 963
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-04.zip",
+      "sha256": "fa3a3cf7c3b8285687ae8c8014eed8bc58ad3ceb33ccb62ff4298048213c0e6c",
+      "bytes": 945
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-05.zip",
+      "sha256": "bf890ea68d979942ed296b058390eb98b0b495547fee2117d3b76d5e7f629b24",
+      "bytes": 990
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-06.zip",
+      "sha256": "b3ddac1309f9a684f4e811776a6c09fb2239bb8d1ae0ff4bd342a1c32a5e171f",
+      "bytes": 888
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-07.zip",
+      "sha256": "82577976d8acd886fda84179ee38c9e7ef445732c3b6a062d6ffd2a9e3cc30bf",
+      "bytes": 861
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-08.zip",
+      "sha256": "cf749429c366cef3302a804b3e702937e5f1a77aeddc5b628dca7da547a8935a",
+      "bytes": 897
+    },
+    {
+      "path": "cache/binance/um/funding/ETHUSDT/monthly/ETHUSDT-fundingRate-2023-09.zip",
+      "sha256": "41ac7eb67a46d14d97daec4c37e8229df5ac6b165639ad4b2c54bc7374930341",
+      "bytes": 902
+    }
+  ],
+  "prior_use_audit": "仓库内 2024 年以前的使用记录只检索到 2023-10 之后：strategy_validation 的 2023-12/2024-01 冒烟测试、T28 的 2023-11 预热、金丹 V3 的 2023-11 起预热。本数据在 2023-09-30 结束，与该边界不重叠。"
+}

@@ -1,0 +1,35 @@
+{
+  "project": "CHAN3_V1",
+  "created_at_utc": "2026-10-29T16:38:51.729079+00:00",
+  "freeze": {
+    "project": "CHAN3_V1",
+    "created_at_utc": "2026-10-29T16:38:46.832190+00:00",
+    "git_commit": "560587509e41d23df4cca62acbcce03dad4ea734",
+    "python": "3.12.13 (main, Jun 23 2026, 15:44:24) [Clang 22.1.3 ]",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "protocol_status": "FROZEN_BEFORE_RESULTS",
+    "one_shot": true,
+    "hashes": {
+      "PROJECT.md": "d940bf26f574446648a982d5493757dcca0991144fbef4e7b5b11007342c11df",
+      "protocol.json": "fe6a2433d3a34822de7af4cd0a30649929f4c76524e55bb63dd9fc499a7c8528",
+      "chan3.py": "4906e7ef7623ed321aac8f460a6c07234f9141ef7fc0627718a4b420f716e4b3",
+      "test_chan3.py": "413720521c4640e687c99fa5a616bcc74205184458e239e7c5aadc4b0da2dbc0",
+      "prepare_data.py": "00565926171cbc5d4ce6e2c87f5c20b5172fefcedf235ef55837ade4d14c3506",
+      "run_study.py": "f553d2c18bf1bd9f2013a798e2c3238910bae9eb0d8ddd23d95614f0fe3795c7",
+      "data_manifest.json": "1a035fafe341501d225b1cbc62d6d88473dc751125761520638fbaa6ead4cfda"
+    }
+  },
+  "data_manifest_sha256": "1a035fafe341501d225b1cbc62d6d88473dc751125761520638fbaa6ead4cfda",
+  "result_hashes": {
+    "signals.csv": "917b39ff2e01d616598cc19c7d1f2032f618805f283de6940a19ab5db9e7f123",
+    "trades.csv": "69cb3d404cbc27d7c89c61a8935b950dc3db2e1098822e1edaf99ec5696a8ac1",
+    "equity.csv": "1dacf9a1b94d517eabb0768f27805916b72d33c50c9293e602873a2865b61f80",
+    "summary.json": "b01f138264a7b9bd16cf2ab96652b799e3114496cd2c960293ae28c51d749445",
+    "bootstrap.json": "b1d89994304ce2af9c5f77f2264b65b4abab918a53d91e1f562a0741351bfa1e"
+  },
+  "report_sha256": "19db64fef5072339ce085df1eac9fc7310643ef2f465adef40f3476d764622e9",
+  "runtime": {
+    "python": "3.12.13 (main, Jun 23 2026, 15:44:24) [Clang 22.1.3 ]",
+    "platform": "macOS-26.6.2-arm64-arm-64bit"
+  }
+}
