@@ -57,8 +57,8 @@ test("server-renders the 炼气 strategy terminal", async () => {
   assert.match(html, /炼气/);
   assert.match(html, /实时策略监控/);
   assert.match(html, /总览/);
-  for (const label of ["行情与信号", "模拟交易", "策略研究", "金丹v1.0", "运行状态"]) assert.ok(html.includes(label));
-  assert.equal((html.match(/class="nav-button(?: active)?"/g)||[]).length, 6);
+  for (const label of ["行情与信号", "形态观察", "模拟交易", "策略研究", "金丹v1.0", "运行状态"]) assert.ok(html.includes(label));
+  assert.equal((html.match(/class="nav-button(?: active)?"/g)||[]).length, 7);
   assert.match(html, /模拟跟踪/);
   assert.match(html, /最近信号与模拟退出/);
   assert.match(html, /信号模拟记录，不提交订单/);

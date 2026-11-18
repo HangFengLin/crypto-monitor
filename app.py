@@ -18,17 +18,19 @@ from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import feishu_notifications
 from api_payloads import PayloadDetail, project_paper_trades, project_state
 from automatic_notifications import MODULE_FAULT_LABELS, Outbox, SenderLease
 from config import ENV_FILE, config_value, load_config, load_env_file
 from data_client import (
+    BINANCE_USDM_KLINES_URL,
     async_fetch_binance_usdm_point_quote,
     async_fetch_funding_rate,
     async_fetch_klines,
     async_fetch_tickers,
+    async_read_json_url,
     close_http_session,
     fetch_binance_spot_symbols,
     fetch_funding_rate,
@@ -43,6 +45,8 @@ from jindan_web import register_jindan_routes
 from monitor_faults import FaultTracker
 from observation_support import advance_support
 from paper_universe import PaperUniverse
+from pattern_runtime import INTERVALS as PATTERN_INTERVALS
+from pattern_runtime import PatternHistoryRevision, PatternRuntime
 from position_manager import (
     LEGACY_RATIO_V1,
     LINEAR_USDM_V1,
@@ -98,6 +102,7 @@ except ModuleNotFoundError:
 
 
 automatic_notification_status = {"enabled": False, "running": False, "pending": 0, "error": None}
+PATTERN_RUNTIME: PatternRuntime | None = None
 NOTIFICATION_OBSERVATION_INTERVAL_S = 0.5
 NOTIFICATION_MIN_SEND_INTERVAL_S = 0.7
 
@@ -370,6 +375,9 @@ def code_fingerprint() -> str:
             "monitor_faults.py",
             "paper_universe.py",
             "strategy_universe.py",
+            "pattern_observer.py",
+            "pattern_runtime.py",
+            "pattern_validation.py",
         ),
     )
 
@@ -1003,12 +1011,14 @@ def restore_observation_checkpoint(events: list[dict[str, Any]]) -> None:
                     indicator_keys[key] = event["event_key"]
         committed = {event.get("event_key", "").removeprefix("observation-round:")
                      for event in events if event.get("type") == "observation_batch"}
-        rounds = {item["id"]: item for item in pending}
+        # A batch is appended before the checkpoint removes its pending round.
+        # If the process stopped between those writes, the journal is authoritative.
+        rounds = {item["id"]: item for item in pending if item["id"] not in committed}
         for event in events:
             round_id = event.get("observation_round_id")
             if (not isinstance(round_id, str) or event.get("type") not in {"support", "indicator"}
                     or not event.get("symbol") or not event.get("event_key")
-                    or (round_id in committed and round_id not in rounds)):
+                    or round_id in committed):
                 continue
             # The raw append may have survived an interruption before the next
             # checkpoint. Recover that journal tail before suppressing raw sends.
@@ -1432,7 +1442,8 @@ def calculate_strategy_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     return_models: dict[str, int] = {}
     for trade in trades:
-        model = str(trade["return_model"]) if "return_model" in trade else LEGACY_RATIO_V1
+        model = trade.get("return_model", LEGACY_RATIO_V1)
+        model = "null" if model is None else str(model)
         grouped.setdefault(model, []).append(trade)
         if trade.get("status") == "closed":
             return_models[model] = return_models.get(model, 0) + 1
@@ -2615,6 +2626,7 @@ async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
             state.observation_round = {"id": uuid.uuid4().hex, "created_at": time.time(), "events": []}
         symbols = sorted({item["symbol"] for item in watchlist} | set(HOURLY_SUMMARY_SYMBOLS) | tracked_symbols)
         observation_complete = False
+        paper_data_pending = bool(tracked_symbols)
         try:
             prices = await async_fetch_tickers(symbols)
             with state_lock:
@@ -2622,6 +2634,7 @@ async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
                 state.updated_at = time.time()
                 state.last_error = None
             await update_strategy_trades_with_prices_async(prices)
+            paper_data_pending = False
             await evaluate_support_alerts_async(watchlist, prices)
             await evaluate_chanlun_signals_async(watchlist)
             await evaluate_indicator_signals_async(watchlist)
@@ -2645,7 +2658,7 @@ async def monitor_loop_async(stop_event: asyncio.Event | None = None) -> None:
         ) as exc:
             with state_lock:
                 state.last_error = str(exc) or f"行情监控异常（{type(exc).__name__}）"
-                if tracked_symbols:
+                if paper_data_pending:
                     state.module_errors["paper_data"] = f"本轮持仓行情未完成更新（{type(exc).__name__}）"
                     state.paper_data_details = [{
                         "symbol": symbol, "kind": "market_unavailable", "error_type": type(exc).__name__,
@@ -2679,6 +2692,119 @@ async def run_monitor_loop(stop_event: asyncio.Event) -> None:
         await monitor_loop_async(stop_event)
     finally:
         await close_http_session()
+
+
+async def fetch_pattern_bars(symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
+    """Keep observation source fixed to public USDT perpetual candles."""
+    query = urlencode({"symbol": symbol, "interval": interval, "limit": limit})
+    rows = await async_read_json_url(f"{BINANCE_USDM_KLINES_URL}?{query}", timeout=8, attempts=2, max_elapsed=15)
+    if not isinstance(rows, list) or any(not isinstance(row, list) or len(row) < 7 for row in rows):
+        raise ValueError("InvalidPatternMarketResponse")
+    return [{"open_time": int(row[0]), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]),
+             "close": float(row[4]), "volume": float(row[5]), "close_time": int(row[6])} for row in rows]
+
+
+def append_pattern_batch(batch: dict[str, Any]) -> bool:
+    for event in batch.get("raw_events", []):
+        key = f"pattern:{event['id']}:{event['stage']}:{event['bar_close_time']}"
+        if not append_event_to_disk({**event, "type": "chart_pattern", "event_key": key,
+                                     "created_at": event["available_at_ms"] / 1000}):
+            return False
+    return append_event_to_disk({key: value for key, value in batch.items() if key != "raw_events"})
+
+
+PATTERN_CLOSE_SETTLE_MS = 5000
+_PATTERN_DATA_ERRORS = {
+    "PatternHistoryRevision", "PatternHistoryGap", "PatternClosedBarNotReady", "NoClosedPatternBars",
+    "InvalidPatternInput", "InvalidPatternMarketResponse", "PatternCheckpointUnavailable",
+    "PatternRecoveryPendingNotifications", "PatternRecoveryWarmupInsufficient", "PatternRecoveryArchiveConflict",
+}
+
+
+def pattern_error_class(error: Exception) -> str:
+    # Keep only our fixed codes: upstream exceptions can contain credentials or request URLs.
+    code = error.args[0] if len(error.args) == 1 else None
+    return code if isinstance(error, ValueError) and isinstance(code, str) and code in _PATTERN_DATA_ERRORS else type(error).__name__
+
+
+async def scan_patterns_once() -> None:
+    runtime = PATTERN_RUNTIME
+    if runtime is None:
+        return
+    with state_lock:
+        symbols = sorted({item["symbol"] for item in state.watchlist})
+    errors = []
+    semaphore = asyncio.Semaphore(4)
+    scan_id = uuid.uuid4().hex
+
+    async def inspect(symbol, interval):
+        async with semaphore:
+            now_ms = int(time.time() * 1000)
+            previous = runtime.last_close(symbol, interval)
+            span = PATTERN_INTERVALS[interval]
+            expected = ((now_ms - PATTERN_CLOSE_SETTLE_MS) // span) * span - 1
+            if previous is not None and previous >= expected:
+                return
+            limit = 240 if previous is None else min(1000, max(3, (expected - previous) // span + 3))
+            try:
+                bars = await fetch_pattern_bars(symbol, interval, limit)
+                # Use the request's cutoff even when the response crosses a close boundary.
+                bars = [bar for bar in bars if bar["close_time"] <= expected]
+                received_at = int(time.time() * 1000)
+                try:
+                    await asyncio.to_thread(runtime.ingest, symbol, interval, bars,
+                                            observed_at_ms=received_at, scan_id=scan_id)
+                except PatternHistoryRevision:
+                    history = await fetch_pattern_bars(symbol, interval, 240)
+                    history = [bar for bar in history if bar["close_time"] <= expected]
+                    received_at = int(time.time() * 1000)
+                    if not history or history[-1]["close_time"] < expected:
+                        raise ValueError("PatternClosedBarNotReady") from None
+                    await asyncio.to_thread(runtime.recover_stream, symbol, interval, history,
+                                            observed_at_ms=received_at)
+                if (runtime.last_close(symbol, interval) or 0) < expected:
+                    raise ValueError("PatternClosedBarNotReady")
+            except recoverable_http_errors() + (RuntimeError, ValueError, TypeError, KeyError, IndexError) as error:
+                errors.append({"symbol": symbol, "interval": interval, "error_class": pattern_error_class(error)})
+
+    await asyncio.gather(*(inspect(symbol, interval) for symbol in symbols for interval in PATTERN_INTERVALS))
+    await asyncio.to_thread(runtime.finalize_scan, scan_id)
+    runtime.record_scan(symbols, errors, now_ms=int(time.time() * 1000))
+    try:
+        await asyncio.to_thread(runtime.drain_notifications, append_pattern_batch)
+    except OSError as error:
+        errors.append({"error_class": type(error).__name__})
+        runtime.record_scan(symbols, errors, now_ms=int(time.time() * 1000))
+    status = runtime.snapshot()
+    with state_lock:
+        classes = sorted({row["error_class"] for row in status["errors"]})
+        if status["status"] == "unavailable":
+            state.module_errors["patterns"] = "形态观察状态不可用"
+        elif classes:
+            if any(code in {"OSError", "PermissionError", "FileNotFoundError", "PatternJournalWriteFailed",
+                            "PatternRecoveryArchiveConflict"}
+                   for code in classes):
+                reason = "形态观察状态或消息保存失败"
+            elif any(code in _PATTERN_DATA_ERRORS for code in classes):
+                reason = "形态观察K线尚未就绪或历史需要恢复"
+            else:
+                reason = "形态观察行情请求或数据处理失败"
+            state.module_errors["patterns"] = f"{reason}（{', '.join(classes)}）"
+        else:
+            state.module_errors["patterns"] = None
+
+
+async def pattern_monitor_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            await scan_patterns_once()
+        except (OSError, ValueError, TypeError, RuntimeError) as error:
+            with state_lock:
+                state.module_errors["patterns"] = f"形态观察暂不可用（{type(error).__name__}）"
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=10)
+        except TimeoutError:
+            pass
 
 
 async def evaluate_chanlun_signals_async(watchlist: list[dict[str, Any]]) -> None:
@@ -3326,6 +3452,7 @@ def create_app():
 
     @asynccontextmanager
     async def lifespan(_app):
+        global PATTERN_RUNTIME
         initialize_state()
         initialize_fault_history()
         monitor_stop_event = asyncio.Event()
@@ -3337,7 +3464,14 @@ def create_app():
             automatic_lease = SenderLease(outbox_path)
             box = Outbox(outbox_path, min_send_interval_s=NOTIFICATION_MIN_SEND_INTERVAL_S)
             box.observe(*automatic_notification_inputs())
-            commit_observation_rounds()
+            recovered_alerts = commit_observation_rounds()
+            for alert in recovered_alerts:
+                try:
+                    await send_alert_notifications_async({"type": "observation_summary", **alert})
+                except Exception as exc:
+                    # Discord must not prevent the independent Feishu worker from starting.
+                    with state_lock:
+                        state.discord_last_error = f"恢复观察提醒发送失败（{type(exc).__name__}）"
             box.observe(*automatic_notification_inputs())
             automatic_task = asyncio.create_task(
                 automatic_notification_loop(monitor_stop_event, box), name="feishu-notifications"
@@ -3346,6 +3480,8 @@ def create_app():
             if automatic_lease:
                 automatic_lease.close()
             automatic_notification_status["error"] = f"通知初始化失败（{type(exc).__name__}）"
+        PATTERN_RUNTIME = PatternRuntime(ROOT / "runtime" / "pattern-observer.json")
+        pattern_task = asyncio.create_task(pattern_monitor_loop(monitor_stop_event), name="pattern-observer")
         monitor_task = asyncio.create_task(run_monitor_loop(monitor_stop_event), name="market-monitor")
         paper_task = asyncio.create_task(paper_universe_loop(monitor_stop_event), name="paper-universe") if PAPER_UNIVERSE_ENABLED else None
         try:
@@ -3353,6 +3489,11 @@ def create_app():
         finally:
             research_jobs.close()
             monitor_stop_event.set()
+            try:
+                await asyncio.wait_for(pattern_task, timeout=20)
+            except TimeoutError:
+                pattern_task.cancel()
+                await asyncio.gather(pattern_task, return_exceptions=True)
             if paper_task:
                 try:
                     await asyncio.wait_for(paper_task, timeout=20)
@@ -3399,6 +3540,16 @@ def create_app():
     @app.get("/api/state")
     async def api_state(detail: PayloadDetail = "full") -> dict[str, Any]:
         return project_state(snapshot(), detail)
+
+    @app.get("/api/patterns")
+    async def api_patterns():
+        payload = PATTERN_RUNTIME.snapshot() if PATTERN_RUNTIME is not None else {
+            "mode": "observation_only", "rule_version": "pattern_observer_v1", "source": "binance_usdm",
+            "status": "starting", "started_at": None, "updated_at": None, "last_scan_at": None,
+            "symbols": [], "intervals": list(PATTERN_INTERVALS), "errors": [], "patterns": [], "events": [],
+            "counts": {"forming": 0, "confirmed": 0, "invalidated": 0, "expired": 0},
+        }
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/diagnostics/faults")
     async def api_fault_diagnostics() -> dict[str, Any]:

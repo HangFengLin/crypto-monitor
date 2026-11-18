@@ -63,11 +63,11 @@ def status():
 
 def send(channel, title, body):
     if channel not in CHANNELS:
-        return {"ok": False, "error": "未知通知渠道", "error_class": "UnknownChannel"}
+        return {"ok": False, "error": "未知通知渠道", "error_class": "UnknownChannel", "feishu_code": None}
     started_at = time.time()
     started_monotonic = time.monotonic()
     result = {"ok": False, "sent_at": started_at, "attempt_started_at": started_at,
-              "accepted_at": None, "failed_at": None, "error_class": None}
+              "accepted_at": None, "failed_at": None, "error_class": None, "feishu_code": None}
     try:
         url = webhook(channel)
         if not valid_webhook(url):
@@ -83,9 +83,12 @@ def send(channel, title, body):
             with urllib.request.urlopen(request, timeout=12) as response:
                 reply = json.loads(response.read())
             code = reply.get("code", reply.get("StatusCode"))
-            if isinstance(code, int) and not isinstance(code, bool) and code == 0:
+            # Keep only a bounded numeric business code; reply text can contain secrets.
+            code = code if isinstance(code, int) and not isinstance(code, bool) and -(2 ** 31) <= code < 2 ** 31 else None
+            result["feishu_code"] = code
+            if code == 0:
                 result["ok"] = True
-            elif isinstance(code, int) and not isinstance(code, bool):
+            elif code is not None:
                 result.update(error=f"飞书拒绝消息，错误码 {code}", error_class="FeishuRejected")
             else:
                 result.update(error="飞书响应格式错误", error_class="InvalidResponse")

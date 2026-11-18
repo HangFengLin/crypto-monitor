@@ -28,6 +28,15 @@ class RuntimeUtilsTest(unittest.TestCase):
             self.assertEqual(json.loads((path.parent / "events.jsonl.1").read_text(encoding="utf-8"))["event"], "second")
             self.assertEqual(json.loads((path.parent / "events.jsonl.2").read_text(encoding="utf-8"))["event"], "first")
 
+    def test_append_preserves_a_partial_tail_without_merging_the_next_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "events.jsonl"
+            path.write_bytes(b'{"event":"interrupted')
+            append_jsonl(path, {"event": "next"}, max_bytes=1024)
+            lines = path.read_bytes().splitlines()
+            self.assertEqual(lines[0], b'{"event":"interrupted')
+            self.assertEqual(json.loads(lines[1]), {"event": "next"})
+
 
 if __name__ == "__main__":
     unittest.main()

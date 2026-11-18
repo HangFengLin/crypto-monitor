@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import os
+import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "deploy_vps.sh"
+REAL_RSYNC = shutil.which("rsync")
 OLD = "sha256:" + "a" * 64
 NEW = "sha256:" + "b" * 64
 OTHER = "sha256:" + "c" * 64
@@ -137,6 +140,22 @@ class OverlayDeploymentTests(unittest.TestCase):
         self.assertIn("--delete", calls)
         self.assertIn("ssh ", calls)
         self.assertLess(calls.index("ssh "), calls.index("rsync "))
+
+    @unittest.skipUnless(REAL_RSYNC, "rsync required")
+    def test_default_sync_keeps_example_but_excludes_secret_env_files(self):
+        result, calls = self.run_script(VPS_OVERLAY_RELEASE="", REMOTE_DIR=str(self.remote))
+        self.assertEqual(result.returncode, 72)
+        args = shlex.split(next(line for line in calls.splitlines() if line.startswith("rsync ")))[1:]
+        source = self.root / "source"
+        target = self.root / "target"
+        source.mkdir()
+        target.mkdir()
+        for name in (".env", ".env.local", ".env.example", "app.py"):
+            (source / name).write_text("fixture\n")
+        result = subprocess.run([REAL_RSYNC, *args[:-2], str(source) + "/", str(target) + "/"],
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({p.name for p in target.iterdir()}, {".env.example", "app.py"})
 
     def test_default_path_blocks_existing_or_dangling_override_before_sync(self):
         for dangling in (False, True):
