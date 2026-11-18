@@ -205,6 +205,69 @@ class ObservationAggregationTest(unittest.TestCase):
         box.observe(*app.automatic_notification_inputs())
         self.assertEqual([item["title"] for item in box.data["pending"]], ["ETHUSDT 观察提醒"])
 
+    def test_restart_does_not_commit_round_already_in_journal(self):
+        support = {**self.level(), "event_key": "support:saved", "observation_round_id": "interrupted"}
+        pending = {"id": "interrupted", "created_at": 100, "events": [support], "complete": True}
+        batch = app.observation_batch(pending)
+        self.log.write_text("\n".join(json.dumps(event) for event in [support, batch]) + "\n")
+        checkpoint = {"support_states": {}, "indicator_keys": {}, "pending_rounds": [pending]}
+        self.log.with_name(self.log.name + ".observations.json").write_text(json.dumps(checkpoint))
+        app.initialize_state()
+        app.commit_observation_rounds()
+        groups = [event for event in self.records() if event.get("type") == "observation_batch"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(app.state.observation_pending_rounds, [])
+
+    def test_startup_dispatches_uncommitted_recovered_observations_to_discord(self):
+        support = {**self.level(), "event_key": "support:saved", "observation_round_id": "interrupted"}
+        self.log.write_text(json.dumps(support) + "\n")
+        checkpoint = {"support_states": {}, "indicator_keys": {}, "pending_rounds": [],
+                      "active_round": {"id": "interrupted", "created_at": 100, "events": [support]}}
+        self.log.with_name(self.log.name + ".observations.json").write_text(json.dumps(checkpoint))
+        sent = []
+
+        async def capture(alert):
+            sent.append(alert)
+
+        async def start():
+            with patch.dict("os.environ", {"FEISHU_OUTBOX_FILE": str(self.root / "outbox.json")}), \
+                 patch.object(app, "initialize_fault_history"), \
+                 patch.object(app, "run_monitor_loop", new=AsyncMock()), \
+                 patch.object(app, "automatic_notification_loop", new=AsyncMock()), \
+                 patch.object(app, "PAPER_UNIVERSE_ENABLED", False), \
+                 patch.object(app, "send_alert_notifications_async", new=capture):
+                application = app.create_app()
+                async with application.router.lifespan_context(application):
+                    pass
+
+        asyncio.run(start())
+        self.assertEqual([alert["title"] for alert in sent], ["ETHUSDT 观察提醒"])
+        self.assertEqual(sent[0]["type"], "observation_summary")
+
+    def test_recovered_discord_error_does_not_disable_feishu_worker(self):
+        support = {**self.level(), "event_key": "support:saved", "observation_round_id": "interrupted"}
+        self.log.write_text(json.dumps(support) + "\n")
+        checkpoint = {"support_states": {}, "indicator_keys": {}, "pending_rounds": [],
+                      "active_round": {"id": "interrupted", "created_at": 100, "events": [support]}}
+        self.log.with_name(self.log.name + ".observations.json").write_text(json.dumps(checkpoint))
+        worker = AsyncMock()
+
+        async def start():
+            with patch.dict("os.environ", {"FEISHU_OUTBOX_FILE": str(self.root / "outbox.json")}), \
+                 patch.object(app, "initialize_fault_history"), \
+                 patch.object(app, "run_monitor_loop", new=AsyncMock()), \
+                 patch.object(app, "automatic_notification_loop", new=worker), \
+                 patch.object(app, "PAPER_UNIVERSE_ENABLED", False), \
+                 patch.object(app, "send_alert_notifications_async", new=AsyncMock(side_effect=RuntimeError("private"))):
+                application = app.create_app()
+                async with application.router.lifespan_context(application):
+                    await asyncio.sleep(0)
+
+        asyncio.run(start())
+        self.assertEqual(worker.await_count, 1)
+        self.assertIsNotNone(app.state.discord_last_error)
+        self.assertNotIn("private", app.state.discord_last_error)
+
     def test_corrupt_observation_checkpoint_is_preserved_and_does_not_block_trade_notices(self):
         checkpoint = self.log.with_name(self.log.name + ".observations.json")
         checkpoint.write_text("{broken")

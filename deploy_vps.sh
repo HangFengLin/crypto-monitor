@@ -101,9 +101,9 @@ fi
 EXCLUDES=(
   "--exclude=.git/"
   "--exclude=.DS_Store"
+  "--include=.env.example"
   "--exclude=.env"
   "--exclude=.env.*"
-  "--exclude=!.env.example"
   "--exclude=__pycache__/"
   "--exclude=.pycache/"
   "--exclude=.pycache-check/"

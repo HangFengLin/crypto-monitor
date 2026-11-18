@@ -10,8 +10,9 @@ import RuntimeSettings from "./runtime-settings";
 import PaperLedger, { StatBlock, type TradeStats } from "./paper-ledger";
 import FeishuNotifications from "./feishu-notifications";
 import JindanMonitor from "./jindan-monitor";
+import PatternMonitor from "./pattern-monitor";
 
-type View = "overview" | "markets" | "paper" | "research" | "jindan" | "settings";
+type View = "overview" | "markets" | "patterns" | "paper" | "research" | "jindan" | "settings";
 type Direction = "up" | "down" | "none" | string;
 
 type WatchItem = {
@@ -123,6 +124,7 @@ type BacktestResult = Record<string, unknown> & {
 const NAV: Array<{ id: View; label: string; caption: string }> = [
   { id: "overview", label: "总览", caption: "当前状态" },
   { id: "markets", label: "行情与信号", caption: "监控与触发记录" },
+  { id: "patterns", label: "形态观察", caption: "结构与确认跟踪" },
   { id: "paper", label: "模拟交易", caption: "本地交易账本" },
   { id: "research", label: "策略研究", caption: "实验与报告" },
   { id: "jindan", label: "金丹v1.0", caption: "背离前瞻观察" },
@@ -596,6 +598,8 @@ export function LianqiDashboard() {
         )}
 
         {view === "paper" && <PaperLedger />}
+
+        {view === "patterns" && <PatternMonitor />}
 
         {view === "jindan" && <JindanMonitor />}
 

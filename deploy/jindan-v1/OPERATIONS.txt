@@ -12,8 +12,20 @@ without changing signal rules, code, activation or the original web service.
 
 Build both delta images using a locally tagged, verified running-image ID.
 The web build context must be the preserved live-source overlay, never an
-unreviewed local development checkout. The collector build context includes
-only jindan_live/ and the unchanged prospective-plan.json.
+unreviewed local development checkout. It must include the built public/site/
+and must not exclude it with a .dockerignore file. The collector build context
+must include jindan_live/, the unchanged prospective-plan.json and the unchanged
+record-catalog.json. Those frozen JSON inputs are retained outside the Git
+checkout; verify their identity and activation bindings before building.
+
+Dockerfile.web overlays app.py, jindan_web.py and public/site/ on the selected
+base image. It does not replace the other Python modules: the base image must
+already contain the exact compatible dependencies from the accepted live
+source. Using an older base can produce import errors or mixed-version behavior.
+Verify the base image and all runtime/source identities against the release
+acceptance evidence. After building, run the isolated image smoke check and
+verify the site and Jindan routes before any deployment. Import success alone
+does not prove that the mixed image is compatible.
 
 Collector service:
   docker compose -p jindan-v1 -f deploy/jindan-v1/compose.yml up -d --no-build

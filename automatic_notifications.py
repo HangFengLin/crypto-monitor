@@ -21,6 +21,7 @@ MODULE_FAULT_LABELS = {
     "ledger": "模拟交易账本",
     "events": "事件记录",
     "observations": "观察提醒状态",
+    "patterns": "形态观察",
 }
 
 DELIVERY_HISTORY_LIMIT = 200
@@ -46,6 +47,10 @@ def _message_id(key):
 
 def _error_class(value):
     return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value) else "DeliveryFailed"
+
+
+def _feishu_code(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and -(2 ** 31) <= value < 2 ** 31 else None
 
 
 def _latency_summary(values):
@@ -98,6 +103,10 @@ class Outbox:
         )
         self.data.setdefault("delivery_history", [])
         self.data["delivery_history"] = self.data["delivery_history"][-DELIVERY_HISTORY_LIMIT:]
+        for record in self.data["delivery_history"] + ([self.data["last_delivery"]]
+                                                      if self.data.get("last_delivery") else []):
+            # Legacy queues have no business-code evidence; never infer it from text.
+            record["feishu_code"] = _feishu_code(record.get("feishu_code"))
         for message in self.data["pending"]:
             # Upgrade retained work without inventing an event or enqueue time.
             message.setdefault("created_at", None)
@@ -492,7 +501,7 @@ class Outbox:
                 "accepted_at": None, "failed_at": None,
                 "queue_wait_s": _elapsed(message.get("enqueued_at"), started_at),
                 "send_duration_s": None, "total_age_s": None, "retry_delay_s": None,
-                "error_class": None, "clock_skew": False,
+                "error_class": None, "feishu_code": None, "clock_skew": False,
             }
             record["clock_skew"] = any(
                 a is not None and b is not None and b < a
@@ -534,6 +543,7 @@ class Outbox:
                 total_age_s=None if clock_skew else _elapsed(record["created_at"], finished_at),
                 queue_wait_s=None if clock_skew else record["queue_wait_s"],
                 error_class=None if result["ok"] else _error_class(result.get("error_class")),
+                feishu_code=_feishu_code(result.get("feishu_code")),
                 clock_skew=clock_skew,
             )
             if result["ok"]:

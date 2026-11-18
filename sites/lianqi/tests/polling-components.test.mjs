@@ -61,6 +61,7 @@ for (const [component, path, intervalMs] of [
   ['paper-ledger', '/api/paper-trades', 15000],
   ['feishu-notifications', '/api/notifications/status', 10000],
   ['runtime-settings', '/api/settings', 30000],
+  ['pattern-monitor', '/api/patterns', 10000],
 ]) {
   test(`${component} does not overlap a slow poll and aborts it on unmount`, async () => {
     const panel = await mounted(component, path);

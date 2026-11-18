@@ -63,6 +63,14 @@ def append_jsonl(
     path.parent.mkdir(parents=True, exist_ok=True)
     with _log_lock(path):
         current_size = path.stat().st_size if path.exists() else 0
+        if current_size:
+            # Preserve an interrupted record as its own invalid line; do not
+            # concatenate it with a subsequently valid event or hide the damage.
+            with path.open("rb+") as previous:
+                previous.seek(-1, os.SEEK_END)
+                if previous.read(1) != b"\n":
+                    previous.write(b"\n")
+                    current_size += 1
         if max_bytes and current_size and current_size + len(line.encode("utf-8")) > max_bytes:
             _rotate_file(path, backups)
         with path.open("a", encoding="utf-8") as file:
