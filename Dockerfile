@@ -3,6 +3,7 @@ WORKDIR /src/sites/lianqi
 COPY sites/lianqi/package.json sites/lianqi/pnpm-lock.yaml ./
 RUN npm install -g pnpm@10.32.1 && pnpm install --frozen-lockfile
 COPY sites/lianqi/ ./
+COPY public/app.js /src/public/app.js
 RUN pnpm test
 RUN pnpm run build:vps
 
